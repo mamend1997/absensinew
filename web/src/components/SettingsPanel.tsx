@@ -65,11 +65,15 @@ export default function SettingsPanel({
     setWeeklySchedules(settings.weekly_schedules?.map((schedule) => ({
       ...schedule,
       weekday: Number(schedule.weekday),
+      is_working_day: schedule.is_working_day == null
+        ? Number(schedule.weekday) >= 1 && Number(schedule.weekday) <= 5
+        : Boolean(schedule.is_working_day),
       check_in_deadline: schedule.check_in_deadline.slice(0, 5),
       lateness_tolerance_minutes: Number(schedule.lateness_tolerance_minutes),
       check_out_start: schedule.check_out_start.slice(0, 5),
     })) ?? weekdays.map((_day, weekday) => ({
       weekday,
+      is_working_day: weekday >= 1 && weekday <= 5,
       check_in_deadline: settings.check_in_deadline.slice(0, 5),
       lateness_tolerance_minutes: Number(settings.lateness_tolerance_minutes),
       check_out_start: settings.check_out_start.slice(0, 5),
@@ -146,19 +150,33 @@ export default function SettingsPanel({
           <div className="speech-settings">
             <div>
               <h2>Aturan jam per hari</h2>
-              <p className="muted">Tentukan batas masuk, toleransi keterlambatan, dan jam mulai pulang untuk setiap hari.</p>
+              <p className="muted">Pilih hari kerja dan atur jam absensi. Hari libur tidak menerima scan dan tidak dihitung sebagai belum hadir.</p>
             </div>
             <div className="weekly-schedule-list">
               <div className="weekly-schedule-header" aria-hidden="true">
-                <span>Hari</span><span>Batas masuk</span><span>Toleransi (menit)</span><span>Mulai pulang</span>
+                <span>Hari</span><span>Status</span><span>Batas masuk</span><span>Toleransi (menit)</span><span>Mulai pulang</span>
               </div>
               {weeklySchedules.map((schedule) => (
                 <div className="weekly-schedule-row" key={schedule.weekday}>
                   <strong>{weekdays[schedule.weekday]}</strong>
+                  <label className="working-day-toggle">
+                    <input
+                      type="checkbox"
+                      aria-label={`${weekdays[schedule.weekday]} termasuk hari kerja`}
+                      checked={Boolean(schedule.is_working_day)}
+                      onChange={(event) => setWeeklySchedules((current) => current.map((item) =>
+                        item.weekday === schedule.weekday
+                          ? { ...item, is_working_day: event.target.checked }
+                          : item,
+                      ))}
+                    />
+                    <span>{schedule.is_working_day ? 'Hari kerja' : 'Libur'}</span>
+                  </label>
                   <input
                     aria-label={`${weekdays[schedule.weekday]} batas jam masuk`}
                     type="time"
-                    required
+                    required={Boolean(schedule.is_working_day)}
+                    disabled={!schedule.is_working_day}
                     value={schedule.check_in_deadline}
                     onChange={(event) => setWeeklySchedules((current) => current.map((item) =>
                       item.weekday === schedule.weekday
@@ -171,7 +189,8 @@ export default function SettingsPanel({
                     type="number"
                     min="0"
                     max="180"
-                    required
+                    required={Boolean(schedule.is_working_day)}
+                    disabled={!schedule.is_working_day}
                     value={schedule.lateness_tolerance_minutes}
                     onChange={(event) => setWeeklySchedules((current) => current.map((item) =>
                       item.weekday === schedule.weekday
@@ -182,7 +201,8 @@ export default function SettingsPanel({
                   <input
                     aria-label={`${weekdays[schedule.weekday]} jam mulai pulang`}
                     type="time"
-                    required
+                    required={Boolean(schedule.is_working_day)}
+                    disabled={!schedule.is_working_day}
                     value={schedule.check_out_start}
                     onChange={(event) => setWeeklySchedules((current) => current.map((item) =>
                       item.weekday === schedule.weekday

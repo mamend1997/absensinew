@@ -15,6 +15,12 @@ export function calculateAttendance({
   const dailySchedule = settings.weekly_schedules?.find(
     (schedule) => Number(schedule.weekday) === weekday,
   );
+  const isWorkingDay = dailySchedule?.is_working_day == null
+    ? weekday >= 1 && weekday <= 5
+    : Boolean(Number(dailySchedule.is_working_day));
+  if (!isWorkingDay) {
+    return { date, status: null, lateMinutes: 0, reason: 'non_working_day' };
+  }
 
   if (eventType === 'check_out') {
     const [hour, minute, second] = (dailySchedule?.check_out_start ?? settings.check_out_start)
@@ -153,7 +159,8 @@ export async function getOperationalSettings() {
   if (!rows[0]) return null;
   const [weeklySchedules, participantOverrides] = await Promise.all([
     db.query(
-      `SELECT weekday, check_in_deadline, lateness_tolerance_minutes, check_out_start
+      `SELECT weekday, is_working_day, check_in_deadline,
+              lateness_tolerance_minutes, check_out_start
        FROM weekly_operational_schedules`,
     ),
     db.query(

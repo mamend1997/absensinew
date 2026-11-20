@@ -33,6 +33,8 @@ function clockSeconds(clock: string): number {
   return Number(hour) * 3600 + Number(minute) * 60 + Number(second);
 }
 
+const weekdayNames = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+
 export function createQueuedScan(
   participant: Participant,
   mode: AttendanceMode,
@@ -46,6 +48,12 @@ export function createQueuedScan(
   const dailySchedule = settings.weekly_schedules?.find(
     (schedule) => Number(schedule.weekday) === weekday,
   );
+  const isWorkingDay = dailySchedule?.is_working_day == null
+    ? weekday >= 1 && weekday <= 5
+    : Boolean(dailySchedule.is_working_day);
+  if (!isWorkingDay) {
+    throw new Error(`Hari ${weekdayNames[weekday]} ditetapkan sebagai hari libur.`);
+  }
   const participantOverride = settings.participant_overrides?.find(
     (rule) =>
       String(rule.participant_id) === String(participant.id) &&

@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS operational_settings (
 
 CREATE TABLE IF NOT EXISTS weekly_operational_schedules (
     weekday TINYINT UNSIGNED NOT NULL,
+    is_working_day BOOLEAN NOT NULL DEFAULT TRUE,
     check_in_deadline TIME NOT NULL,
     lateness_tolerance_minutes SMALLINT UNSIGNED NOT NULL DEFAULT 0,
     check_out_start TIME NOT NULL,
@@ -161,30 +162,30 @@ VALUES (1, 'Asia/Jakarta', '08:00:00', 0, '15:00:00')
 ON DUPLICATE KEY UPDATE id = VALUES(id);
 
 INSERT IGNORE INTO weekly_operational_schedules
-    (weekday, check_in_deadline, lateness_tolerance_minutes, check_out_start)
-    SELECT 0, check_in_deadline, lateness_tolerance_minutes, check_out_start
+    (weekday, is_working_day, check_in_deadline, lateness_tolerance_minutes, check_out_start)
+    SELECT 0, FALSE, check_in_deadline, lateness_tolerance_minutes, check_out_start
     FROM operational_settings WHERE id = 1;
 INSERT IGNORE INTO weekly_operational_schedules
-    (weekday, check_in_deadline, lateness_tolerance_minutes, check_out_start)
-    SELECT 1, check_in_deadline, lateness_tolerance_minutes, check_out_start
+    (weekday, is_working_day, check_in_deadline, lateness_tolerance_minutes, check_out_start)
+    SELECT 1, TRUE, check_in_deadline, lateness_tolerance_minutes, check_out_start
     FROM operational_settings WHERE id = 1;
 INSERT IGNORE INTO weekly_operational_schedules
-    (weekday, check_in_deadline, lateness_tolerance_minutes, check_out_start)
-    SELECT 2, check_in_deadline, lateness_tolerance_minutes, check_out_start
+    (weekday, is_working_day, check_in_deadline, lateness_tolerance_minutes, check_out_start)
+    SELECT 2, TRUE, check_in_deadline, lateness_tolerance_minutes, check_out_start
     FROM operational_settings WHERE id = 1;
 INSERT IGNORE INTO weekly_operational_schedules
-    (weekday, check_in_deadline, lateness_tolerance_minutes, check_out_start)
-    SELECT 3, check_in_deadline, lateness_tolerance_minutes, check_out_start
+    (weekday, is_working_day, check_in_deadline, lateness_tolerance_minutes, check_out_start)
+    SELECT 3, TRUE, check_in_deadline, lateness_tolerance_minutes, check_out_start
     FROM operational_settings WHERE id = 1;
 INSERT IGNORE INTO weekly_operational_schedules
-    (weekday, check_in_deadline, lateness_tolerance_minutes, check_out_start)
-    SELECT 4, check_in_deadline, lateness_tolerance_minutes, check_out_start
+    (weekday, is_working_day, check_in_deadline, lateness_tolerance_minutes, check_out_start)
+    SELECT 4, TRUE, check_in_deadline, lateness_tolerance_minutes, check_out_start
     FROM operational_settings WHERE id = 1;
 INSERT IGNORE INTO weekly_operational_schedules
-    (weekday, check_in_deadline, lateness_tolerance_minutes, check_out_start)
-    SELECT 5, check_in_deadline, lateness_tolerance_minutes, check_out_start
+    (weekday, is_working_day, check_in_deadline, lateness_tolerance_minutes, check_out_start)
+    SELECT 5, TRUE, check_in_deadline, lateness_tolerance_minutes, check_out_start
     FROM operational_settings WHERE id = 1;
 INSERT IGNORE INTO weekly_operational_schedules
-    (weekday, check_in_deadline, lateness_tolerance_minutes, check_out_start)
-    SELECT 6, check_in_deadline, lateness_tolerance_minutes, check_out_start
+    (weekday, is_working_day, check_in_deadline, lateness_tolerance_minutes, check_out_start)
+    SELECT 6, FALSE, check_in_deadline, lateness_tolerance_minutes, check_out_start
     FROM operational_settings WHERE id = 1;

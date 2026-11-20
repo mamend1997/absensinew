@@ -196,6 +196,12 @@ router.get('/rekap', allowRoles('admin'), asyncHandler(async (request, response)
      ORDER BY u.name, c.name, p.full_name`,
     participantParams,
   );
+  const weeklySchedules = await db.query(
+    'SELECT weekday, is_working_day FROM weekly_operational_schedules',
+  );
+  const scheduleByWeekday = new Map(
+    weeklySchedules.map((schedule) => [Number(schedule.weekday), schedule]),
+  );
 
   if (participants.length * dayCount > 50000) {
     throw new HttpError(
@@ -226,8 +232,14 @@ router.get('/rekap', allowRoles('admin'), asyncHandler(async (request, response)
   const rows = [];
   for (let offset = 0; offset < dayCount; offset += 1) {
     const date = addCalendarDays(startDate, offset);
+    const weekday = new Date(`${date}T00:00:00.000Z`).getUTCDay();
+    const schedule = scheduleByWeekday.get(weekday);
+    const isWorkingDay = schedule
+      ? Boolean(Number(schedule.is_working_day))
+      : weekday >= 1 && weekday <= 5;
     for (const participant of participants) {
       const events = logMap.get(`${String(participant.id)}:${date}`) ?? {};
+      if (!isWorkingDay && !events.check_in && !events.check_out) continue;
       const checkIn = events.check_in;
       const checkOut = events.check_out;
       const status = checkIn?.attendance_status ?? (checkOut ? 'pulang' : 'belum_hadir');

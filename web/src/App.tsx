@@ -132,8 +132,11 @@ export default function App() {
 
       await refreshQueue();
       if (rejected.length) {
+        const firstReason = rejected[0].reason === 'non_working_day'
+          ? 'Hari tersebut ditetapkan sebagai hari libur.'
+          : rejected[0].reason;
         showToast(
-          `${acceptedCount} catatan tersinkron; ${rejected.length} ditolak dan tetap pending. ${rejected[0].reason}`,
+          `${acceptedCount} catatan tersinkron; ${rejected.length} ditolak dan tetap pending. ${firstReason}`,
           'error',
         );
       } else if (acceptedCount) {

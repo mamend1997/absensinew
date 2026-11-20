@@ -259,6 +259,9 @@ test('auth, role permissions, idempotent batch sync, and monthly report', async 
   });
   assert.equal(updatedSettings.response.status, 200);
   assert.equal(updatedSettings.data.settings.lateness_tolerance_minutes, 5);
+  assert.equal(Number(updatedSettings.data.settings.weekly_schedules[0].is_working_day), 0);
+  assert.equal(Number(updatedSettings.data.settings.weekly_schedules[1].is_working_day), 1);
+  assert.equal(Number(updatedSettings.data.settings.weekly_schedules[6].is_working_day), 0);
   assert.equal(
     updatedSettings.data.settings.scan_welcome_message,
     'Selamat datang - mohon tertib saat melakukan absensi',
@@ -266,12 +269,14 @@ test('auth, role permissions, idempotent batch sync, and monthly report', async 
 
   const weeklySchedules = Array.from({ length: 7 }, (_value, weekday) => ({
     weekday,
+    is_working_day: weekday >= 1 && weekday <= 5,
     check_in_deadline: '08:00',
     lateness_tolerance_minutes: 5,
     check_out_start: '15:00',
   }));
   weeklySchedules[5] = {
     weekday: 5,
+    is_working_day: true,
     check_in_deadline: '08:30',
     lateness_tolerance_minutes: 0,
     check_out_start: '15:00',
@@ -294,7 +299,37 @@ test('auth, role permissions, idempotent batch sync, and monthly report', async 
   });
   assert.equal(scheduleUpdate.response.status, 200);
   assert.equal(scheduleUpdate.data.settings.weekly_schedules.length, 7);
+  assert.equal(Number(scheduleUpdate.data.settings.weekly_schedules[0].is_working_day), 0);
+  assert.equal(Number(scheduleUpdate.data.settings.weekly_schedules[6].is_working_day), 0);
   assert.equal(scheduleUpdate.data.settings.participant_overrides[0].check_in_deadline, '06:45:00');
+
+  const holidayScans = await request('/absensi/sync-batch', {
+    method: 'POST',
+    token: adminToken,
+    body: [
+      {
+        id_unik: '00000000-0000-4000-8000-000000000109',
+        id_peserta: participant.id,
+        jenis_absen: 'masuk',
+        client_timestamp: '2026-11-29T01:00:00.000Z',
+        status_kehadiran: 'hadir',
+        menit_terlambat: 0,
+      },
+      {
+        id_unik: '00000000-0000-4000-8000-000000000110',
+        id_peserta: participant.id,
+        jenis_absen: 'pulang',
+        client_timestamp: '2026-11-29T08:10:00.000Z',
+        status_kehadiran: 'pulang',
+        menit_terlambat: 0,
+      },
+    ],
+  });
+  assert.deepEqual(holidayScans.data.rejected.map((item) => item.reason), [
+    'non_working_day',
+    'non_working_day',
+  ]);
+  assert.deepEqual(holidayScans.data.accepted_ids, []);
 
   const earlyOverrideScan = {
     id_unik: '00000000-0000-4000-8000-000000000104',
@@ -332,7 +367,7 @@ test('auth, role permissions, idempotent batch sync, and monthly report', async 
       id_unik: '00000000-0000-4000-8000-000000000106',
       id_peserta: secondParticipant.id,
       jenis_absen: 'masuk',
-      client_timestamp: '2026-11-27T23:55:00.000Z',
+      client_timestamp: '2026-11-23T01:00:00.000Z',
       status_kehadiran: 'hadir',
       menit_terlambat: 0,
       scan_method: 'MANUAL_INPUT',
@@ -341,7 +376,7 @@ test('auth, role permissions, idempotent batch sync, and monthly report', async 
       id_unik: '00000000-0000-4000-8000-000000000107',
       id_peserta: secondParticipant.id,
       jenis_absen: 'pulang',
-      client_timestamp: '2026-11-28T08:10:00.000Z',
+      client_timestamp: '2026-11-23T08:10:00.000Z',
       status_kehadiran: 'pulang',
       menit_terlambat: 0,
       scan_method: 'SCAN_QR',
@@ -361,7 +396,7 @@ test('auth, role permissions, idempotent batch sync, and monthly report', async 
       id_unik: '00000000-0000-4000-8000-000000000108',
       id_peserta: participant.id,
       jenis_absen: 'pulang',
-      client_timestamp: '2026-11-28T08:10:00.000Z',
+      client_timestamp: '2026-11-24T08:10:00.000Z',
       status_kehadiran: 'pulang',
       menit_terlambat: 0,
     }],
@@ -445,10 +480,14 @@ test('auth, role permissions, idempotent batch sync, and monthly report', async 
   const orderedRow = report.data.rows.find(
     (item) =>
       item.participant_id === String(secondParticipant.id) &&
-      item.attendance_date === '2026-11-28',
+    item.attendance_date === '2026-11-23',
   );
   assert.equal(orderedRow.scan_method, 'MANUAL_INPUT');
   assert.equal(orderedRow.checkout_scan_method, 'SCAN_QR');
+  assert.equal(
+    report.data.rows.some((item) => item.attendance_date === '2026-11-29'),
+    false,
+  );
 
   for (let attempt = 0; attempt < 35; attempt += 1) {
     const statusResult = await request('/auth/menu-pin/status', { token: adminToken });

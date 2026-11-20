@@ -11,6 +11,7 @@ router.use(authenticate);
 const clockSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/);
 const weeklyScheduleSchema = z.object({
   weekday: z.coerce.number().int().min(0).max(6),
+  is_working_day: z.boolean().optional(),
   check_in_deadline: clockSchema,
   lateness_tolerance_minutes: z.coerce.number().int().min(0).max(180),
   check_out_start: clockSchema,
@@ -34,7 +35,8 @@ router.get('/', asyncHandler(async (request, response) => {
   if (!rows[0]) throw new HttpError(500, 'Pengaturan operasional belum diinisialisasi');
   const [weeklySchedules, participantOverrides] = await Promise.all([
     db.query(
-      `SELECT weekday, check_in_deadline, lateness_tolerance_minutes, check_out_start
+      `SELECT weekday, is_working_day, check_in_deadline,
+              lateness_tolerance_minutes, check_out_start
        FROM weekly_operational_schedules ORDER BY weekday`,
     ),
     request.user.role === 'operator'
@@ -104,15 +106,26 @@ router.put('/', allowRoles('admin'), asyncHandler(async (request, response) => {
   const checkOut = withSeconds(input.check_out_start);
   const currentRows = await db.query('SELECT * FROM operational_settings WHERE id = 1');
   if (!currentRows[0]) throw new HttpError(500, 'Pengaturan operasional belum diinisialisasi');
-  const weeklySchedules = input.weekly_schedules ?? Array.from(
-    { length: 7 },
-    (_value, weekday) => ({
-      weekday,
-      check_in_deadline: checkIn,
-      lateness_tolerance_minutes: input.lateness_tolerance_minutes,
-      check_out_start: checkOut,
-    }),
+  const currentWeeklySchedules = await db.query(
+    `SELECT weekday, is_working_day, check_in_deadline,
+            lateness_tolerance_minutes, check_out_start
+     FROM weekly_operational_schedules ORDER BY weekday`,
   );
+  const defaultWeeklySchedules = Array.from({ length: 7 }, (_value, weekday) => ({
+    weekday,
+    is_working_day: weekday >= 1 && weekday <= 5,
+    check_in_deadline: checkIn,
+    lateness_tolerance_minutes: input.lateness_tolerance_minutes,
+    check_out_start: checkOut,
+  }));
+  const weeklySchedules = input.weekly_schedules
+    ? input.weekly_schedules.map((schedule) => ({
+      ...schedule,
+      is_working_day: schedule.is_working_day ?? (schedule.weekday >= 1 && schedule.weekday <= 5),
+    }))
+    : currentWeeklySchedules.length === 7
+      ? currentWeeklySchedules
+      : defaultWeeklySchedules;
   await db.transaction(async (transaction) => {
     await transaction.query(
       `UPDATE operational_settings SET timezone = ?, check_in_deadline = ?,
@@ -134,10 +147,12 @@ router.put('/', allowRoles('admin'), asyncHandler(async (request, response) => {
     for (const schedule of weeklySchedules) {
       await transaction.query(
         `INSERT INTO weekly_operational_schedules
-          (weekday, check_in_deadline, lateness_tolerance_minutes, check_out_start)
-         VALUES (?, ?, ?, ?)`,
+          (weekday, is_working_day, check_in_deadline,
+           lateness_tolerance_minutes, check_out_start)
+         VALUES (?, ?, ?, ?, ?)`,
         [
           schedule.weekday,
+          schedule.is_working_day,
           withSeconds(schedule.check_in_deadline),
           schedule.lateness_tolerance_minutes,
           withSeconds(schedule.check_out_start),
@@ -173,7 +188,8 @@ router.put('/', allowRoles('admin'), asyncHandler(async (request, response) => {
   const rows = await db.query('SELECT * FROM operational_settings WHERE id = 1');
   const [savedSchedules, savedOverrides] = await Promise.all([
     db.query(
-      `SELECT weekday, check_in_deadline, lateness_tolerance_minutes, check_out_start
+      `SELECT weekday, is_working_day, check_in_deadline,
+              lateness_tolerance_minutes, check_out_start
        FROM weekly_operational_schedules ORDER BY weekday`,
     ),
     db.query(

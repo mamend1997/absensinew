@@ -37,6 +37,7 @@ export interface Settings {
 
 export interface WeeklySchedule {
   weekday: number;
+  is_working_day: boolean | number;
   check_in_deadline: string;
   lateness_tolerance_minutes: number;
   check_out_start: string;

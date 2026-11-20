@@ -413,8 +413,8 @@ td small { margin-top: 3px; font-size: 9px; }
 .weekly-schedule-list { display: grid; gap: 6px; overflow-x: auto; }
 .weekly-schedule-header, .weekly-schedule-row {
   display: grid;
-  min-width: 620px;
-  grid-template-columns: minmax(90px, .7fr) repeat(3, minmax(100px, 1fr));
+  min-width: 740px;
+  grid-template-columns: minmax(85px, .7fr) minmax(105px, .8fr) repeat(3, minmax(100px, 1fr));
   align-items: center;
   gap: 10px;
 }
@@ -422,6 +422,9 @@ td small { margin-top: 3px; font-size: 9px; }
 .weekly-schedule-row { border: 1px solid var(--line); border-radius: 9px; background: var(--surface-alt); padding: 7px 8px; }
 .weekly-schedule-row strong { color: var(--ink); font-size: 10px; }
 .weekly-schedule-row input { min-width: 0; }
+.working-day-toggle { display: flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 10px; }
+.working-day-toggle input { width: 15px; height: 15px; margin: 0; accent-color: var(--green); }
+.weekly-schedule-row > input:disabled { opacity: .5; }
 .participant-override-list { display: grid; gap: 10px; }
 .participant-override-row {
   display: grid;

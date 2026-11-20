@@ -1,6 +1,19 @@
 import { db } from '../src/config/database.js';
 
 try {
+  if (
+    await db.hasColumn('weekly_operational_schedules', 'weekday') &&
+    !(await db.hasColumn('weekly_operational_schedules', 'is_working_day'))
+  ) {
+    await db.addColumn(
+      'weekly_operational_schedules',
+      'is_working_day BOOLEAN NOT NULL DEFAULT TRUE',
+    );
+    await db.query(
+      'UPDATE weekly_operational_schedules SET is_working_day = 0 WHERE weekday IN (0, 6)',
+    );
+  }
+
   await db.initializeSchema();
 
   if (!(await db.hasColumn('operational_settings', 'lateness_tolerance_minutes'))) {
