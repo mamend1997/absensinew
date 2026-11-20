@@ -1,0 +1,494 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { after, test } from 'node:test';
+import assert from 'node:assert/strict';
+import bcrypt from 'bcryptjs';
+
+const tempDir = await mkdtemp(join(tmpdir(), 'absensi-api-'));
+process.env.DB_DRIVER = 'sqlite';
+process.env.SQLITE_PATH = join(tempDir, 'test.sqlite');
+process.env.JWT_SECRET = 'test-secret-for-absensi-api-at-least-32-characters';
+process.env.NODE_ENV = 'test';
+process.env.WEB_ORIGIN = 'http://localhost:5173';
+
+const [{ app }, { db }] = await Promise.all([
+  import('../src/app.js'),
+  import('../src/config/database.js'),
+]);
+await db.initializeSchema();
+
+const passwordHash = await bcrypt.hash('test-password-2026', 4);
+const classroom = (await db.query(
+  `SELECT c.id FROM classrooms c JOIN units u ON u.id = c.unit_id
+   WHERE u.name = 'Unit Contoh' AND c.name = 'Kelas 1'`,
+))[0];
+await db.query(
+  `INSERT INTO users (username, display_name, password_hash, role)
+   VALUES (?, ?, ?, ?)`,
+  ['admin-test', 'Admin Test', passwordHash, 'admin'],
+);
+await db.query(
+  `INSERT INTO users (username, display_name, password_hash, role, classroom_id)
+   VALUES (?, ?, ?, ?, ?)`,
+  ['operator-test', 'Operator Test', passwordHash, 'operator', classroom.id],
+);
+
+const server = app.listen(0, '127.0.0.1');
+await new Promise((resolveListen) => server.once('listening', resolveListen));
+const baseUrl = `http://127.0.0.1:${server.address().port}/api`;
+
+async function request(path, { method = 'GET', token, body } = {}) {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method,
+    headers: {
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  return { response, data: await response.json() };
+}
+
+after(async () => {
+  await new Promise((resolveClose, reject) =>
+    server.close((error) => error ? reject(error) : resolveClose()),
+  );
+  await db.close();
+  await rm(tempDir, { recursive: true, force: true });
+});
+
+test('auth, role permissions, idempotent batch sync, and monthly report', async () => {
+  const login = await request('/auth/login', {
+    method: 'POST',
+    body: { username: 'admin-test', password: 'test-password-2026' },
+  });
+  assert.equal(login.response.status, 200);
+  const adminToken = login.data.token;
+
+  const operatorLogin = await request('/auth/login', {
+    method: 'POST',
+    body: { username: 'operator-test', password: 'test-password-2026' },
+  });
+  const operatorToken = operatorLogin.data.token;
+
+  const classList = await request('/kelas', { token: adminToken });
+  assert.equal(classList.response.status, 200);
+  const createdClass = await request('/kelas', {
+    method: 'POST',
+    token: adminToken,
+    body: { name: 'X AKL Uji', unit_id: classList.data.units[0].id },
+  });
+  assert.equal(createdClass.response.status, 201);
+  const updatedClass = await request(`/kelas/${createdClass.data.id}`, {
+    method: 'PUT',
+    token: adminToken,
+    body: { name: 'XI AKL Uji', unit_id: classList.data.units[0].id },
+  });
+  assert.equal(updatedClass.data.updated, true);
+  const deletedClass = await request(`/kelas/${createdClass.data.id}`, {
+    method: 'DELETE',
+    token: adminToken,
+  });
+  assert.equal(deletedClass.data.deleted, true);
+  assert.equal(
+    (await request('/kelas', { token: operatorToken })).response.status,
+    403,
+  );
+
+  const pinStatus = await request('/auth/menu-pin/status', { token: adminToken });
+  assert.deepEqual(pinStatus.data, { configured: false });
+  const operatorPinSetup = await request('/auth/menu-pin/setup', {
+    method: 'POST',
+    token: operatorToken,
+    body: { pin: '4826' },
+  });
+  assert.equal(operatorPinSetup.response.status, 403);
+  const pinSetup = await request('/auth/menu-pin/setup', {
+    method: 'POST',
+    token: adminToken,
+    body: { pin: '4826' },
+  });
+  assert.equal(pinSetup.response.status, 201);
+  const wrongPin = await request('/auth/menu-pin/verify', {
+    method: 'POST',
+    token: adminToken,
+    body: { pin: '0000' },
+  });
+  assert.equal(wrongPin.response.status, 401);
+  assert.equal(wrongPin.data.error, 'PIN salah');
+  assert.equal(
+    (await request('/auth/menu-pin/verify', {
+      method: 'POST',
+      token: operatorToken,
+      body: { pin: '4826' },
+    })).response.status,
+    200,
+  );
+  assert.equal(
+    (await request('/auth/menu-pin/change', {
+      method: 'PUT',
+      token: adminToken,
+      body: { current_pin: '4826', new_pin: '5937' },
+    })).response.status,
+    200,
+  );
+  assert.equal(
+    (await request('/auth/menu-pin/verify', {
+      method: 'POST',
+      token: adminToken,
+      body: { pin: '5937' },
+    })).response.status,
+    200,
+  );
+
+  const participants = await request('/peserta', { token: adminToken });
+  assert.equal(participants.data.participants.length, 2);
+  assert.equal(participants.data.participants[0].classroom_name, 'Kelas 1');
+  const forbidden = await request('/peserta', {
+    method: 'POST',
+    token: operatorToken,
+    body: {
+      participant_code: 'NOPE',
+      full_name: 'Tidak Diizinkan',
+      classroom_id: classroom.id,
+      qr_code: 'NOPE-QR',
+    },
+  });
+  assert.equal(forbidden.response.status, 403);
+  const reportForbidden = await request('/absensi/rekap?month=11&year=2026', {
+    token: operatorToken,
+  });
+  assert.equal(reportForbidden.response.status, 403);
+
+  const createdParticipant = await request('/peserta', {
+    method: 'POST',
+    token: adminToken,
+    body: {
+      participant_code: 'TEST-001',
+      full_name: 'Peserta Uji',
+      classroom_id: classroom.id,
+      qr_code: 'QR-TEST-001',
+    },
+  });
+  assert.equal(createdParticipant.response.status, 201);
+  const updatedParticipant = await request(`/peserta/${createdParticipant.data.id}`, {
+    method: 'PUT',
+    token: adminToken,
+    body: {
+      participant_code: 'TEST-001',
+      full_name: 'Peserta Uji Diubah',
+      classroom_id: classroom.id,
+      qr_code: 'QR-TEST-001',
+    },
+  });
+  assert.equal(updatedParticipant.data.updated, true);
+  const importedParticipants = await request('/peserta/import', {
+    method: 'POST',
+    token: adminToken,
+    body: {
+      participants: [
+        {
+          participant_code: 'TEST-001',
+          full_name: 'Peserta Hasil Impor',
+          classroom_id: classroom.id,
+          qr_code: 'QR-TEST-001',
+        },
+        {
+          participant_code: 'TEST-002',
+          full_name: 'Peserta Baru Impor',
+          classroom_id: classroom.id,
+          qr_code: 'QR-TEST-002',
+        },
+        {
+          full_name: 'Peserta Template Excel',
+          unit_name: 'Unit Contoh',
+          classroom_name: 'Kelas 1',
+          qr_code: 'QR-EXCEL-001',
+        },
+      ],
+    },
+  });
+  assert.equal(importedParticipants.data.imported, 3);
+  const deletedParticipant = await request(`/peserta/${createdParticipant.data.id}`, {
+    method: 'DELETE',
+    token: adminToken,
+  });
+  assert.equal(deletedParticipant.data.deleted, true);
+  const bulkParticipant = (await request('/peserta', { token: adminToken }))
+    .data.participants.find((item) => item.qr_code === 'QR-EXCEL-001');
+  const bulkDeleted = await request('/peserta/bulk', {
+    method: 'DELETE',
+    token: adminToken,
+    body: { ids: [bulkParticipant.id] },
+  });
+  assert.deepEqual(bulkDeleted.data, { deleted: 1 });
+
+  const participant = participants.data.participants[0];
+  const secondParticipant = participants.data.participants.find(
+    (item) => item.participant_code !== participant.participant_code,
+  );
+  const scan = {
+    id_unik: '00000000-0000-4000-8000-000000000101',
+    id_peserta: participant.id,
+    jenis_absen: 'masuk',
+    client_timestamp: '2026-11-20T01:05:00.000Z',
+    status_kehadiran: 'terlambat',
+    menit_terlambat: 5,
+  };
+  const sync = await request('/absensi/sync-batch', {
+    method: 'POST',
+    token: adminToken,
+    body: { records: [scan] },
+  });
+  assert.deepEqual(sync.data.accepted_ids, [scan.id_unik]);
+  assert.deepEqual(sync.data.rejected, []);
+
+  const updatedSettings = await request('/pengaturan', {
+    method: 'PUT',
+    token: adminToken,
+    body: {
+      timezone: 'Asia/Jakarta',
+      check_in_deadline: '08:00',
+      lateness_tolerance_minutes: 5,
+      check_out_start: '15:00',
+      scan_welcome_message: 'Selamat datang - mohon tertib saat melakukan absensi',
+      scan_success_message: 'Terima kasih, {name}. Absensi {status} sudah dicatat.',
+      scan_failure_message: 'Maaf, absensi {name} gagal. {reason}.',
+    },
+  });
+  assert.equal(updatedSettings.response.status, 200);
+  assert.equal(updatedSettings.data.settings.lateness_tolerance_minutes, 5);
+  assert.equal(
+    updatedSettings.data.settings.scan_welcome_message,
+    'Selamat datang - mohon tertib saat melakukan absensi',
+  );
+
+  const weeklySchedules = Array.from({ length: 7 }, (_value, weekday) => ({
+    weekday,
+    check_in_deadline: '08:00',
+    lateness_tolerance_minutes: 5,
+    check_out_start: '15:00',
+  }));
+  weeklySchedules[5] = {
+    weekday: 5,
+    check_in_deadline: '08:30',
+    lateness_tolerance_minutes: 0,
+    check_out_start: '15:00',
+  };
+  const scheduleUpdate = await request('/pengaturan', {
+    method: 'PUT',
+    token: adminToken,
+    body: {
+      timezone: 'Asia/Jakarta',
+      check_in_deadline: '08:00',
+      lateness_tolerance_minutes: 5,
+      check_out_start: '15:00',
+      weekly_schedules: weeklySchedules,
+      participant_overrides: [{
+        participant_id: participant.id,
+        weekday: 5,
+        check_in_deadline: '06:45',
+      }],
+    },
+  });
+  assert.equal(scheduleUpdate.response.status, 200);
+  assert.equal(scheduleUpdate.data.settings.weekly_schedules.length, 7);
+  assert.equal(scheduleUpdate.data.settings.participant_overrides[0].check_in_deadline, '06:45:00');
+
+  const earlyOverrideScan = {
+    id_unik: '00000000-0000-4000-8000-000000000104',
+    id_peserta: participant.id,
+    jenis_absen: 'masuk',
+    client_timestamp: '2026-11-26T23:50:00.000Z',
+    status_kehadiran: 'terlambat',
+    menit_terlambat: 5,
+    scan_method: 'MANUAL_INPUT',
+  };
+  const earlyOverrideResult = await request('/absensi/sync-batch', {
+    method: 'POST',
+    token: adminToken,
+    body: [earlyOverrideScan],
+  });
+  assert.deepEqual(earlyOverrideResult.data.accepted_ids, [earlyOverrideScan.id_unik]);
+
+  const regularScheduleScan = {
+    id_unik: '00000000-0000-4000-8000-000000000105',
+    id_peserta: secondParticipant.id,
+    jenis_absen: 'masuk',
+    client_timestamp: '2026-11-26T23:50:00.000Z',
+    status_kehadiran: 'hadir',
+    menit_terlambat: 0,
+  };
+  const regularScheduleResult = await request('/absensi/sync-batch', {
+    method: 'POST',
+    token: adminToken,
+    body: [regularScheduleScan],
+  });
+  assert.deepEqual(regularScheduleResult.data.accepted_ids, [regularScheduleScan.id_unik]);
+
+  const orderedScans = [
+    {
+      id_unik: '00000000-0000-4000-8000-000000000106',
+      id_peserta: secondParticipant.id,
+      jenis_absen: 'masuk',
+      client_timestamp: '2026-11-27T23:55:00.000Z',
+      status_kehadiran: 'hadir',
+      menit_terlambat: 0,
+      scan_method: 'MANUAL_INPUT',
+    },
+    {
+      id_unik: '00000000-0000-4000-8000-000000000107',
+      id_peserta: secondParticipant.id,
+      jenis_absen: 'pulang',
+      client_timestamp: '2026-11-28T08:10:00.000Z',
+      status_kehadiran: 'pulang',
+      menit_terlambat: 0,
+      scan_method: 'SCAN_QR',
+    },
+  ];
+  const orderedSync = await request('/absensi/sync-batch', {
+    method: 'POST',
+    token: adminToken,
+    body: { records: orderedScans },
+  });
+  assert.deepEqual(orderedSync.data.accepted_ids, orderedScans.map((item) => item.id_unik));
+
+  const checkoutWithoutCheckin = await request('/absensi/sync-batch', {
+    method: 'POST',
+    token: adminToken,
+    body: [{
+      id_unik: '00000000-0000-4000-8000-000000000108',
+      id_peserta: participant.id,
+      jenis_absen: 'pulang',
+      client_timestamp: '2026-11-28T08:10:00.000Z',
+      status_kehadiran: 'pulang',
+      menit_terlambat: 0,
+    }],
+  });
+  assert.equal(checkoutWithoutCheckin.data.rejected[0].reason, 'checkin_required');
+
+  const retry = await request('/absensi/sync-batch', {
+    method: 'POST',
+    token: adminToken,
+    body: [scan],
+  });
+  assert.deepEqual(retry.data.accepted_ids, [scan.id_unik]);
+  assert.equal(
+    (await db.query('SELECT COUNT(*) AS count FROM attendance_logs'))[0].count,
+    5,
+  );
+
+  const conflict = await request('/absensi/sync-batch', {
+    method: 'POST',
+    token: adminToken,
+    body: [{
+      ...scan,
+      status_kehadiran: 'hadir',
+      menit_terlambat: 0,
+    }],
+  });
+  assert.equal(conflict.data.rejected[0].reason, 'id_unik_conflict');
+
+  const checkout = {
+    id_unik: '00000000-0000-4000-8000-000000000102',
+    id_peserta: participant.id,
+    jenis_absen: 'pulang',
+    client_timestamp: '2026-11-20T08:10:00.000Z',
+    status_kehadiran: 'pulang',
+    menit_terlambat: 0,
+  };
+  const checkoutResult = await request('/absensi/sync-batch', {
+    method: 'POST',
+    token: adminToken,
+    body: [checkout],
+  });
+  assert.deepEqual(checkoutResult.data.accepted_ids, [checkout.id_unik]);
+
+  const withinTolerance = await request('/absensi/sync-batch', {
+    method: 'POST',
+    token: adminToken,
+    body: [{
+      id_unik: '00000000-0000-4000-8000-000000000103',
+      id_peserta: secondParticipant.id,
+      jenis_absen: 'masuk',
+      client_timestamp: '2026-11-20T01:05:00.000Z',
+      status_kehadiran: 'hadir',
+      menit_terlambat: 0,
+    }],
+  });
+  assert.deepEqual(withinTolerance.data.accepted_ids, [
+    '00000000-0000-4000-8000-000000000103',
+  ]);
+
+  const report = await request('/absensi/rekap?month=11&year=2026', {
+    token: adminToken,
+  });
+  assert.equal(report.data.summary.terlambat, 2);
+  assert.equal(report.data.summary.total_menit_terlambat, 10);
+  assert.equal(report.data.summary.pulang, 2);
+  assert.equal(report.data.summary.hadir_tepat_waktu, 3);
+  const row = report.data.rows.find(
+    (item) =>
+      item.participant_id === String(participant.id) &&
+      item.attendance_date === '2026-11-20',
+  );
+  assert.equal(row.status_kehadiran, 'terlambat');
+  assert.ok(row.masuk_at);
+  assert.ok(row.pulang_at);
+  const manualRow = report.data.rows.find(
+    (item) =>
+      item.participant_id === String(participant.id) &&
+      item.attendance_date === '2026-11-27',
+  );
+  assert.equal(manualRow.scan_method, 'MANUAL_INPUT');
+  const orderedRow = report.data.rows.find(
+    (item) =>
+      item.participant_id === String(secondParticipant.id) &&
+      item.attendance_date === '2026-11-28',
+  );
+  assert.equal(orderedRow.scan_method, 'MANUAL_INPUT');
+  assert.equal(orderedRow.checkout_scan_method, 'SCAN_QR');
+
+  for (let attempt = 0; attempt < 35; attempt += 1) {
+    const statusResult = await request('/auth/menu-pin/status', { token: adminToken });
+    assert.equal(statusResult.response.status, 200);
+  }
+  const validPinAfterStatusChecks = await request('/auth/menu-pin/verify', {
+    method: 'POST',
+    token: adminToken,
+    body: { pin: '5937' },
+  });
+  assert.equal(validPinAfterStatusChecks.response.status, 200);
+
+  for (let attempt = 0; attempt < 9; attempt += 1) {
+    const anotherWrongPin = await request('/auth/menu-pin/verify', {
+      method: 'POST',
+      token: adminToken,
+      body: { pin: '0000' },
+    });
+    assert.equal(anotherWrongPin.response.status, 401);
+    assert.equal(anotherWrongPin.data.error, 'PIN salah');
+  }
+  const rateLimitedPin = await request('/auth/menu-pin/verify', {
+    method: 'POST',
+    token: adminToken,
+    body: { pin: '0000' },
+  });
+  assert.equal(rateLimitedPin.response.status, 429);
+  assert.match(rateLimitedPin.data.error, /Terlalu banyak percobaan PIN/);
+
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const invalidLogin = await request('/auth/login', {
+      method: 'POST',
+      body: { username: 'unknown-user', password: 'wrong-password' },
+    });
+    assert.equal(invalidLogin.response.status, 401);
+  }
+  const rateLimitedLogin = await request('/auth/login', {
+    method: 'POST',
+    body: { username: 'unknown-user', password: 'wrong-password' },
+  });
+  assert.equal(rateLimitedLogin.response.status, 429);
+  assert.match(rateLimitedLogin.data.error, /Terlalu banyak percobaan masuk/);
+});

@@ -1,0 +1,28 @@
+{
+  "name": "absensi-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "REST API for the semi-online attendance system",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test",
+    "db:init": "node scripts/init-db.js",
+    "user:create": "node scripts/create-user.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.1.0",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "mysql2": "^3.14.4",
+    "zod": "^4.1.5"
+  }
+}
