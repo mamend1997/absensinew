@@ -4,6 +4,7 @@ import { db } from '../config/database.js';
 import { allowRoles, authenticate } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { HttpError } from '../utils/http-error.js';
+import { getSyncCursor } from '../utils/sync-cursor.js';
 
 const router = Router();
 router.use(authenticate);
@@ -30,9 +31,36 @@ function withSeconds(value) {
   return value.length === 5 ? `${value}:00` : value;
 }
 
+function timestampValue(value) {
+  if (value instanceof Date) return value.getTime();
+  const timestamp = String(value);
+  return new Date(timestamp.includes('T') ? timestamp : `${timestamp.replace(' ', 'T')}Z`).getTime();
+}
+
 router.get('/', asyncHandler(async (request, response) => {
+  const syncCursor = await getSyncCursor();
   const rows = await db.query('SELECT * FROM operational_settings WHERE id = 1');
   if (!rows[0]) throw new HttpError(500, 'Pengaturan operasional belum diinisialisasi');
+  const participantUpdates = await db.query(
+    'SELECT MAX(updated_at) AS updated_at FROM participants',
+  );
+  const effectiveUpdatedAt = [
+    rows[0].updated_at,
+    participantUpdates[0]?.updated_at,
+  ]
+    .filter(Boolean)
+    .reduce((latest, value) =>
+      timestampValue(value) > timestampValue(latest) ? value : latest,
+    );
+  if (request.query.updated_since !== undefined) {
+    const updatedSince = new Date(String(request.query.updated_since));
+    if (Number.isNaN(updatedSince.valueOf())) {
+      throw new HttpError(400, 'updated_since harus berupa tanggal yang valid');
+    }
+    if (timestampValue(effectiveUpdatedAt) < updatedSince.valueOf()) {
+      return response.json({ settings: null, unchanged: true, sync_cursor: syncCursor });
+    }
+  }
   const [weeklySchedules, participantOverrides] = await Promise.all([
     db.query(
       `SELECT weekday, is_working_day, check_in_deadline,
@@ -59,6 +87,7 @@ router.get('/', asyncHandler(async (request, response) => {
       ),
   ]);
   response.json({
+    sync_cursor: syncCursor,
     settings: {
       ...rows[0],
       weekly_schedules: weeklySchedules,

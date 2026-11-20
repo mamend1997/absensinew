@@ -13,6 +13,12 @@ try {
       'UPDATE weekly_operational_schedules SET is_working_day = 0 WHERE weekday IN (0, 6)',
     );
   }
+  if (
+    await db.hasColumn('participants', 'id') &&
+    !(await db.hasColumn('participants', 'guardian_phone'))
+  ) {
+    await db.addColumn('participants', 'guardian_phone VARCHAR(32) NULL');
+  }
 
   await db.initializeSchema();
 

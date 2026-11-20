@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS participants (
     full_name TEXT NOT NULL,
     classroom_id INTEGER NOT NULL REFERENCES classrooms(id),
     qr_code TEXT NOT NULL UNIQUE,
+    guardian_phone TEXT,
     is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -113,6 +114,24 @@ CREATE INDEX IF NOT EXISTS idx_attendance_date_class
     ON attendance_logs (attendance_date, classroom_name_snapshot);
 CREATE INDEX IF NOT EXISTS idx_attendance_date_status
     ON attendance_logs (attendance_date, attendance_status);
+
+CREATE TABLE IF NOT EXISTS attendance_notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id_unik TEXT NOT NULL,
+    recipient_phone TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    message TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'sent', 'failed')),
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    sent_at TEXT,
+    UNIQUE (id_unik, recipient_phone, event_type)
+);
+CREATE INDEX IF NOT EXISTS idx_attendance_notification_pending
+    ON attendance_notifications (status, next_attempt_at);
 
 INSERT OR IGNORE INTO units (name) VALUES ('Unit Contoh');
 INSERT OR IGNORE INTO classrooms (unit_id, name)

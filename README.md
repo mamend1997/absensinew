@@ -128,13 +128,28 @@ atau akun admin seed. `npm.cmd test` menjalankan tes API dengan SQLite sementara
 - `POST /api/absensi/sync-batch`, `GET /api/absensi/rekap`
 - Respons rekap mempunyai `summary` dan baris harian peserta, termasuk yang
   belum hadir. Filter menggunakan `start_date`/`end_date` atau `month`/`year`,
-  `classroom_id`, `unit_id`, dan `status`. Maksimum rentang 31 hari per request.
+  `classroom_id`, `unit_id`, dan `status`. Maksimum rentang 366 hari dengan
+  batas hasil 50.000 peserta-hari per request.
 
 Semua endpoint kecuali health check dan login meminta header `Authorization:
 Bearer <token>`. Operator dibatasi pada kelas yang terhubung dengan akunnya.
 Pembatasan percobaan masuk berlaku hanya pada endpoint login, sedangkan
 percobaan PIN memiliki batas tersendiri; pemeriksaan status PIN tidak memakai
 batas percobaan yang sama.
+
+Sinkronisasi master peserta dan pengaturan mengembalikan `sync_cursor`; kirim
+cursor sebagai `updated_since` untuk mengambil delta. Peserta nonaktif dan
+perpindahan kelas ditangani sebagai penghapusan lokal tanpa membagikan identitas
+peserta di luar kelas Operator.
+
+Notifikasi hanya dibuat untuk absensi baru setelah record tersimpan dalam
+transaksi. Nomor wali diatur melalui `guardian_phone` pada master peserta; nomor
+Admin diatur melalui `NOTIFICATION_ADMIN_PHONE`. Untuk mengaktifkan gateway,
+atur `WHATSAPP_GATEWAY_URL` dan rahasia `WHATSAPP_GATEWAY_TOKEN` bersama-sama
+pada environment backend. Backend mengirim `POST` ber-header
+`Authorization: Bearer <token>` dan body `{ "to", "message", "event" }` melalui
+outbox dengan retry. `NOTIFICATION_LATE_MINUTES=0` mengirim notifikasi untuk
+setiap status terlambat. Jangan simpan token gateway di repository.
 
 ## Tahap 3: menjalankan web dan scanner
 
@@ -154,15 +169,19 @@ putus, pemindaian masih dapat mengenali peserta yang sudah tersimpan. Perangkat
 menyinkronkan batch (maksimal 100 record) saat koneksi tersedia, dan hanya
 `accepted_ids` yang menjadi `synced`.
 
-Dashboard menyediakan filter tanggal/bulan, unit/kelas/status, ringkasan hadir,
-terlambat dan total menit, pulang, serta belum hadir. Ekspor CSV memakai UTF-8
-BOM agar mudah dibuka di Excel; rekap memisahkan metode masuk dan pulang
-(`SCAN_QR` atau `MANUAL_INPUT`). Halaman Admin mengelola peserta, kelas, impor,
-tampilan/cetak QR, dan pengaturan operasional. Unduh template Excel dari halaman
-Peserta; kolom yang diisi adalah `full_name`, `unit_name`, `classroom_name`, dan
-`qr_code` (kode peserta internal dibuat otomatis). Impor juga menerima CSV
-dengan header `participant_code,full_name,classroom_id,qr_code`. Daftar peserta
-mendukung pilih semua dan hapus terpilih.
+Dashboard menyediakan rekap harian, rentang tanggal, dan bulanan dengan filter
+unit/kelas/status. Ekspor menghasilkan file Excel `.xlsx` berbentuk tabel;
+rekap harian dan rentang memuat waktu masuk/pulang dan menit terlambat,
+sedangkan rekap bulanan mengelompokkan Masuk/Keluar/Telat per hari serta total
+telat, hadir, dan tidak hadir. Cetak/Save as PDF hanya menampilkan tabel laporan;
+rekap bulanan dicetak per kelompok tujuh hari agar tetap terbaca. Tabel ringkasan
+layar menampilkan Masuk, Telat, dan Pulang tanpa kolom metode scan. Halaman Admin
+mengelola peserta, kelas, impor, tampilan/cetak QR, dan pengaturan operasional.
+Unduh template Excel dari halaman Peserta; kolom yang diisi adalah `full_name`,
+`unit_name`, `classroom_name`, dan `qr_code` (kode peserta internal dibuat
+otomatis). Impor juga menerima CSV dengan header
+`participant_code,full_name,classroom_id,qr_code`. Daftar peserta mendukung pilih
+semua dan hapus terpilih.
 
 Setelah login di layar lebar (900 px ke atas), Admin langsung melihat Rekap
 Absensi untuk pemantauan dari PC; di layar kecil dan untuk Operator, aplikasi
@@ -208,9 +227,12 @@ kredensial database di repo.
 
 Scanner memilih Masuk/Pulang berdasarkan riwayat scan hari itu; Pulang hanya
 tersedia setelah Masuk dan ketika jam pulang dimulai. Cooldown tiga detik
-mencegah QR yang sama terbaca berulang. Input manual tersedia dari menu hamburger
-setelah verifikasi PIN dan mencari peserta dari master lokal; laporan mencatat
-metode `MANUAL_INPUT`. Scanner juga memakai kamera belakang, bunyi notifikasi,
+menolak ulang event peserta yang sama, tetapi tidak menahan event Masuk/Pulang
+berbeda yang sah. Scanner menerima QR/barcode dari kamera dan scanner USB/
+Bluetooth mode keyboard wedge melalui bidang input berakhiran Enter. Input
+manual tersedia dari menu hamburger setelah verifikasi PIN dan mencari peserta
+dari master lokal; laporan mencatat metode `MANUAL_INPUT`. Scanner juga memakai
+kamera belakang, bunyi notifikasi,
 indikator jaringan, antrean pending, serta sinkronisasi otomatis saat jaringan
 kembali. Pada browser, kamera memakai ZXing; Android memakai scanner ML Kit native.
 TTS menggunakan bahasa

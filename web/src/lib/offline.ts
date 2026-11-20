@@ -20,6 +20,9 @@ interface AttendanceCache extends DBSchema {
 const DATABASE_NAME = 'ruang-hadir-local';
 const DATABASE_VERSION = 1;
 const SETTINGS_KEY = 'ruang_hadir_settings';
+const MASTER_SYNC_CURSOR_PREFIX = 'ruang_hadir_master_sync_cursor_';
+
+export type MasterDataType = 'participants' | 'settings';
 
 let databasePromise: Promise<IDBPDatabase<AttendanceCache>> | undefined;
 
@@ -53,6 +56,37 @@ export async function replaceParticipants(participants: Participant[]): Promise<
     }
   }
   await tx.done;
+}
+
+export async function mergeParticipantDelta(
+  participants: Participant[],
+  removedIds: string[] = [],
+): Promise<void> {
+  const db = await database();
+  const tx = db.transaction('participants', 'readwrite');
+  for (const participant of participants) {
+    const id = String(participant.id);
+    if (participant.is_active === true || participant.is_active === 1) {
+      await tx.store.put({ ...participant, id });
+    } else {
+      await tx.store.delete(id);
+    }
+  }
+  for (const id of removedIds) await tx.store.delete(id);
+  await tx.done;
+}
+
+export function getMasterSyncCursor(type: MasterDataType): string | null {
+  return localStorage.getItem(`${MASTER_SYNC_CURSOR_PREFIX}${type}`);
+}
+
+export function saveMasterSyncCursor(type: MasterDataType, cursor: string): void {
+  localStorage.setItem(`${MASTER_SYNC_CURSOR_PREFIX}${type}`, cursor);
+}
+
+export function clearMasterSyncCursors(): void {
+  localStorage.removeItem(`${MASTER_SYNC_CURSOR_PREFIX}participants`);
+  localStorage.removeItem(`${MASTER_SYNC_CURSOR_PREFIX}settings`);
 }
 
 export async function saveSettings(settings: Settings): Promise<void> {

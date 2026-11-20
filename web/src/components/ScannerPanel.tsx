@@ -1,7 +1,7 @@
 import { BarcodeFormat, BarcodeScanner, LensFacing } from '@capacitor-mlkit/barcode-scanning';
 import { Capacitor } from '@capacitor/core';
 import { BrowserMultiFormatReader, type IScannerControls } from '@zxing/browser';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { createQueuedScan } from '../lib/attendance';
 import { enqueueScan, getQueue } from '../lib/offline';
 import type { AttendanceMode, Participant, QueuedScan, Settings } from '../types';
@@ -131,6 +131,7 @@ export default function ScannerPanel({
   const [successPopupName, setSuccessPopupName] = useState<string | null>(null);
   const [manualEntryOpen, setManualEntryOpen] = useState(false);
   const [manualSearch, setManualSearch] = useState('');
+  const [scannerCode, setScannerCode] = useState('');
   const [now, setNow] = useState(() => new Date());
   const videoRef = useRef<HTMLVideoElement>(null);
   const readerRef = useRef(new BrowserMultiFormatReader());
@@ -138,7 +139,12 @@ export default function ScannerPanel({
   const scanCooldownTimerRef = useRef<number | undefined>(undefined);
   const scanLockedRef = useRef(false);
   const manualEntryOpenRef = useRef(false);
-  const lastDecodedRef = useRef<{ value: string; at: number } | null>(null);
+  const lastAcceptedEventRef = useRef<{
+    participantId: string;
+    eventType: QueuedScan['jenis_absen'];
+    at: number;
+  } | null>(null);
+  const scannerInputRef = useRef<HTMLInputElement>(null);
   const successPopupTimerRef = useRef<number | undefined>(undefined);
   const failureFeedbackTimerRef = useRef<number | undefined>(undefined);
 
@@ -207,14 +213,6 @@ export default function ScannerPanel({
       if (!settings) throw new Error('Pengaturan belum tersimpan di perangkat.');
       const code = value.trim();
       const timestamp = new Date();
-      if (scanMethod === 'SCAN_QR') {
-        const lastDecoded = lastDecodedRef.current;
-        if (lastDecoded?.value === code && timestamp.getTime() - lastDecoded.at < 3000) {
-          lastDecodedRef.current = { value: code, at: timestamp.getTime() };
-          return;
-        }
-        lastDecodedRef.current = { value: code, at: timestamp.getTime() };
-      }
       const participant = selectedParticipant ?? participants.find(
         (item) => item.qr_code.trim() === code &&
           (item.is_active === true || item.is_active === 1),
@@ -233,7 +231,20 @@ export default function ScannerPanel({
         localHistory,
         scanMethod,
       );
+      const lastAcceptedEvent = lastAcceptedEventRef.current;
+      if (
+        lastAcceptedEvent?.participantId === String(participant.id) &&
+        lastAcceptedEvent.eventType === scan.jenis_absen &&
+        timestamp.getTime() - lastAcceptedEvent.at < 3000
+      ) {
+        return;
+      }
       await enqueueScan(scan);
+      lastAcceptedEventRef.current = {
+        participantId: String(participant.id),
+        eventType: scan.jenis_absen,
+        at: timestamp.getTime(),
+      };
       await onQueueChanged();
       await refreshHistory();
       setSuccessPopupName(participant.full_name);
@@ -293,6 +304,16 @@ export default function ScannerPanel({
     closeManualEntry();
     scanLockedRef.current = true;
     void onDecoded(participant.qr_code, 'MANUAL_INPUT', participant);
+  }
+
+  function submitScannerCode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const code = scannerCode.trim();
+    if (!code || scanLockedRef.current) return;
+    setScannerCode('');
+    scanLockedRef.current = true;
+    void onDecoded(code);
+    scannerInputRef.current?.focus();
   }
 
   useEffect(() => {
@@ -448,6 +469,26 @@ export default function ScannerPanel({
           )}
         </div>
       </div>
+
+      <form className="scanner-wedge-form" onSubmit={submitScannerCode}>
+        <label htmlFor="scanner-wedge-code">Scanner barcode USB / Bluetooth</label>
+        <div className="scanner-wedge-controls">
+          <input
+            ref={scannerInputRef}
+            id="scanner-wedge-code"
+            autoFocus
+            inputMode="none"
+            autoComplete="off"
+            value={scannerCode}
+            onChange={(event) => setScannerCode(event.target.value)}
+            placeholder="Fokuskan bidang ini, lalu scan kartu"
+          />
+          <button className="button secondary" type="submit" disabled={!scannerCode.trim()}>
+            Proses kode
+          </button>
+        </div>
+        <small>Scanner mode keyboard wedge mengirim kode lalu menekan Enter.</small>
+      </form>
 
       <section className="scan-history-card">
         <div className="scan-history-heading">

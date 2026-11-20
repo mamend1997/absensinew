@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS participants (
     full_name VARCHAR(150) NOT NULL,
     classroom_id BIGINT UNSIGNED NOT NULL,
     qr_code VARCHAR(160) NOT NULL,
+    guardian_phone VARCHAR(32) NULL,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -133,6 +134,23 @@ CREATE TABLE IF NOT EXISTS attendance_logs (
          AND ((attendance_status = 'hadir' AND late_minutes = 0)
               OR (attendance_status = 'terlambat' AND late_minutes > 0)))
     )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS attendance_notifications (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    id_unik CHAR(36) NOT NULL,
+    recipient_phone VARCHAR(32) NOT NULL,
+    event_type VARCHAR(32) NOT NULL,
+    message TEXT NOT NULL,
+    status ENUM('pending', 'sent', 'failed') NOT NULL DEFAULT 'pending',
+    attempt_count SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+    next_attempt_at BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    last_error VARCHAR(500) NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    sent_at TIMESTAMP NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_attendance_notification_once (id_unik, recipient_phone, event_type),
+    KEY idx_attendance_notification_pending (status, next_attempt_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Seed referensi awal. Tidak ada akun dengan password default.

@@ -5,6 +5,7 @@ import { db } from '../config/database.js';
 import { allowRoles, authenticate } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { HttpError } from '../utils/http-error.js';
+import { getSyncCursor } from '../utils/sync-cursor.js';
 
 const router = Router();
 router.use(authenticate);
@@ -14,6 +15,10 @@ const participantSchema = z.object({
   full_name: z.string().trim().min(1).max(150),
   classroom_id: z.coerce.number().int().positive(),
   qr_code: z.string().trim().min(1).max(160),
+  guardian_phone: z.preprocess(
+    (value) => value === '' ? null : value,
+    z.string().trim().max(32).nullable().optional(),
+  ),
 });
 const importParticipantSchema = z.object({
   participant_code: z.string().trim().min(1).max(60).optional(),
@@ -22,6 +27,10 @@ const importParticipantSchema = z.object({
   classroom_name: z.string().trim().min(1).max(100).optional(),
   unit_name: z.string().trim().min(1).max(100).optional(),
   qr_code: z.string().trim().min(1).max(160).optional(),
+  guardian_phone: z.preprocess(
+    (value) => value === '' ? null : value,
+    z.string().trim().max(32).nullable().optional(),
+  ),
 }).superRefine((row, context) => {
   if (!row.classroom_id && !(row.classroom_name && row.unit_name)) {
     context.addIssue({
@@ -42,7 +51,7 @@ const importParticipantSchema = z.object({
 const selectParticipants = `
   SELECT p.id, p.participant_code, p.full_name, p.classroom_id,
          c.name AS classroom_name, u.id AS unit_id, u.name AS unit_name,
-         p.qr_code, p.is_active, p.updated_at
+         p.qr_code, p.guardian_phone, p.is_active, p.updated_at
   FROM participants p
   JOIN classrooms c ON c.id = p.classroom_id
   JOIN units u ON u.id = c.unit_id
@@ -52,36 +61,56 @@ router.get('/', asyncHandler(async (request, response) => {
   const includeInactive =
     (request.query.include_inactive === 'true' && request.user.role === 'admin') ||
     request.query.updated_since !== undefined;
+  const syncCursor = await getSyncCursor();
   const conditions = [];
   const params = [];
+  let updatedSinceSql = null;
   if (!includeInactive) conditions.push('p.is_active = 1');
   if (request.user.role === 'operator') {
     conditions.push('p.classroom_id = ?');
     params.push(request.user.classroomId);
   }
-  if (request.query.updated_since) {
+  if (request.query.updated_since !== undefined) {
     const updatedSince = new Date(String(request.query.updated_since));
     if (Number.isNaN(updatedSince.valueOf())) {
       throw new HttpError(400, 'updated_since harus berupa tanggal yang valid');
     }
     conditions.push('p.updated_at >= ?');
-    params.push(updatedSince.toISOString().slice(0, 19).replace('T', ' '));
+    updatedSinceSql = updatedSince.toISOString().slice(0, 19).replace('T', ' ');
+    params.push(updatedSinceSql);
   }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const participants = await db.query(
     `${selectParticipants} ${where} ORDER BY p.participant_code`,
     params,
   );
-  response.json({ participants });
+  const removedIds = request.user.role === 'operator' && updatedSinceSql
+    ? await db.query(
+      `SELECT id FROM participants
+       WHERE classroom_id <> ? AND updated_at >= ?`,
+      [request.user.classroomId, updatedSinceSql],
+    )
+    : [];
+  response.json({
+    participants,
+    removed_ids: removedIds.map((participant) => String(participant.id)),
+    sync_cursor: syncCursor,
+  });
 }));
 
 router.post('/', allowRoles('admin'), asyncHandler(async (request, response) => {
   const input = participantSchema.parse(request.body);
   const result = await db.query(
     `INSERT INTO participants
-      (participant_code, full_name, classroom_id, qr_code)
-     VALUES (?, ?, ?, ?)`,
-    [input.participant_code, input.full_name, input.classroom_id, input.qr_code],
+      (participant_code, full_name, classroom_id, qr_code, guardian_phone)
+     VALUES (?, ?, ?, ?, ?)`,
+    [
+      input.participant_code,
+      input.full_name,
+      input.classroom_id,
+      input.qr_code,
+      input.guardian_phone ?? null,
+    ],
   );
   response.status(201).json({ id: String(result.lastInsertRowid ?? result.insertId) });
 }));
@@ -89,11 +118,22 @@ router.post('/', allowRoles('admin'), asyncHandler(async (request, response) => 
 router.put('/:id', allowRoles('admin'), asyncHandler(async (request, response) => {
   const id = z.coerce.number().int().positive().parse(request.params.id);
   const input = participantSchema.parse(request.body);
+  const hasGuardianPhone = Object.hasOwn(request.body, 'guardian_phone');
   const result = await db.query(
     `UPDATE participants SET participant_code = ?, full_name = ?,
-      classroom_id = ?, qr_code = ?, updated_at = CURRENT_TIMESTAMP
+      classroom_id = ?, qr_code = ?,
+      guardian_phone = CASE WHEN ? = 1 THEN ? ELSE guardian_phone END,
+      updated_at = CURRENT_TIMESTAMP
      WHERE id = ? AND is_active = 1`,
-    [input.participant_code, input.full_name, input.classroom_id, input.qr_code, id],
+    [
+      input.participant_code,
+      input.full_name,
+      input.classroom_id,
+      input.qr_code,
+      hasGuardianPhone ? 1 : 0,
+      input.guardian_phone ?? null,
+      id,
+    ],
   );
   if (!result.affectedRows && !result.changes) throw new HttpError(404, 'Peserta tidak ditemukan');
   response.json({ updated: true });
@@ -146,6 +186,7 @@ router.post('/import', allowRoles('admin'), asyncHandler(async (request, respons
         classroomId = classrooms[0].id;
       }
       const qrCode = participant.qr_code ?? participant.participant_code;
+      const hasGuardianPhone = Object.hasOwn(participant, 'guardian_phone');
       const existing = participant.participant_code
         ? await transaction.query(
           'SELECT id FROM participants WHERE participant_code = ?',
@@ -158,24 +199,28 @@ router.post('/import', allowRoles('admin'), asyncHandler(async (request, respons
       if (existing[0]) {
         await transaction.query(
           `UPDATE participants SET full_name = ?, classroom_id = ?, qr_code = ?,
+            guardian_phone = CASE WHEN ? = 1 THEN ? ELSE guardian_phone END,
             is_active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
           [
             participant.full_name,
             classroomId,
             qrCode,
+            hasGuardianPhone ? 1 : 0,
+            participant.guardian_phone ?? null,
             existing[0].id,
           ],
         );
       } else {
         await transaction.query(
           `INSERT INTO participants
-            (participant_code, full_name, classroom_id, qr_code)
-           VALUES (?, ?, ?, ?)`,
+            (participant_code, full_name, classroom_id, qr_code, guardian_phone)
+           VALUES (?, ?, ?, ?, ?)`,
           [
             participant.participant_code ?? `P-${randomUUID()}`,
             participant.full_name,
             classroomId,
             qrCode,
+            participant.guardian_phone ?? null,
           ],
         );
       }

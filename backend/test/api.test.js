@@ -11,6 +11,9 @@ process.env.SQLITE_PATH = join(tempDir, 'test.sqlite');
 process.env.JWT_SECRET = 'test-secret-for-absensi-api-at-least-32-characters';
 process.env.NODE_ENV = 'test';
 process.env.WEB_ORIGIN = 'http://localhost:5173';
+process.env.NOTIFICATION_ADMIN_PHONE = '08123456789';
+process.env.WHATSAPP_GATEWAY_URL = '';
+process.env.WHATSAPP_GATEWAY_TOKEN = '';
 
 const [{ app }, { db }] = await Promise.all([
   import('../src/app.js'),
@@ -33,6 +36,8 @@ await db.query(
    VALUES (?, ?, ?, ?, ?)`,
   ['operator-test', 'Operator Test', passwordHash, 'operator', classroom.id],
 );
+await db.query("UPDATE operational_settings SET updated_at = '2000-01-01 00:00:00' WHERE id = 1");
+await db.query("UPDATE participants SET updated_at = '2000-01-01 00:00:00'");
 
 const server = app.listen(0, '127.0.0.1');
 await new Promise((resolveListen) => server.once('listening', resolveListen));
@@ -145,6 +150,14 @@ test('auth, role permissions, idempotent batch sync, and monthly report', async 
   const participants = await request('/peserta', { token: adminToken });
   assert.equal(participants.data.participants.length, 2);
   assert.equal(participants.data.participants[0].classroom_name, 'Kelas 1');
+  assert.ok(participants.data.sync_cursor);
+  const operationalSettings = await request('/pengaturan', { token: adminToken });
+  assert.ok(operationalSettings.data.sync_cursor);
+  const unchangedSettings = await request(
+    `/pengaturan?updated_since=${encodeURIComponent(operationalSettings.data.sync_cursor)}`,
+    { token: adminToken },
+  );
+  assert.equal(unchangedSettings.data.unchanged, true);
   const forbidden = await request('/peserta', {
     method: 'POST',
     token: operatorToken,
@@ -169,9 +182,25 @@ test('auth, role permissions, idempotent batch sync, and monthly report', async 
       full_name: 'Peserta Uji',
       classroom_id: classroom.id,
       qr_code: 'QR-TEST-001',
+      guardian_phone: '628123450001',
     },
   });
   assert.equal(createdParticipant.response.status, 201);
+  const participantDelta = await request(
+    `/peserta?updated_since=${encodeURIComponent(participants.data.sync_cursor)}`,
+    { token: adminToken },
+  );
+  assert.equal(
+    participantDelta.data.participants.find(
+      (item) => String(item.id) === createdParticipant.data.id,
+    ).guardian_phone,
+    '628123450001',
+  );
+  const changedSettings = await request(
+    `/pengaturan?updated_since=${encodeURIComponent(operationalSettings.data.sync_cursor)}`,
+    { token: adminToken },
+  );
+  assert.ok(changedSettings.data.settings);
   const updatedParticipant = await request(`/peserta/${createdParticipant.data.id}`, {
     method: 'PUT',
     token: adminToken,
@@ -183,6 +212,44 @@ test('auth, role permissions, idempotent batch sync, and monthly report', async 
     },
   });
   assert.equal(updatedParticipant.data.updated, true);
+  const participantAfterUpdate = await request('/peserta', { token: adminToken });
+  assert.equal(
+    participantAfterUpdate.data.participants.find(
+      (item) => String(item.id) === createdParticipant.data.id,
+    ).guardian_phone,
+    '628123450001',
+  );
+  const operatorSnapshot = await request('/peserta', { token: operatorToken });
+  assert.ok(operatorSnapshot.data.participants.some(
+    (item) => String(item.id) === createdParticipant.data.id,
+  ));
+  const transferClass = await request('/kelas', {
+    method: 'POST',
+    token: adminToken,
+    body: { name: 'Kelas Tujuan Uji', unit_id: classList.data.units[0].id },
+  });
+  const movedParticipant = await request(`/peserta/${createdParticipant.data.id}`, {
+    method: 'PUT',
+    token: adminToken,
+    body: {
+      participant_code: 'TEST-001',
+      full_name: 'Peserta Uji Diubah',
+      classroom_id: transferClass.data.id,
+      qr_code: 'QR-TEST-001',
+    },
+  });
+  assert.equal(movedParticipant.response.status, 200);
+  const operatorDelta = await request(
+    `/peserta?updated_since=${encodeURIComponent(operatorSnapshot.data.sync_cursor)}`,
+    { token: operatorToken },
+  );
+  assert.ok(operatorDelta.data.removed_ids.includes(createdParticipant.data.id));
+  assert.equal(
+    operatorDelta.data.participants.some(
+      (item) => String(item.id) === createdParticipant.data.id,
+    ),
+    false,
+  );
   const importedParticipants = await request('/peserta/import', {
     method: 'POST',
     token: adminToken,
@@ -193,6 +260,7 @@ test('auth, role permissions, idempotent batch sync, and monthly report', async 
           full_name: 'Peserta Hasil Impor',
           classroom_id: classroom.id,
           qr_code: 'QR-TEST-001',
+          guardian_phone: '628123450003',
         },
         {
           participant_code: 'TEST-002',
@@ -243,6 +311,13 @@ test('auth, role permissions, idempotent batch sync, and monthly report', async 
   });
   assert.deepEqual(sync.data.accepted_ids, [scan.id_unik]);
   assert.deepEqual(sync.data.rejected, []);
+  const queuedNotification = (await db.query(
+    'SELECT * FROM attendance_notifications WHERE id_unik = ?',
+    [scan.id_unik],
+  ))[0];
+  assert.equal(queuedNotification.recipient_phone, '628123456789');
+  assert.equal(queuedNotification.event_type, 'attendance.late');
+  assert.equal(queuedNotification.status, 'pending');
 
   const updatedSettings = await request('/pengaturan', {
     method: 'PUT',
@@ -410,6 +485,13 @@ test('auth, role permissions, idempotent batch sync, and monthly report', async 
   });
   assert.deepEqual(retry.data.accepted_ids, [scan.id_unik]);
   assert.equal(
+    (await db.query(
+      'SELECT COUNT(*) AS count FROM attendance_notifications WHERE id_unik = ?',
+      [scan.id_unik],
+    ))[0].count,
+    1,
+  );
+  assert.equal(
     (await db.query('SELECT COUNT(*) AS count FROM attendance_logs'))[0].count,
     5,
   );
@@ -459,6 +541,11 @@ test('auth, role permissions, idempotent batch sync, and monthly report', async 
   const report = await request('/absensi/rekap?month=11&year=2026', {
     token: adminToken,
   });
+  const extendedRangeReport = await request(
+    '/absensi/rekap?start_date=2026-10-20&end_date=2026-12-05',
+    { token: adminToken },
+  );
+  assert.equal(extendedRangeReport.response.status, 200);
   assert.equal(report.data.summary.terlambat, 2);
   assert.equal(report.data.summary.total_menit_terlambat, 10);
   assert.equal(report.data.summary.pulang, 2);

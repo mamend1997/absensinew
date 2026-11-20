@@ -7,12 +7,16 @@ import SettingsPanel from './components/SettingsPanel';
 import { api, ApiError, getToken, saveToken } from './lib/api';
 import {
   getParticipants,
+  getMasterSyncCursor,
   getPendingScans,
   getSettings,
   markScansSynced,
+  mergeParticipantDelta,
   pendingCount,
   replaceParticipants,
+  saveMasterSyncCursor,
   saveSettings,
+  clearMasterSyncCursors,
 } from './lib/offline';
 import type { Participant, QueuedScan, Settings, User } from './types';
 
@@ -77,9 +81,31 @@ export default function App() {
 
   const refreshMasterData = useCallback(async () => {
     if (!getToken()) return;
+    const localParticipants = await getParticipants();
+    const localSettings = getSettings();
+    const participantCursor = localParticipants.length
+      ? getMasterSyncCursor('participants')
+      : null;
+    const settingsCursor = localSettings
+      ? getMasterSyncCursor('settings')
+      : null;
+    const participantPath = participantCursor
+      ? `/peserta?updated_since=${encodeURIComponent(participantCursor)}`
+      : '/peserta';
+    const settingsPath = settingsCursor
+      ? `/pengaturan?updated_since=${encodeURIComponent(settingsCursor)}`
+      : '/pengaturan';
     const [participantResult, settingResult] = await Promise.all([
-      api<{ participants: Participant[] }>('/peserta'),
-      api<{ settings: Settings }>('/pengaturan'),
+      api<{
+        participants: Participant[];
+        removed_ids?: string[];
+        sync_cursor: string;
+      }>(participantPath),
+      api<{
+        settings: Settings | null;
+        unchanged?: boolean;
+        sync_cursor: string;
+      }>(settingsPath),
     ]);
     const normalizedParticipants = participantResult.participants.map((participant) => ({
       ...participant,
@@ -87,10 +113,35 @@ export default function App() {
       classroom_id: String(participant.classroom_id),
       unit_id: String(participant.unit_id),
     }));
-    await replaceParticipants(normalizedParticipants);
-    await saveSettings(settingResult.settings);
-    setParticipants(normalizedParticipants);
-    setSettings(settingResult.settings);
+    if (participantCursor) {
+      await mergeParticipantDelta(
+        normalizedParticipants,
+        participantResult.removed_ids ?? [],
+      );
+      setParticipants((current) => {
+        const merged = new Map(current.map((participant) => [participant.id, participant]));
+        for (const participant of normalizedParticipants) {
+          if (participant.is_active === true || participant.is_active === 1) {
+            merged.set(participant.id, participant);
+          } else {
+            merged.delete(participant.id);
+          }
+        }
+        for (const id of participantResult.removed_ids ?? []) merged.delete(id);
+        return [...merged.values()];
+      });
+    } else {
+      await replaceParticipants(normalizedParticipants);
+      setParticipants(normalizedParticipants.filter((participant) =>
+        participant.is_active === true || participant.is_active === 1,
+      ));
+    }
+    if (settingResult.settings) {
+      await saveSettings(settingResult.settings);
+      setSettings(settingResult.settings);
+    }
+    saveMasterSyncCursor('participants', participantResult.sync_cursor);
+    saveMasterSyncCursor('settings', settingResult.sync_cursor);
   }, []);
 
   const syncNow = useCallback(async () => {
@@ -211,6 +262,7 @@ export default function App() {
       } catch (error) {
         if (error instanceof ApiError && error.status === 401) {
           saveToken(null);
+          clearMasterSyncCursors();
           localStorage.removeItem('ruang_hadir_user');
           if (active) setUser(null);
         }
@@ -272,6 +324,7 @@ export default function App() {
   function logout() {
     setMenuOpen(false);
     saveToken(null);
+    clearMasterSyncCursors();
     localStorage.removeItem('ruang_hadir_user');
     setUser(null);
     setPage('scanner');
@@ -314,7 +367,9 @@ export default function App() {
             <span className="hamburger-icon" aria-hidden="true"><i /><i /><i /></span>
           </button>
         )}
-        {page === 'rekap' && user.role === 'admin' && <Dashboard participants={participants} />}
+        {page === 'rekap' && user.role === 'admin' && (
+          <Dashboard participants={participants} timeZone={settings?.timezone ?? 'Asia/Jakarta'} />
+        )}
         {page === 'scanner' && (
           <Suspense fallback={<div className="page-content muted">Memuat scanner…</div>}>
             <ScannerPanel

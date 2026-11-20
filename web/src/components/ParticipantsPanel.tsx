@@ -17,6 +17,7 @@ interface ParticipantForm {
   full_name: string;
   classroom_id: string;
   qr_code: string;
+  guardian_phone: string;
 }
 
 interface Classroom {
@@ -41,6 +42,7 @@ const emptyForm: ParticipantForm = {
   full_name: '',
   classroom_id: '',
   qr_code: '',
+  guardian_phone: '',
 };
 
 export default function ParticipantsPanel({
@@ -89,12 +91,16 @@ export default function ParticipantsPanel({
     return !query ||
       participant.full_name.toLocaleLowerCase().includes(query) ||
       participant.participant_code.toLocaleLowerCase().includes(query) ||
+      (participant.guardian_phone ?? '').toLocaleLowerCase().includes(query) ||
       participant.classroom_name.toLocaleLowerCase().includes(query);
   });
   const allVisibleSelected = visible.length > 0 &&
     visible.every((participant) => selectedIds.has(participant.id));
 
-  function updateForm(field: 'full_name' | 'classroom_id' | 'qr_code', value: string) {
+  function updateForm(
+    field: 'full_name' | 'classroom_id' | 'qr_code' | 'guardian_phone',
+    value: string,
+  ) {
     setForm((current) => ({
       ...current,
       [field]: value,
@@ -108,6 +114,7 @@ export default function ParticipantsPanel({
       full_name: participant.full_name,
       classroom_id: participant.classroom_id,
       qr_code: participant.qr_code,
+      guardian_phone: participant.guardian_phone ?? '',
     });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
@@ -233,10 +240,10 @@ export default function ParticipantsPanel({
       await writeXlsxFile([
         {
           sheet: 'Peserta',
-          columns: [{ width: 28 }, { width: 22 }, { width: 24 }, { width: 28 }],
+          columns: [{ width: 28 }, { width: 22 }, { width: 24 }, { width: 28 }, { width: 22 }],
           data: [
-            ['full_name', 'unit_name', 'classroom_name', 'qr_code'],
-            ['', '', '', ''],
+            ['full_name', 'unit_name', 'classroom_name', 'qr_code', 'guardian_phone'],
+            ['', '', '', '', ''],
           ],
         },
         {
@@ -256,6 +263,7 @@ export default function ParticipantsPanel({
             ['unit_name', 'Ya', 'Salin nama unit dari sheet Referensi Kelas.'],
             ['classroom_name', 'Ya', 'Salin nama kelas dari sheet Referensi Kelas.'],
             ['qr_code', 'Ya', 'Isi unik yang terkandung pada QR atau barcode peserta.'],
+            ['guardian_phone', 'Tidak', 'Nomor WhatsApp orang tua/wali dalam format internasional, misalnya 62812...'],
             ['', '', 'Jangan ubah nama kolom pada sheet Peserta.'],
           ],
         },
@@ -313,6 +321,7 @@ export default function ParticipantsPanel({
           classroom_name: String(row.classroom_name ?? '').trim() || undefined,
           unit_name: String(row.unit_name ?? '').trim() || undefined,
           qr_code: String(row.qr_code ?? '').trim() || participantCode || undefined,
+          guardian_phone: String(row.guardian_phone ?? '').trim() || undefined,
         };
       });
       if (records.some((row) =>
@@ -390,6 +399,16 @@ export default function ParticipantsPanel({
             Isi QR / barcode
             <input required value={form.qr_code} onChange={(event) => updateForm('qr_code', event.target.value)} placeholder="Nilai unik untuk dipindai" />
           </label>
+          <label>
+            Nomor WhatsApp orang tua / wali
+            <input
+              type="tel"
+              maxLength={32}
+              value={form.guardian_phone}
+              onChange={(event) => updateForm('guardian_phone', event.target.value)}
+              placeholder="Contoh: 62812…"
+            />
+          </label>
           <button className="button primary" disabled={busy || !classrooms.length}>
             {busy ? 'Menyimpan…' : editingId ? 'Simpan perubahan' : 'Simpan peserta'}
           </button>
@@ -438,7 +457,10 @@ export default function ParticipantsPanel({
                 <div className="avatar">{participant.full_name.slice(0, 1).toUpperCase()}</div>
                 <div className="participant-info">
                   <strong>{participant.full_name}</strong>
-                  <span>{participant.participant_code} · {participant.classroom_name}</span>
+                  <span>
+                    {participant.participant_code} · {participant.classroom_name}
+                    {participant.guardian_phone ? ` · Wali: ${participant.guardian_phone}` : ''}
+                  </span>
                 </div>
                 <div className="heading-actions no-print">
                   <button className="icon-button" title="Tampilkan QR" onClick={() => void showQr(participant.qr_code)}>QR</button>

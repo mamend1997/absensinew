@@ -17,6 +17,7 @@ export interface Participant {
   unit_id: string;
   unit_name: string;
   qr_code: string;
+  guardian_phone?: string | null;
   is_active: boolean | number;
   updated_at?: string;
 }

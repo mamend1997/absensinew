@@ -8,6 +8,7 @@ import {
   getOperationalSettings,
   insertAttendanceRecord,
 } from '../services/attendance-service.js';
+import { enqueueAttendanceNotifications } from '../services/notification-service.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { HttpError } from '../utils/http-error.js';
 import { addCalendarDays } from '../utils/time.js';
@@ -56,7 +57,7 @@ router.post('/sync-batch', asyncHandler(async (request, response) => {
 
       const participants = await transaction.query(
         `SELECT p.id, p.participant_code, p.full_name, p.classroom_id,
-                c.name AS classroom_name
+                c.name AS classroom_name, p.guardian_phone
          FROM participants p JOIN classrooms c ON c.id = p.classroom_id
          WHERE p.id = ? AND p.is_active = 1`,
         [input.id_peserta],
@@ -122,7 +123,18 @@ router.post('/sync-batch', asyncHandler(async (request, response) => {
         record,
         computed,
       });
-      if (result.accepted) acceptedIds.push(input.id_unik);
+      if (result.accepted) {
+        acceptedIds.push(input.id_unik);
+        if (!result.duplicate) {
+          await enqueueAttendanceNotifications({
+            transaction,
+            participant,
+            record,
+            computed,
+            settings,
+          });
+        }
+      }
       else rejected.push({ id_unik: input.id_unik, reason: result.reason });
     }
   });
@@ -160,7 +172,7 @@ router.get('/rekap', allowRoles('admin'), asyncHandler(async (request, response)
     (Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) /
       86400000 +
     1;
-  if (dayCount > 31) throw new HttpError(400, 'Rentang rekap maksimal 31 hari');
+  if (dayCount > 366) throw new HttpError(400, 'Rentang rekap maksimal 366 hari');
 
   const statusFilter = request.query.status
     ? z.enum(['hadir', 'terlambat', 'pulang', 'belum_hadir']).parse(request.query.status)
