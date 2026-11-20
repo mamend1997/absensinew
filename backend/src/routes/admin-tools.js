@@ -26,7 +26,7 @@ const tableColumns = {
   operational_settings: [
     'id', 'timezone', 'check_in_deadline', 'lateness_tolerance_minutes',
     'check_out_start', 'scan_welcome_message', 'scan_success_message',
-    'scan_failure_message', 'updated_by', 'updated_at',
+    'scan_failure_message', 'enable_external_scanner', 'updated_by', 'updated_at',
   ],
   weekly_operational_schedules: [
     'weekday', 'is_working_day', 'check_in_deadline',

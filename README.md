@@ -200,9 +200,10 @@ Unduh template Excel dari halaman Peserta; kolom yang diisi adalah `full_name`,
 `unit_name`, `classroom_name`, dan `qr_code` (kode peserta internal dibuat
 otomatis). Impor juga menerima CSV dengan header
 `participant_code,full_name,classroom_id,qr_code`. Daftar peserta mendukung pilih
-semua dan hapus terpilih. Pilih beberapa peserta untuk membuat kartu QR A4
-massal berisi nama, kode peserta, kelas, serta gambar dan teks QR; gunakan
-Cetak atau Simpan sebagai PDF dari dialog cetak.
+semua dan hapus terpilih. Pilih peserta untuk mencetak kartu QR A4 massal yang
+memuat nama, kode peserta, kelas, serta gambar dan teks QR, atau pilih **Cetak
+QR saja** untuk mencetak kode QR dengan nama tepat di bawah masing-masing kode.
+Keduanya dapat dicetak atau disimpan sebagai PDF.
 
 Setelah login di layar lebar (900 px ke atas), Admin langsung melihat Rekap
 Absensi untuk pemantauan dari PC; di layar kecil dan untuk Operator, aplikasi

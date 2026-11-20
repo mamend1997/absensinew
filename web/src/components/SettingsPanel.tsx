@@ -43,6 +43,7 @@ export default function SettingsPanel({
     scan_welcome_message: 'Selamat datang - mohon tertib saat melakukan absensi',
     scan_success_message: 'Terima kasih, {name}. Absensi {status} sudah dicatat.',
     scan_failure_message: 'Maaf, absensi {name} gagal. {reason}.',
+    enable_external_scanner: true,
   });
   const [weeklySchedules, setWeeklySchedules] = useState<WeeklySchedule[]>([]);
   const [participantOverrides, setParticipantOverrides] = useState<ParticipantOverrideDraft[]>([]);
@@ -61,6 +62,9 @@ export default function SettingsPanel({
         'Selamat datang - mohon tertib saat melakukan absensi',
       scan_success_message: settings.scan_success_message,
       scan_failure_message: settings.scan_failure_message,
+      enable_external_scanner: settings.enable_external_scanner == null
+        ? true
+        : Boolean(Number(settings.enable_external_scanner)),
     });
     setWeeklySchedules(settings.weekly_schedules?.map((schedule) => ({
       ...schedule,
@@ -213,6 +217,25 @@ export default function SettingsPanel({
                 </div>
               ))}
             </div>
+          </div>
+          <div className="speech-settings">
+            <div>
+              <h2>Scanner barcode USB / Bluetooth</h2>
+              <p className="muted">Tampilkan atau sembunyikan kolom input scanner eksternal di halaman scanner.</p>
+            </div>
+            <label className="settings-switch">
+              <span>{form.enable_external_scanner ? 'Aktif' : 'Nonaktif'}</span>
+              <input
+                type="checkbox"
+                role="switch"
+                checked={form.enable_external_scanner}
+                onChange={(event) => setForm((current) => ({
+                  ...current,
+                  enable_external_scanner: event.target.checked,
+                }))}
+                aria-label="Aktifkan scanner barcode USB atau Bluetooth"
+              />
+            </label>
           </div>
           <div className="speech-settings">
             <div>

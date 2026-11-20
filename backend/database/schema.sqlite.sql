@@ -61,6 +61,8 @@ CREATE TABLE IF NOT EXISTS operational_settings (
         DEFAULT 'Terima kasih, {name}. Absensi {status} sudah dicatat.',
     scan_failure_message TEXT NOT NULL
         DEFAULT 'Maaf, absensi {name} gagal. {reason}.',
+    enable_external_scanner INTEGER NOT NULL DEFAULT 1
+        CHECK (enable_external_scanner IN (0, 1)),
     updated_by INTEGER REFERENCES users(id),
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

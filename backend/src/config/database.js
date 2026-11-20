@@ -25,6 +25,27 @@ function createSqliteDatabase() {
   return {
     dialect: 'sqlite',
     query,
+    async ensureActivityLogSchema() {
+      connection.exec(`
+        CREATE TABLE IF NOT EXISTS activity_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+          actor_username TEXT NOT NULL,
+          actor_display_name TEXT NOT NULL,
+          action TEXT NOT NULL,
+          entity_type TEXT NOT NULL,
+          entity_id TEXT,
+          before_data TEXT,
+          after_data TEXT,
+          ip_address TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_activity_logs_created
+          ON activity_logs (created_at, id);
+        CREATE INDEX IF NOT EXISTS idx_activity_logs_entity
+          ON activity_logs (entity_type, entity_id, created_at);
+      `);
+    },
     async transaction(callback) {
       connection.exec('BEGIN IMMEDIATE');
       try {
@@ -75,6 +96,28 @@ function createMysqlDatabase() {
   return {
     dialect: 'mysql',
     query: (sql, params = []) => queryWith(pool, sql, params),
+    async ensureActivityLogSchema() {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS activity_logs (
+          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          actor_user_id BIGINT UNSIGNED NULL,
+          actor_username VARCHAR(80) NOT NULL,
+          actor_display_name VARCHAR(150) NOT NULL,
+          action VARCHAR(80) NOT NULL,
+          entity_type VARCHAR(80) NOT NULL,
+          entity_id VARCHAR(100) NULL,
+          before_data JSON NULL,
+          after_data JSON NULL,
+          ip_address VARCHAR(64) NULL,
+          created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+          PRIMARY KEY (id),
+          KEY idx_activity_logs_created (created_at, id),
+          KEY idx_activity_logs_entity (entity_type, entity_id, created_at),
+          CONSTRAINT fk_activity_logs_actor FOREIGN KEY (actor_user_id)
+            REFERENCES users (id) ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      `);
+    },
     async transaction(callback) {
       const connection = await pool.getConnection();
       try {

@@ -31,6 +31,7 @@ export interface Settings {
   scan_welcome_message: string;
   scan_success_message: string;
   scan_failure_message: string;
+  enable_external_scanner: boolean | number;
   weekly_schedules?: WeeklySchedule[];
   participant_overrides?: ParticipantDayOverride[];
   updated_at?: string;

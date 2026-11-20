@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS operational_settings (
         DEFAULT 'Terima kasih, {name}. Absensi {status} sudah dicatat.',
     scan_failure_message VARCHAR(255) NOT NULL
         DEFAULT 'Maaf, absensi {name} gagal. {reason}.',
+    enable_external_scanner BOOLEAN NOT NULL DEFAULT TRUE,
     updated_by BIGINT UNSIGNED NULL,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),

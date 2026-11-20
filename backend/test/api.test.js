@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import bcrypt from 'bcryptjs';
+import { ensureRuntimeMigrations } from '../src/config/runtime-migrations.js';
 
 const tempDir = await mkdtemp(join(tmpdir(), 'absensi-api-'));
 process.env.DB_DRIVER = 'sqlite';
@@ -20,6 +21,13 @@ const [{ app }, { db }] = await Promise.all([
   import('../src/config/database.js'),
 ]);
 await db.initializeSchema();
+
+test('startup migration recreates a missing audit table without replacing other data', async () => {
+  await db.query('DROP TABLE activity_logs');
+  await ensureRuntimeMigrations(db);
+  const rows = await db.query('SELECT COUNT(*) AS count FROM activity_logs');
+  assert.equal(Number(rows[0].count), 0);
+});
 
 const passwordHash = await bcrypt.hash('test-password-2026', 4);
 const classroom = (await db.query(
@@ -330,9 +338,11 @@ test('auth, role permissions, idempotent batch sync, and monthly report', async 
       scan_welcome_message: 'Selamat datang - mohon tertib saat melakukan absensi',
       scan_success_message: 'Terima kasih, {name}. Absensi {status} sudah dicatat.',
       scan_failure_message: 'Maaf, absensi {name} gagal. {reason}.',
+      enable_external_scanner: false,
     },
   });
   assert.equal(updatedSettings.response.status, 200);
+  assert.equal(Number(updatedSettings.data.settings.enable_external_scanner), 0);
   assert.equal(updatedSettings.data.settings.lateness_tolerance_minutes, 5);
   assert.equal(Number(updatedSettings.data.settings.weekly_schedules[0].is_working_day), 0);
   assert.equal(Number(updatedSettings.data.settings.weekly_schedules[1].is_working_day), 1);

@@ -46,6 +46,8 @@ interface PrintableQrCard {
   image: string;
 }
 
+type MassQrPrintMode = 'card' | 'qr-only';
+
 const emptyForm: ParticipantForm = {
   participant_code: '',
   full_name: '',
@@ -64,6 +66,7 @@ export default function ParticipantsPanel({
   const [busy, setBusy] = useState(false);
   const [qrPreview, setQrPreview] = useState<{ value: string; image: string } | null>(null);
   const [massQrCards, setMassQrCards] = useState<PrintableQrCard[] | null>(null);
+  const [massQrPrintMode, setMassQrPrintMode] = useState<MassQrPrintMode>('card');
   const [printingSelected, setPrintingSelected] = useState(false);
   const [search, setSearch] = useState('');
   const [classrooms, setClassrooms] = useState<Classroom[]>([]);
@@ -299,7 +302,7 @@ export default function ParticipantsPanel({
     }
   }
 
-  async function printSelectedQr() {
+  async function printSelectedQr(mode: MassQrPrintMode) {
     const selected = participants.filter((participant) => selectedIds.has(participant.id));
     if (!selected.length) return;
     setPrintingSelected(true);
@@ -318,6 +321,7 @@ export default function ParticipantsPanel({
         }),
       })));
       setQrPreview(null);
+      setMassQrPrintMode(mode);
       setMassQrCards(cards);
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Kode QR massal gagal dibuat.', 'error');
@@ -474,9 +478,17 @@ export default function ParticipantsPanel({
                   type="button"
                   className="button secondary"
                   disabled={printingSelected}
-                  onClick={() => void printSelectedQr()}
+                  onClick={() => void printSelectedQr('card')}
                 >
-                  {printingSelected ? 'Menyiapkan QR…' : `Cetak QR terpilih (${selectedIds.size})`}
+                  {printingSelected ? 'Menyiapkan…' : `Cetak kartu QR (${selectedIds.size})`}
+                </button>
+                <button
+                  type="button"
+                  className="button secondary"
+                  disabled={printingSelected}
+                  onClick={() => void printSelectedQr('qr-only')}
+                >
+                  {printingSelected ? 'Menyiapkan…' : `Cetak QR saja (${selectedIds.size})`}
                 </button>
                 <button
                   type="button"
@@ -604,15 +616,15 @@ export default function ParticipantsPanel({
           }}
         >
           <section
-            className="mass-qr-modal"
+            className={`mass-qr-modal${massQrPrintMode === 'qr-only' ? ' qr-only-modal' : ''}`}
             role="dialog"
             aria-modal="true"
-            aria-label={`Cetak ${massQrCards.length} kartu QR peserta`}
+            aria-label={`Cetak ${massQrCards.length} ${massQrPrintMode === 'qr-only' ? 'QR' : 'kartu QR'} peserta`}
           >
             <div className="mass-qr-toolbar no-print">
               <div>
-                <p className="eyebrow">KARTU PESERTA</p>
-                <strong>{massQrCards.length} kartu QR siap dicetak</strong>
+                <p className="eyebrow">{massQrPrintMode === 'qr-only' ? 'QR SAJA' : 'KARTU PESERTA'}</p>
+                <strong>{massQrCards.length} {massQrPrintMode === 'qr-only' ? 'QR' : 'kartu QR'} siap dicetak</strong>
                 <small>Layout A4; pilih cetak atau simpan sebagai PDF.</small>
               </div>
               <div className="heading-actions">
@@ -620,17 +632,24 @@ export default function ParticipantsPanel({
                 <button className="button secondary" onClick={() => setMassQrCards(null)}>Tutup</button>
               </div>
             </div>
-            <div className="qr-card-grid">
+            <div className={massQrPrintMode === 'qr-only' ? 'qr-only-grid' : 'qr-card-grid'}>
               {massQrCards.map((card) => (
-                <article className="qr-id-card" key={card.id}>
-                  <img src={card.image} alt={`QR ${card.name}`} />
-                  <div className="qr-id-card-copy">
+                massQrPrintMode === 'qr-only' ? (
+                  <article className="qr-only-item" key={card.id}>
+                    <img src={card.image} alt={`QR ${card.name}`} />
                     <strong>{card.name}</strong>
-                    <span>ID: {card.participantCode}</span>
-                    <small>{card.classroom}</small>
-                    <code>{card.qrCode}</code>
-                  </div>
-                </article>
+                  </article>
+                ) : (
+                  <article className="qr-id-card" key={card.id}>
+                    <img src={card.image} alt={`QR ${card.name}`} />
+                    <div className="qr-id-card-copy">
+                      <strong>{card.name}</strong>
+                      <span>ID: {card.participantCode}</span>
+                      <small>{card.classroom}</small>
+                      <code>{card.qrCode}</code>
+                    </div>
+                  </article>
+                )
               ))}
             </div>
           </section>

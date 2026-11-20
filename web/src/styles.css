@@ -433,10 +433,17 @@ td small { margin-top: 3px; font-size: 9px; }
 .qr-id-card-copy strong { overflow-wrap: anywhere; color: #173a34; font-size: 11px; }
 .qr-id-card-copy span, .qr-id-card-copy small, .qr-id-card-copy code { overflow-wrap: anywhere; color: #384b45; font-size: 9px; }
 .qr-id-card-copy code { font-family: inherit; }
+.qr-only-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.qr-only-item { display: grid; min-width: 0; justify-items: center; align-content: start; gap: 7px; padding: 8px; color: var(--text-strong); text-align: center; }
+.qr-only-item > img { width: 150px; height: 150px; max-width: 100%; object-fit: contain; }
+.qr-only-item > strong { max-width: 100%; overflow-wrap: anywhere; font-size: 12px; }
 .modal-close { position: absolute; top: 8px; right: 12px; border: 0; background: transparent; color: var(--text-secondary); font-size: 24px; }
 
 .settings-form { max-width: 780px; }
 .settings-form > label { max-width: 330px; }
+.settings-switch { display: flex; max-width: 330px; min-height: 42px; align-items: center; justify-content: space-between; gap: 16px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); padding: 8px 11px; }
+.settings-switch > span { color: var(--text-strong); font-size: 11px; font-weight: 700; }
+.settings-switch input { width: 40px; min-height: 22px; accent-color: var(--green); }
 .settings-time-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
 .settings-time-grid label small { line-height: 1.5; font-weight: 400; }
 .settings-schedule-sections { display: grid; gap: 20px; }
@@ -527,7 +534,8 @@ td small { margin-top: 3px; font-size: 9px; }
   height: 100vh;
   height: 100dvh;
   min-height: 0;
-  max-width: 860px;
+  width: 100%;
+  max-width: none;
   flex-direction: column;
   overflow: hidden;
   padding: 22px 24px 34px;
@@ -842,6 +850,8 @@ body.barcode-scanner-active .scan-page-content .manual-attendance-backdrop { vis
   .qr-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .qr-id-card { min-height: 185px; padding: 8px; }
   .qr-id-card > img { width: 116px; height: 116px; }
+  .qr-only-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .qr-only-item > img { width: 120px; height: 120px; }
 }
 @media (max-width: 560px) {
   .side-nav { display: block; padding: 9px 10px 7px; }
@@ -968,11 +978,17 @@ body.barcode-scanner-active .scan-page-content .manual-attendance-backdrop { vis
   body.print-qr .mass-qr-backdrop { position: absolute; inset: 0; display: block; background: #fff; padding: 0; }
   body.print-qr .mass-qr-modal, body.print-qr .mass-qr-modal * { visibility: visible !important; }
   body.print-qr .mass-qr-modal { page: qr-cards; display: block; width: auto; max-height: none; overflow: visible; border: 0; border-radius: 0; padding: 0; box-shadow: none; }
+  body.print-qr .mass-qr-modal.qr-only-modal { page: qr-only; }
   body.print-qr .mass-qr-toolbar { display: none !important; }
   body.print-qr .qr-card-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5mm; }
   body.print-qr .qr-id-card { min-height: 76mm; break-inside: avoid; page-break-inside: avoid; border: 1px solid #777; border-radius: 2mm; padding: 4mm; }
   body.print-qr .qr-id-card > img { width: 39mm; height: 39mm; }
   body.print-qr .qr-id-card-copy strong { color: #111; font-size: 10pt; }
   body.print-qr .qr-id-card-copy span, body.print-qr .qr-id-card-copy small, body.print-qr .qr-id-card-copy code { color: #222; font-size: 8pt; }
+  body.print-qr .qr-only-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 3mm; }
+  body.print-qr .qr-only-item { break-inside: avoid; page-break-inside: avoid; gap: 2mm; padding: 1mm; color: #111; }
+  body.print-qr .qr-only-item > img { width: 32mm; height: 32mm; }
+  body.print-qr .qr-only-item > strong { color: #111; font-size: 8.5pt; }
   @page qr-cards { size: A4 portrait; margin: 8mm; }
+  @page qr-only { size: A4 portrait; margin: 8mm; }
 }

@@ -28,6 +28,16 @@ type ThemeMode = 'green' | 'orange' | 'white';
 
 const THEME_STORAGE_KEY = 'ruang_hadir_theme';
 
+function masterDataFailureMessage(error: unknown): string {
+  if (error instanceof ApiError && error.status > 0) {
+    return `Server merespons HTTP ${error.status}; memakai cache lokal. ${error.message}`;
+  }
+  if (error instanceof Error) {
+    return `Server tidak dapat dijangkau; memakai cache lokal. ${error.message}`;
+  }
+  return 'Server tidak dapat dijangkau; memakai cache lokal.';
+}
+
 function savedTheme(): ThemeMode {
   const value = localStorage.getItem(THEME_STORAGE_KEY);
   return value === 'orange' || value === 'white' ? value : 'green';
@@ -279,11 +289,8 @@ export default function App() {
     const handleOnline = () => {
       setOnline(true);
       void refreshMasterData().catch((error: unknown) => {
-          if (active) showToast(
-            error instanceof Error ? `Server belum dapat dijangkau: ${error.message}` : 'Server belum dapat dijangkau.',
-            'error',
-          );
-        });
+        if (active) showToast(masterDataFailureMessage(error), 'error');
+      });
       void syncNow();
     };
     const handleOffline = () => setOnline(false);
@@ -291,15 +298,8 @@ export default function App() {
     window.addEventListener('offline', handleOffline);
     if (navigator.onLine) {
       void refreshMasterData().catch((error: unknown) => {
-          if (active) {
-            showToast(
-              error instanceof Error
-                ? `Server tidak dapat dijangkau; memakai cache lokal. ${error.message}`
-                : 'Server tidak dapat dijangkau; memakai cache lokal.',
-              'error',
-            );
-          }
-        });
+        if (active) showToast(masterDataFailureMessage(error), 'error');
+      });
       void syncNow();
     }
     return () => {
@@ -313,12 +313,7 @@ export default function App() {
     setUser(authenticatedUser);
     setPage(defaultPage(authenticatedUser.role));
     void refreshMasterData().catch((error: unknown) => {
-      showToast(
-        error instanceof Error
-          ? `Mode offline aktif; data yang tersedia berasal dari cache. ${error.message}`
-          : 'Mode offline aktif; memakai cache lokal.',
-        'error',
-      );
+      showToast(masterDataFailureMessage(error), 'error');
     }).then(() => syncNow());
   }
 

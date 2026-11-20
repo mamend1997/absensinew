@@ -1,0 +1,13 @@
+{
+  "name": "absensinew-saas-web",
+  "private": true,
+  "workspaces": [
+    "super-admin",
+    "school-portal"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev:super-admin": "npm run dev --workspace super-admin",
+    "dev:school": "npm run dev --workspace school-portal"
+  }
+}

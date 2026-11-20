@@ -140,7 +140,11 @@ function monthlyTableData(
     headerCell('No', { rowSpan: 2 }),
     headerCell('Nama', { rowSpan: 2 }),
     headerCell('Kelas', { rowSpan: 2 }),
-    ...days.map((day) => headerCell(day.slice(-2), { columnSpan: 3 })),
+    ...days.flatMap((day) => [
+      headerCell(day.slice(-2), { columnSpan: 3 }),
+      null,
+      null,
+    ]),
     headerCell('Total telat (mnt)', { rowSpan: 2 }),
     headerCell('Total hadir', { rowSpan: 2 }),
     headerCell('Total tidak hadir', { rowSpan: 2 }),

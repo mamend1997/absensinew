@@ -122,6 +122,8 @@ export default function ScannerPanel({
   onManualRequestHandled,
 }: ScannerPanelProps) {
   const mode: AttendanceMode = 'otomatis';
+  const externalScannerEnabled = settings?.enable_external_scanner == null ||
+    Boolean(Number(settings.enable_external_scanner));
   const [scanning, setScanning] = useState(false);
   const [nativeScanVisible, setNativeScanVisible] = useState(false);
   const [history, setHistory] = useState<QueuedScan[]>([]);
@@ -148,6 +150,7 @@ export default function ScannerPanel({
     at: number;
   } | null>(null);
   const scannerInputRef = useRef<HTMLInputElement>(null);
+  const scannerWedgeTimerRef = useRef<number | undefined>(undefined);
   const successPopupTimerRef = useRef<number | undefined>(undefined);
   const failureFeedbackTimerRef = useRef<number | undefined>(undefined);
 
@@ -160,6 +163,7 @@ export default function ScannerPanel({
       if (scanCooldownTimerRef.current) window.clearTimeout(scanCooldownTimerRef.current);
       if (successPopupTimerRef.current) window.clearTimeout(successPopupTimerRef.current);
       if (failureFeedbackTimerRef.current) window.clearTimeout(failureFeedbackTimerRef.current);
+      if (scannerWedgeTimerRef.current) window.clearTimeout(scannerWedgeTimerRef.current);
     };
   }, []);
 
@@ -337,12 +341,40 @@ export default function ScannerPanel({
   function submitScannerCode(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const code = scannerCode.trim();
-    if (!code || scanLockedRef.current) return;
+    if (scannerWedgeTimerRef.current) {
+      window.clearTimeout(scannerWedgeTimerRef.current);
+      scannerWedgeTimerRef.current = undefined;
+    }
+    if (!code || scanLockedRef.current) {
+      setScannerCode('');
+      return;
+    }
     setScannerCode('');
     scanLockedRef.current = true;
     void onDecoded(code);
     scannerInputRef.current?.focus();
   }
+
+  useEffect(() => {
+    const code = scannerCode.trim();
+    if (!externalScannerEnabled || !code) return;
+
+    if (scannerWedgeTimerRef.current) window.clearTimeout(scannerWedgeTimerRef.current);
+    scannerWedgeTimerRef.current = window.setTimeout(() => {
+      scannerWedgeTimerRef.current = undefined;
+      setScannerCode('');
+      if (scanLockedRef.current) return;
+      scanLockedRef.current = true;
+      void onDecoded(code);
+      scannerInputRef.current?.focus();
+    }, 250);
+    return () => {
+      if (scannerWedgeTimerRef.current) {
+        window.clearTimeout(scannerWedgeTimerRef.current);
+        scannerWedgeTimerRef.current = undefined;
+      }
+    };
+  }, [externalScannerEnabled, onDecoded, scannerCode]);
 
   useEffect(() => {
     if (!scanning) return;
@@ -498,25 +530,26 @@ export default function ScannerPanel({
         </div>
       </div>
 
-      <form className="scanner-wedge-form" onSubmit={submitScannerCode}>
-        <label htmlFor="scanner-wedge-code">Scanner barcode USB / Bluetooth</label>
-        <div className="scanner-wedge-controls">
-          <input
-            ref={scannerInputRef}
-            id="scanner-wedge-code"
-            autoFocus
-            inputMode="none"
-            autoComplete="off"
-            value={scannerCode}
-            onChange={(event) => setScannerCode(event.target.value)}
-            placeholder="Fokuskan bidang ini, lalu scan kartu"
-          />
-          <button className="button secondary" type="submit" disabled={!scannerCode.trim()}>
-            Proses kode
-          </button>
-        </div>
-        <small>Scanner mode keyboard wedge mengirim kode lalu menekan Enter.</small>
-      </form>
+      {externalScannerEnabled && (
+        <form className="scanner-wedge-form" onSubmit={submitScannerCode}>
+          <label htmlFor="scanner-wedge-code">Scanner barcode USB / Bluetooth</label>
+          <div className="scanner-wedge-controls">
+            <input
+              ref={scannerInputRef}
+              id="scanner-wedge-code"
+              autoFocus
+              inputMode="none"
+              autoComplete="off"
+              value={scannerCode}
+              onChange={(event) => setScannerCode(event.target.value)}
+              placeholder="Fokuskan bidang ini, lalu scan kartu"
+            />
+            <button className="button secondary" type="submit" disabled={!scannerCode.trim()}>
+              Proses kode
+            </button>
+          </div>
+        </form>
+      )}
 
       <section className="scan-history-card">
         <div className="scan-history-heading">

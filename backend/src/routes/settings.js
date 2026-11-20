@@ -106,6 +106,7 @@ router.put('/', allowRoles('admin'), asyncHandler(async (request, response) => {
     scan_welcome_message: z.string().trim().min(1).max(255).optional(),
     scan_success_message: z.string().trim().min(1).max(255).optional(),
     scan_failure_message: z.string().trim().min(1).max(255).optional(),
+    enable_external_scanner: z.coerce.boolean().optional(),
     weekly_schedules: z.array(weeklyScheduleSchema).length(7).optional(),
     participant_overrides: z.array(participantOverrideSchema).max(500).optional(),
   }).parse(request.body);
@@ -171,13 +172,15 @@ router.put('/', allowRoles('admin'), asyncHandler(async (request, response) => {
     scan_welcome_message: currentRows[0].scan_welcome_message,
     scan_success_message: currentRows[0].scan_success_message,
     scan_failure_message: currentRows[0].scan_failure_message,
+    enable_external_scanner: currentRows[0].enable_external_scanner,
     weekly_schedules: currentWeeklySchedules,
     ...(input.participant_overrides ? { participant_overrides: previousOverrides } : {}),
     };
     await transaction.query(
       `UPDATE operational_settings SET timezone = ?, check_in_deadline = ?,
         lateness_tolerance_minutes = ?, check_out_start = ?,
-        scan_welcome_message = ?, scan_success_message = ?, scan_failure_message = ?, updated_by = ?,
+        scan_welcome_message = ?, scan_success_message = ?, scan_failure_message = ?,
+        enable_external_scanner = ?, updated_by = ?,
         updated_at = CURRENT_TIMESTAMP WHERE id = 1`,
       [
         input.timezone,
@@ -187,6 +190,7 @@ router.put('/', allowRoles('admin'), asyncHandler(async (request, response) => {
         input.scan_welcome_message ?? currentRows[0].scan_welcome_message,
         input.scan_success_message ?? currentRows[0].scan_success_message,
         input.scan_failure_message ?? currentRows[0].scan_failure_message,
+        input.enable_external_scanner ?? currentRows[0].enable_external_scanner,
         request.user.id,
       ],
     );
@@ -246,6 +250,7 @@ router.put('/', allowRoles('admin'), asyncHandler(async (request, response) => {
         scan_welcome_message: input.scan_welcome_message ?? currentRows[0].scan_welcome_message,
         scan_success_message: input.scan_success_message ?? currentRows[0].scan_success_message,
         scan_failure_message: input.scan_failure_message ?? currentRows[0].scan_failure_message,
+        enable_external_scanner: input.enable_external_scanner ?? currentRows[0].enable_external_scanner,
         weekly_schedules: weeklySchedules.map((schedule) => ({
           ...schedule,
           check_in_deadline: withSeconds(schedule.check_in_deadline),
