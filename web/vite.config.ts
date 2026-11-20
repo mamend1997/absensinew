@@ -14,6 +14,11 @@ export default defineConfig(({ mode }) => {
         },
       },
     },
+    preview: {
+      host: '0.0.0.0',
+      port: 4173,
+      allowedHosts: true,
+    },
     build: {
       sourcemap: false,
       assetsInlineLimit: 4096,
