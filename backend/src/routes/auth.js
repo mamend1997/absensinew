@@ -8,6 +8,7 @@ import { db } from '../config/database.js';
 import { allowRoles, authenticate } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { HttpError } from '../utils/http-error.js';
+import { auditRequestContext, writeAuditLog } from '../services/audit-service.js';
 
 const router = Router();
 const loginSchema = z.object({
@@ -90,6 +91,14 @@ router.post('/menu-pin/setup', authenticate, allowRoles('admin'), asyncHandler(a
       'INSERT INTO admin_menu_pin (id, pin_hash) VALUES (1, ?)',
       [pinHash],
     );
+    await writeAuditLog({
+      executor: transaction,
+      ...auditRequestContext(request),
+      action: 'admin_menu_pin.configured',
+      entityType: 'admin_menu_pin',
+      entityId: 1,
+      after: { configured: true },
+    });
   });
   response.status(201).json({ configured: true });
 }));
@@ -115,7 +124,21 @@ router.put('/menu-pin/change', authenticate, allowRoles('admin'), pinVerificatio
     throw new HttpError(401, 'PIN saat ini salah');
   }
   const pinHash = await bcrypt.hash(input.new_pin, 10);
-  await db.query('UPDATE admin_menu_pin SET pin_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1', [pinHash]);
+  await db.transaction(async (transaction) => {
+    await transaction.query(
+      'UPDATE admin_menu_pin SET pin_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1',
+      [pinHash],
+    );
+    await writeAuditLog({
+      executor: transaction,
+      ...auditRequestContext(request),
+      action: 'admin_menu_pin.changed',
+      entityType: 'admin_menu_pin',
+      entityId: 1,
+      before: { configured: true },
+      after: { configured: true },
+    });
+  });
   response.json({ updated: true });
 }));
 

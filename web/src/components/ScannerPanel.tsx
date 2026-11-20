@@ -3,7 +3,7 @@ import { Capacitor } from '@capacitor/core';
 import { BrowserMultiFormatReader, type IScannerControls } from '@zxing/browser';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { createQueuedScan } from '../lib/attendance';
-import { enqueueScan, getQueue } from '../lib/offline';
+import { clearSyncedScans, enqueueScan, getQueue } from '../lib/offline';
 import type { AttendanceMode, Participant, QueuedScan, Settings } from '../types';
 
 interface ScannerPanelProps {
@@ -125,6 +125,9 @@ export default function ScannerPanel({
   const [scanning, setScanning] = useState(false);
   const [nativeScanVisible, setNativeScanVisible] = useState(false);
   const [history, setHistory] = useState<QueuedScan[]>([]);
+  const [syncedHistoryCount, setSyncedHistoryCount] = useState(0);
+  const [clearingHistory, setClearingHistory] = useState(false);
+  const [historyNotice, setHistoryNotice] = useState('');
   const [scanMessage, setScanMessage] = useState('');
   const [scanFailed, setScanFailed] = useState(false);
   const [cameraError, setCameraError] = useState('');
@@ -179,10 +182,34 @@ export default function ScannerPanel({
 
   const refreshHistory = useCallback(async () => {
     const records = await getQueue();
+    setSyncedHistoryCount(records.filter((record) => record.status_sync === 'synced').length);
     setHistory(records.sort((a, b) =>
       b.client_timestamp.localeCompare(a.client_timestamp),
     ).slice(0, 6));
   }, []);
+
+  async function clearSentHistory() {
+    if (!window.confirm(
+      'Hapus riwayat terkirim dari perangkat ini? Data di server tidak dihapus dan scan pending tetap disimpan.',
+    )) return;
+    setClearingHistory(true);
+    try {
+      const deleted = await clearSyncedScans();
+      await refreshHistory();
+      if (deleted) {
+        await onQueueChanged();
+      }
+      setHistoryNotice(
+        deleted
+          ? `${deleted} riwayat lokal dihapus. Data server dan scan pending tetap tersimpan.`
+          : 'Tidak ada riwayat terkirim untuk dihapus.',
+      );
+    } catch (error) {
+      setHistoryNotice(error instanceof Error ? error.message : 'Riwayat lokal gagal dihapus.');
+    } finally {
+      setClearingHistory(false);
+    }
+  }
 
   useEffect(() => {
     void refreshHistory();
@@ -204,6 +231,7 @@ export default function ScannerPanel({
     selectedParticipant?: Participant,
   ) => {
     setCameraError('');
+    setHistoryNotice('');
     setScanFailed(false);
     setSuccessPopupName(null);
     if (successPopupTimerRef.current) window.clearTimeout(successPopupTimerRef.current);
@@ -493,8 +521,22 @@ export default function ScannerPanel({
       <section className="scan-history-card">
         <div className="scan-history-heading">
           <div><h2>Log kehadiran terbaru</h2><p>Riwayat scan yang tersimpan di perangkat ini</p></div>
-          {pending > 0 && <span className="history-pending">{pending} pending</span>}
+          <div className="scan-history-actions">
+            {pending > 0 && <span className="history-pending">{pending} pending</span>}
+            {syncedHistoryCount > 0 && (
+              <button
+                type="button"
+                className="button secondary mobile-history-clear"
+                disabled={clearingHistory}
+                title="Hapus salinan lokal yang sudah terkirim; data server dan scan pending tetap tersimpan"
+                onClick={() => void clearSentHistory()}
+              >
+                {clearingHistory ? 'Menghapus…' : 'Hapus riwayat'}
+              </button>
+            )}
+          </div>
         </div>
+        {historyNotice && <p className="scan-history-notice" role="status">{historyNotice}</p>}
         {history.length ? (
           <div className="scan-history-list">
             {history.map((record) => (

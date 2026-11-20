@@ -133,6 +133,24 @@ CREATE TABLE IF NOT EXISTS attendance_notifications (
 CREATE INDEX IF NOT EXISTS idx_attendance_notification_pending
     ON attendance_notifications (status, next_attempt_at);
 
+CREATE TABLE IF NOT EXISTS activity_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    actor_username TEXT NOT NULL,
+    actor_display_name TEXT NOT NULL,
+    action TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT,
+    before_data TEXT,
+    after_data TEXT,
+    ip_address TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_activity_logs_created
+    ON activity_logs (created_at, id);
+CREATE INDEX IF NOT EXISTS idx_activity_logs_entity
+    ON activity_logs (entity_type, entity_id, created_at);
+
 INSERT OR IGNORE INTO units (name) VALUES ('Unit Contoh');
 INSERT OR IGNORE INTO classrooms (unit_id, name)
     SELECT id, 'Kelas 1' FROM units WHERE name = 'Unit Contoh';

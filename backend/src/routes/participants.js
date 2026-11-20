@@ -6,6 +6,7 @@ import { allowRoles, authenticate } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { HttpError } from '../utils/http-error.js';
 import { getSyncCursor } from '../utils/sync-cursor.js';
+import { auditRequestContext, writeAuditLog } from '../services/audit-service.js';
 
 const router = Router();
 router.use(authenticate);
@@ -100,18 +101,34 @@ router.get('/', asyncHandler(async (request, response) => {
 
 router.post('/', allowRoles('admin'), asyncHandler(async (request, response) => {
   const input = participantSchema.parse(request.body);
-  const result = await db.query(
-    `INSERT INTO participants
-      (participant_code, full_name, classroom_id, qr_code, guardian_phone)
-     VALUES (?, ?, ?, ?, ?)`,
-    [
-      input.participant_code,
-      input.full_name,
-      input.classroom_id,
-      input.qr_code,
-      input.guardian_phone ?? null,
-    ],
-  );
+  const result = await db.transaction(async (transaction) => {
+    const inserted = await transaction.query(
+      `INSERT INTO participants
+        (participant_code, full_name, classroom_id, qr_code, guardian_phone)
+       VALUES (?, ?, ?, ?, ?)`,
+      [
+        input.participant_code,
+        input.full_name,
+        input.classroom_id,
+        input.qr_code,
+        input.guardian_phone ?? null,
+      ],
+    );
+    const id = inserted.lastInsertRowid ?? inserted.insertId;
+    await writeAuditLog({
+      executor: transaction,
+      ...auditRequestContext(request),
+      action: 'participant.created',
+      entityType: 'participant',
+      entityId: id,
+      after: {
+        participant_code: input.participant_code,
+        full_name: input.full_name,
+        classroom_id: String(input.classroom_id),
+      },
+    });
+    return inserted;
+  });
   response.status(201).json({ id: String(result.lastInsertRowid ?? result.insertId) });
 }));
 
@@ -119,23 +136,47 @@ router.put('/:id', allowRoles('admin'), asyncHandler(async (request, response) =
   const id = z.coerce.number().int().positive().parse(request.params.id);
   const input = participantSchema.parse(request.body);
   const hasGuardianPhone = Object.hasOwn(request.body, 'guardian_phone');
-  const result = await db.query(
-    `UPDATE participants SET participant_code = ?, full_name = ?,
-      classroom_id = ?, qr_code = ?,
-      guardian_phone = CASE WHEN ? = 1 THEN ? ELSE guardian_phone END,
-      updated_at = CURRENT_TIMESTAMP
-     WHERE id = ? AND is_active = 1`,
-    [
-      input.participant_code,
-      input.full_name,
-      input.classroom_id,
-      input.qr_code,
-      hasGuardianPhone ? 1 : 0,
-      input.guardian_phone ?? null,
-      id,
-    ],
-  );
-  if (!result.affectedRows && !result.changes) throw new HttpError(404, 'Peserta tidak ditemukan');
+  await db.transaction(async (transaction) => {
+    const existing = await transaction.query(
+      `SELECT participant_code, full_name, classroom_id, qr_code, guardian_phone
+       FROM participants WHERE id = ? AND is_active = 1`,
+      [id],
+    );
+    if (!existing[0]) throw new HttpError(404, 'Peserta tidak ditemukan');
+    await transaction.query(
+      `UPDATE participants SET participant_code = ?, full_name = ?,
+        classroom_id = ?, qr_code = ?,
+        guardian_phone = CASE WHEN ? = 1 THEN ? ELSE guardian_phone END,
+        updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND is_active = 1`,
+      [
+        input.participant_code,
+        input.full_name,
+        input.classroom_id,
+        input.qr_code,
+        hasGuardianPhone ? 1 : 0,
+        input.guardian_phone ?? null,
+        id,
+      ],
+    );
+    await writeAuditLog({
+      executor: transaction,
+      ...auditRequestContext(request),
+      action: 'participant.updated',
+      entityType: 'participant',
+      entityId: id,
+      before: {
+        participant_code: existing[0].participant_code,
+        full_name: existing[0].full_name,
+        classroom_id: String(existing[0].classroom_id),
+      },
+      after: {
+        participant_code: input.participant_code,
+        full_name: input.full_name,
+        classroom_id: String(input.classroom_id),
+      },
+    });
+  });
   response.json({ updated: true });
 }));
 
@@ -145,22 +186,67 @@ router.delete('/bulk', allowRoles('admin'), asyncHandler(async (request, respons
   }).parse(request.body);
   const uniqueIds = [...new Set(ids)];
   const placeholders = uniqueIds.map(() => '?').join(', ');
-  const result = await db.query(
-    `UPDATE participants SET is_active = 0, updated_at = CURRENT_TIMESTAMP
-     WHERE is_active = 1 AND id IN (${placeholders})`,
-    uniqueIds,
-  );
-  response.json({ deleted: Number(result.affectedRows ?? result.changes ?? 0) });
+  const deleted = await db.transaction(async (transaction) => {
+    const before = await transaction.query(
+      `SELECT id, participant_code, full_name, classroom_id
+       FROM participants WHERE is_active = 1 AND id IN (${placeholders})`,
+      uniqueIds,
+    );
+    const result = await transaction.query(
+      `UPDATE participants SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+       WHERE is_active = 1 AND id IN (${placeholders})`,
+      uniqueIds,
+    );
+    for (const participant of before) {
+      await writeAuditLog({
+        executor: transaction,
+        ...auditRequestContext(request),
+        action: 'participant.deactivated',
+        entityType: 'participant',
+        entityId: participant.id,
+        before: {
+          participant_code: participant.participant_code,
+          full_name: participant.full_name,
+          classroom_id: String(participant.classroom_id),
+          is_active: true,
+        },
+        after: { is_active: false },
+      });
+    }
+    return Number(result.affectedRows ?? result.changes ?? 0);
+  });
+  response.json({ deleted });
 }));
 
 router.delete('/:id', allowRoles('admin'), asyncHandler(async (request, response) => {
   const id = z.coerce.number().int().positive().parse(request.params.id);
-  const result = await db.query(
-    `UPDATE participants SET is_active = 0, updated_at = CURRENT_TIMESTAMP
-     WHERE id = ? AND is_active = 1`,
-    [id],
-  );
-  if (!result.affectedRows && !result.changes) throw new HttpError(404, 'Peserta tidak ditemukan');
+  await db.transaction(async (transaction) => {
+    const existing = await transaction.query(
+      `SELECT participant_code, full_name, classroom_id
+       FROM participants WHERE id = ? AND is_active = 1`,
+      [id],
+    );
+    if (!existing[0]) throw new HttpError(404, 'Peserta tidak ditemukan');
+    await transaction.query(
+      `UPDATE participants SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND is_active = 1`,
+      [id],
+    );
+    await writeAuditLog({
+      executor: transaction,
+      ...auditRequestContext(request),
+      action: 'participant.deactivated',
+      entityType: 'participant',
+      entityId: id,
+      before: {
+        participant_code: existing[0].participant_code,
+        full_name: existing[0].full_name,
+        classroom_id: String(existing[0].classroom_id),
+        is_active: true,
+      },
+      after: { is_active: false },
+    });
+  });
   response.json({ deleted: true });
 }));
 
@@ -186,6 +272,7 @@ router.post('/import', allowRoles('admin'), asyncHandler(async (request, respons
         classroomId = classrooms[0].id;
       }
       const qrCode = participant.qr_code ?? participant.participant_code;
+      const participantCode = participant.participant_code ?? `P-${randomUUID()}`;
       const hasGuardianPhone = Object.hasOwn(participant, 'guardian_phone');
       const existing = participant.participant_code
         ? await transaction.query(
@@ -197,6 +284,11 @@ router.post('/import', allowRoles('admin'), asyncHandler(async (request, respons
           [qrCode],
         );
       if (existing[0]) {
+        const before = (await transaction.query(
+          `SELECT participant_code, full_name, classroom_id, is_active
+           FROM participants WHERE id = ?`,
+          [existing[0].id],
+        ))[0];
         await transaction.query(
           `UPDATE participants SET full_name = ?, classroom_id = ?, qr_code = ?,
             guardian_phone = CASE WHEN ? = 1 THEN ? ELSE guardian_phone END,
@@ -210,19 +302,50 @@ router.post('/import', allowRoles('admin'), asyncHandler(async (request, respons
             existing[0].id,
           ],
         );
+        await writeAuditLog({
+          executor: transaction,
+          ...auditRequestContext(request),
+          action: 'participant.imported_updated',
+          entityType: 'participant',
+          entityId: existing[0].id,
+          before: {
+            participant_code: before.participant_code,
+            full_name: before.full_name,
+            classroom_id: String(before.classroom_id),
+            is_active: Boolean(Number(before.is_active)),
+          },
+          after: {
+            participant_code: participant.participant_code ?? before.participant_code,
+            full_name: participant.full_name,
+            classroom_id: String(classroomId),
+            is_active: true,
+          },
+        });
       } else {
-        await transaction.query(
+        const inserted = await transaction.query(
           `INSERT INTO participants
             (participant_code, full_name, classroom_id, qr_code, guardian_phone)
            VALUES (?, ?, ?, ?, ?)`,
           [
-            participant.participant_code ?? `P-${randomUUID()}`,
+            participantCode,
             participant.full_name,
             classroomId,
             qrCode,
             participant.guardian_phone ?? null,
           ],
         );
+        await writeAuditLog({
+          executor: transaction,
+          ...auditRequestContext(request),
+          action: 'participant.imported_created',
+          entityType: 'participant',
+          entityId: inserted.lastInsertRowid ?? inserted.insertId,
+          after: {
+            participant_code: participantCode,
+            full_name: participant.full_name,
+            classroom_id: String(classroomId),
+          },
+        });
       }
       imported += 1;
     }

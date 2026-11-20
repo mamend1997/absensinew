@@ -9,6 +9,7 @@ import {
   insertAttendanceRecord,
 } from '../services/attendance-service.js';
 import { enqueueAttendanceNotifications } from '../services/notification-service.js';
+import { auditRequestContext, writeAuditLog } from '../services/audit-service.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { HttpError } from '../utils/http-error.js';
 import { addCalendarDays } from '../utils/time.js';
@@ -126,6 +127,23 @@ router.post('/sync-batch', asyncHandler(async (request, response) => {
       if (result.accepted) {
         acceptedIds.push(input.id_unik);
         if (!result.duplicate) {
+          await writeAuditLog({
+            executor: transaction,
+            ...auditRequestContext(request),
+            action: 'attendance.recorded',
+            entityType: 'attendance_record',
+            entityId: input.id_unik,
+            after: {
+              participant_id: String(participant.id),
+              participant_code: participant.participant_code,
+              participant_name: participant.full_name,
+              attendance_date: computed.date,
+              event_type: eventType,
+              attendance_status: computed.status,
+              late_minutes: computed.lateMinutes,
+              scan_method: record.scan_method,
+            },
+          });
           await enqueueAttendanceNotifications({
             transaction,
             participant,

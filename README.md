@@ -142,6 +142,25 @@ cursor sebagai `updated_since` untuk mengambil delta. Peserta nonaktif dan
 perpindahan kelas ditangani sebagai penghapusan lokal tanpa membagikan identitas
 peserta di luar kelas Operator.
 
+Menu Admin **Audit & Backup** menampilkan riwayat pembuatan/perubahan/
+penonaktifan peserta dan kelas, pengaturan operasional, absensi baru, serta
+ekspor/pemulihan cadangan. Catatan aktivitas ditulis dalam transaksi bersama
+perubahannya dan berisi akun, waktu, IP, entitas, serta nilai sebelum/sesudah
+yang relevan. Endpoint Admin `GET /api/admin-tools/activity-logs` menyediakan
+log berpaginasi.
+
+Cadangan diunduh sebagai JSON dari `GET /api/admin-tools/backup`; file ini
+mencakup seluruh tabel sistem, termasuk hash kredensial akun dan audit, sehingga
+wajib disimpan di lokasi aman. Restore melalui
+`POST /api/admin-tools/backup/restore` menerima hanya format/version backup
+sistem yang dikenal, maksimal 25 MB/300.000 baris, dan menolak cadangan tanpa
+Admin aktif. Restore menggantikan seluruh data aktif dalam transaksi, lalu
+mempertahankan log lokal yang sudah ada, menambahkan log dari backup tanpa
+duplikasi ID, dan mencatat aktivitas restore. Dari panel, Admin harus memilih file dan mengetik
+`PULIHKAN DATABASE` sebelum konfirmasi. Simpan backup berkala ke penyimpanan di
+luar hosting; fitur ini mengekspor/memulihkan backup secara manual, bukan
+penjadwal backup otomatis.
+
 Notifikasi hanya dibuat untuk absensi baru setelah record tersimpan dalam
 transaksi. Nomor wali diatur melalui `guardian_phone` pada master peserta; nomor
 Admin diatur melalui `NOTIFICATION_ADMIN_PHONE`. Untuk mengaktifkan gateway,
@@ -181,7 +200,9 @@ Unduh template Excel dari halaman Peserta; kolom yang diisi adalah `full_name`,
 `unit_name`, `classroom_name`, dan `qr_code` (kode peserta internal dibuat
 otomatis). Impor juga menerima CSV dengan header
 `participant_code,full_name,classroom_id,qr_code`. Daftar peserta mendukung pilih
-semua dan hapus terpilih.
+semua dan hapus terpilih. Pilih beberapa peserta untuk membuat kartu QR A4
+massal berisi nama, kode peserta, kelas, serta gambar dan teks QR; gunakan
+Cetak atau Simpan sebagai PDF dari dialog cetak.
 
 Setelah login di layar lebar (900 px ke atas), Admin langsung melihat Rekap
 Absensi untuk pemantauan dari PC; di layar kecil dan untuk Operator, aplikasi
@@ -234,7 +255,10 @@ manual tersedia dari menu hamburger setelah verifikasi PIN dan mencari peserta
 dari master lokal; laporan mencatat metode `MANUAL_INPUT`. Scanner juga memakai
 kamera belakang, bunyi notifikasi,
 indikator jaringan, antrean pending, serta sinkronisasi otomatis saat jaringan
-kembali. Pada browser, kamera memakai ZXing; Android memakai scanner ML Kit native.
+kembali. Di scanner ponsel, tombol **Hapus riwayat** hanya menghapus salinan
+lokal yang sudah berstatus terkirim; data server tidak dihapus dan antrean
+pending tetap aman di perangkat. Pada browser, kamera memakai ZXing; Android
+memakai scanner ML Kit native.
 TTS menggunakan bahasa
 Indonesia dan memprioritaskan suara perempuan bila tersedia pada perangkat.
 Pesan sambutan dapat diubah dari pengaturan dan bergerak dari kanan ke kiri.

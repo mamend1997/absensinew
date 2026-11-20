@@ -152,3 +152,12 @@ export async function markScansSynced(ids: string[]): Promise<void> {
   }
   await tx.done;
 }
+
+export async function clearSyncedScans(): Promise<number> {
+  const db = await database();
+  const tx = db.transaction('queue', 'readwrite');
+  const syncedIds = await tx.store.index('by-status').getAllKeys('synced');
+  for (const id of syncedIds) await tx.store.delete(id);
+  await tx.done;
+  return syncedIds.length;
+}

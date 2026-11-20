@@ -3,6 +3,7 @@ import express from 'express';
 import helmet from 'helmet';
 import { config } from './config/env.js';
 import { errorHandler, notFoundHandler } from './middleware/error-handler.js';
+import adminToolsRouter from './routes/admin-tools.js';
 import attendanceRouter from './routes/attendance.js';
 import authRouter from './routes/auth.js';
 import classroomsRouter from './routes/classrooms.js';
@@ -19,6 +20,10 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
+app.use(
+  '/api/admin-tools/backup/restore',
+  express.raw({ type: 'application/json', limit: '25mb' }),
+);
 app.use(express.json({ limit: '1mb' }));
 
 app.get('/api/health', (_request, response) => response.json({ status: 'ok' }));
@@ -27,5 +32,6 @@ app.use('/api/kelas', classroomsRouter);
 app.use('/api/peserta', participantsRouter);
 app.use('/api/pengaturan', settingsRouter);
 app.use('/api/absensi', attendanceRouter);
+app.use('/api/admin-tools', adminToolsRouter);
 app.use(notFoundHandler);
 app.use(errorHandler);

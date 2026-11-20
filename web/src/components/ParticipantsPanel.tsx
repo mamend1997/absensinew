@@ -37,6 +37,15 @@ interface ClassroomForm {
   unit_id: string;
 }
 
+interface PrintableQrCard {
+  id: string;
+  participantCode: string;
+  name: string;
+  classroom: string;
+  qrCode: string;
+  image: string;
+}
+
 const emptyForm: ParticipantForm = {
   participant_code: '',
   full_name: '',
@@ -54,6 +63,8 @@ export default function ParticipantsPanel({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [qrPreview, setQrPreview] = useState<{ value: string; image: string } | null>(null);
+  const [massQrCards, setMassQrCards] = useState<PrintableQrCard[] | null>(null);
+  const [printingSelected, setPrintingSelected] = useState(false);
   const [search, setSearch] = useState('');
   const [classrooms, setClassrooms] = useState<Classroom[]>([]);
   const [units, setUnits] = useState<Unit[]>([]);
@@ -64,9 +75,9 @@ export default function ParticipantsPanel({
   const uploadRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    document.body.classList.toggle('print-qr', Boolean(qrPreview));
+    document.body.classList.toggle('print-qr', Boolean(qrPreview || massQrCards));
     return () => document.body.classList.remove('print-qr');
-  }, [qrPreview]);
+  }, [massQrCards, qrPreview]);
   const refreshClassrooms = useCallback(async () => {
     const result = await api<{ classrooms: Classroom[]; units: Unit[] }>('/kelas');
     setClassrooms(result.classrooms.map((classroom) => ({
@@ -281,9 +292,37 @@ export default function ParticipantsPanel({
         errorCorrectionLevel: 'M',
         color: { dark: '#173a34', light: '#ffffff' },
       });
+      setMassQrCards(null);
       setQrPreview({ value, image });
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Kode QR gagal dibuat.', 'error');
+    }
+  }
+
+  async function printSelectedQr() {
+    const selected = participants.filter((participant) => selectedIds.has(participant.id));
+    if (!selected.length) return;
+    setPrintingSelected(true);
+    try {
+      const cards = await Promise.all(selected.map(async (participant) => ({
+        id: participant.id,
+        participantCode: participant.participant_code,
+        name: participant.full_name,
+        classroom: participant.classroom_name,
+        qrCode: participant.qr_code,
+        image: await QRCode.toDataURL(participant.qr_code, {
+          width: 360,
+          margin: 2,
+          errorCorrectionLevel: 'M',
+          color: { dark: '#173a34', light: '#ffffff' },
+        }),
+      })));
+      setQrPreview(null);
+      setMassQrCards(cards);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Kode QR massal gagal dibuat.', 'error');
+    } finally {
+      setPrintingSelected(false);
     }
   }
 
@@ -430,14 +469,24 @@ export default function ParticipantsPanel({
               Pilih semua yang ditampilkan
             </label>
             {selectedIds.size > 0 && (
-              <button
-                type="button"
-                className="button danger-button"
-                disabled={bulkBusy}
-                onClick={() => void removeSelected()}
-              >
-                {bulkBusy ? 'Menghapus…' : `Hapus terpilih (${selectedIds.size})`}
-              </button>
+              <div className="heading-actions">
+                <button
+                  type="button"
+                  className="button secondary"
+                  disabled={printingSelected}
+                  onClick={() => void printSelectedQr()}
+                >
+                  {printingSelected ? 'Menyiapkan QR…' : `Cetak QR terpilih (${selectedIds.size})`}
+                </button>
+                <button
+                  type="button"
+                  className="button danger-button"
+                  disabled={bulkBusy}
+                  onClick={() => void removeSelected()}
+                >
+                  {bulkBusy ? 'Menghapus…' : `Hapus terpilih (${selectedIds.size})`}
+                </button>
+              </div>
             )}
           </div>
           <div className="participant-list">
@@ -543,6 +592,47 @@ export default function ParticipantsPanel({
             <img src={qrPreview.image} alt={`Kode QR ${qrPreview.value}`} />
             <strong>{qrPreview.value}</strong>
             <button className="button secondary" onClick={() => window.print()}>Cetak QR</button>
+          </section>
+        </div>
+      )}
+      {massQrCards && (
+        <div
+          className="modal-backdrop mass-qr-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setMassQrCards(null);
+          }}
+        >
+          <section
+            className="mass-qr-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Cetak ${massQrCards.length} kartu QR peserta`}
+          >
+            <div className="mass-qr-toolbar no-print">
+              <div>
+                <p className="eyebrow">KARTU PESERTA</p>
+                <strong>{massQrCards.length} kartu QR siap dicetak</strong>
+                <small>Layout A4; pilih cetak atau simpan sebagai PDF.</small>
+              </div>
+              <div className="heading-actions">
+                <button className="button primary" onClick={() => window.print()}>Cetak / Simpan PDF</button>
+                <button className="button secondary" onClick={() => setMassQrCards(null)}>Tutup</button>
+              </div>
+            </div>
+            <div className="qr-card-grid">
+              {massQrCards.map((card) => (
+                <article className="qr-id-card" key={card.id}>
+                  <img src={card.image} alt={`QR ${card.name}`} />
+                  <div className="qr-id-card-copy">
+                    <strong>{card.name}</strong>
+                    <span>ID: {card.participantCode}</span>
+                    <small>{card.classroom}</small>
+                    <code>{card.qrCode}</code>
+                  </div>
+                </article>
+              ))}
+            </div>
           </section>
         </div>
       )}

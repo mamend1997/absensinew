@@ -153,6 +153,25 @@ CREATE TABLE IF NOT EXISTS attendance_notifications (
     KEY idx_attendance_notification_pending (status, next_attempt_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS activity_logs (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    actor_user_id BIGINT UNSIGNED NULL,
+    actor_username VARCHAR(80) NOT NULL,
+    actor_display_name VARCHAR(150) NOT NULL,
+    action VARCHAR(80) NOT NULL,
+    entity_type VARCHAR(80) NOT NULL,
+    entity_id VARCHAR(100) NULL,
+    before_data JSON NULL,
+    after_data JSON NULL,
+    ip_address VARCHAR(64) NULL,
+    created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    KEY idx_activity_logs_created (created_at, id),
+    KEY idx_activity_logs_entity (entity_type, entity_id, created_at),
+    CONSTRAINT fk_activity_logs_actor FOREIGN KEY (actor_user_id)
+        REFERENCES users (id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Seed referensi awal. Tidak ada akun dengan password default.
 INSERT INTO units (name) VALUES ('Unit Contoh')
     ON DUPLICATE KEY UPDATE name = VALUES(name);

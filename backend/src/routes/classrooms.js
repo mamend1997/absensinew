@@ -4,6 +4,7 @@ import { db } from '../config/database.js';
 import { allowRoles, authenticate } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { HttpError } from '../utils/http-error.js';
+import { auditRequestContext, writeAuditLog } from '../services/audit-service.js';
 
 const router = Router();
 router.use(authenticate, allowRoles('admin'));
@@ -35,10 +36,22 @@ router.post('/', asyncHandler(async (request, response) => {
   );
   if (duplicate[0]) throw new HttpError(409, 'Nama kelas sudah digunakan pada unit ini.');
 
-  const result = await db.query(
-    'INSERT INTO classrooms (unit_id, name) VALUES (?, ?)',
-    [input.unit_id, input.name],
-  );
+  const result = await db.transaction(async (transaction) => {
+    const inserted = await transaction.query(
+      'INSERT INTO classrooms (unit_id, name) VALUES (?, ?)',
+      [input.unit_id, input.name],
+    );
+    const id = inserted.lastInsertRowid ?? inserted.insertId;
+    await writeAuditLog({
+      executor: transaction,
+      ...auditRequestContext(request),
+      action: 'classroom.created',
+      entityType: 'classroom',
+      entityId: id,
+      after: { id: String(id), name: input.name, unit_id: String(input.unit_id) },
+    });
+    return inserted;
+  });
   response.status(201).json({ id: String(result.lastInsertRowid ?? result.insertId) });
 }));
 
@@ -46,7 +59,7 @@ router.put('/:id', asyncHandler(async (request, response) => {
   const id = z.coerce.number().int().positive().parse(request.params.id);
   const input = classroomSchema.parse(request.body);
   const [existing, unit, duplicate] = await Promise.all([
-    db.query('SELECT id FROM classrooms WHERE id = ?', [id]),
+    db.query('SELECT id, name, unit_id FROM classrooms WHERE id = ?', [id]),
     db.query('SELECT id FROM units WHERE id = ?', [input.unit_id]),
     db.query(
       'SELECT id FROM classrooms WHERE unit_id = ? AND name = ? AND id <> ?',
@@ -57,18 +70,37 @@ router.put('/:id', asyncHandler(async (request, response) => {
   if (!unit[0]) throw new HttpError(400, 'Unit tidak ditemukan.');
   if (duplicate[0]) throw new HttpError(409, 'Nama kelas sudah digunakan pada unit ini.');
 
-  await db.query('UPDATE classrooms SET name = ?, unit_id = ? WHERE id = ?', [
-    input.name,
-    input.unit_id,
-    id,
-  ]);
+  await db.transaction(async (transaction) => {
+    await transaction.query('UPDATE classrooms SET name = ?, unit_id = ? WHERE id = ?', [
+      input.name,
+      input.unit_id,
+      id,
+    ]);
+    await writeAuditLog({
+      executor: transaction,
+      ...auditRequestContext(request),
+      action: 'classroom.updated',
+      entityType: 'classroom',
+      entityId: id,
+      before: {
+        id: String(id),
+        name: existing[0].name,
+        unit_id: String(existing[0].unit_id),
+      },
+      after: { id: String(id), name: input.name, unit_id: String(input.unit_id) },
+    });
+  });
   response.json({ updated: true });
 }));
 
 router.delete('/:id', asyncHandler(async (request, response) => {
   const id = z.coerce.number().int().positive().parse(request.params.id);
   const [classroom, participantRefs, userRefs] = await Promise.all([
-    db.query('SELECT id FROM classrooms WHERE id = ?', [id]),
+    db.query(
+      `SELECT c.id, c.name, c.unit_id, u.name AS unit_name
+       FROM classrooms c JOIN units u ON u.id = c.unit_id WHERE c.id = ?`,
+      [id],
+    ),
     db.query('SELECT id FROM participants WHERE classroom_id = ? LIMIT 1', [id]),
     db.query('SELECT id FROM users WHERE classroom_id = ? LIMIT 1', [id]),
   ]);
@@ -76,7 +108,22 @@ router.delete('/:id', asyncHandler(async (request, response) => {
   if (participantRefs[0] || userRefs[0]) {
     throw new HttpError(409, 'Kelas masih digunakan peserta atau akun operator.');
   }
-  await db.query('DELETE FROM classrooms WHERE id = ?', [id]);
+  await db.transaction(async (transaction) => {
+    await transaction.query('DELETE FROM classrooms WHERE id = ?', [id]);
+    await writeAuditLog({
+      executor: transaction,
+      ...auditRequestContext(request),
+      action: 'classroom.deleted',
+      entityType: 'classroom',
+      entityId: id,
+      before: {
+        id: String(id),
+        name: classroom[0].name,
+        unit_id: String(classroom[0].unit_id),
+        unit_name: classroom[0].unit_name,
+      },
+    });
+  });
   response.json({ deleted: true });
 }));
 

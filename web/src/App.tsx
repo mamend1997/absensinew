@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import AppMenu from './components/AppMenu';
+import AdminToolsPanel from './components/AdminToolsPanel';
 import Dashboard from './components/Dashboard';
 import LoginView from './components/LoginView';
 import ParticipantsPanel from './components/ParticipantsPanel';
@@ -22,7 +23,7 @@ import type { Participant, QueuedScan, Settings, User } from './types';
 
 const ScannerPanel = lazy(() => import('./components/ScannerPanel'));
 
-type Page = 'rekap' | 'peserta' | 'pengaturan' | 'scanner';
+type Page = 'rekap' | 'peserta' | 'pengaturan' | 'audit-backup' | 'scanner';
 type ThemeMode = 'green' | 'orange' | 'white';
 
 const THEME_STORAGE_KEY = 'ruang_hadir_theme';
@@ -339,7 +340,12 @@ export default function App() {
     } else if (
       selectedPage === 'scanner' ||
       (user?.role === 'admin' &&
-        (selectedPage === 'rekap' || selectedPage === 'peserta' || selectedPage === 'pengaturan'))
+        (
+          selectedPage === 'rekap' ||
+          selectedPage === 'peserta' ||
+          selectedPage === 'pengaturan' ||
+          selectedPage === 'audit-backup'
+        ))
     ) {
       setPage(selectedPage);
     }
@@ -357,6 +363,7 @@ export default function App() {
     { id: 'rekap', label: 'Rekap absensi', adminOnly: true },
     { id: 'peserta', label: 'Peserta', adminOnly: true },
     { id: 'pengaturan', label: 'Pengaturan', adminOnly: true },
+    { id: 'audit-backup', label: 'Audit & Backup', adminOnly: true },
   ];
 
   return (
@@ -401,6 +408,14 @@ export default function App() {
               void saveSettings(value);
             }}
             showToast={showToast}
+          />
+        )}
+        {page === 'audit-backup' && user.role === 'admin' && (
+          <AdminToolsPanel
+            showToast={showToast}
+            onRestored={() => {
+              window.setTimeout(() => window.location.reload(), 1500);
+            }}
           />
         )}
       </main>

@@ -5,6 +5,7 @@ import { allowRoles, authenticate } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { HttpError } from '../utils/http-error.js';
 import { getSyncCursor } from '../utils/sync-cursor.js';
+import { auditRequestContext, writeAuditLog } from '../services/audit-service.js';
 
 const router = Router();
 router.use(authenticate);
@@ -156,6 +157,23 @@ router.put('/', allowRoles('admin'), asyncHandler(async (request, response) => {
       ? currentWeeklySchedules
       : defaultWeeklySchedules;
   await db.transaction(async (transaction) => {
+    const previousOverrides = input.participant_overrides
+    ? await transaction.query(
+      `SELECT participant_id, weekday, check_in_deadline
+       FROM participant_day_overrides ORDER BY participant_id, weekday`,
+    )
+    : [];
+    const before = {
+    timezone: currentRows[0].timezone,
+    check_in_deadline: currentRows[0].check_in_deadline,
+    lateness_tolerance_minutes: currentRows[0].lateness_tolerance_minutes,
+    check_out_start: currentRows[0].check_out_start,
+    scan_welcome_message: currentRows[0].scan_welcome_message,
+    scan_success_message: currentRows[0].scan_success_message,
+    scan_failure_message: currentRows[0].scan_failure_message,
+    weekly_schedules: currentWeeklySchedules,
+    ...(input.participant_overrides ? { participant_overrides: previousOverrides } : {}),
+    };
     await transaction.query(
       `UPDATE operational_settings SET timezone = ?, check_in_deadline = ?,
         lateness_tolerance_minutes = ?, check_out_start = ?,
@@ -213,6 +231,36 @@ router.put('/', allowRoles('admin'), asyncHandler(async (request, response) => {
         );
       }
     }
+    await writeAuditLog({
+      executor: transaction,
+      ...auditRequestContext(request),
+      action: 'operational_settings.updated',
+      entityType: 'operational_settings',
+      entityId: 1,
+      before,
+      after: {
+        timezone: input.timezone,
+        check_in_deadline: checkIn,
+        lateness_tolerance_minutes: input.lateness_tolerance_minutes,
+        check_out_start: checkOut,
+        scan_welcome_message: input.scan_welcome_message ?? currentRows[0].scan_welcome_message,
+        scan_success_message: input.scan_success_message ?? currentRows[0].scan_success_message,
+        scan_failure_message: input.scan_failure_message ?? currentRows[0].scan_failure_message,
+        weekly_schedules: weeklySchedules.map((schedule) => ({
+          ...schedule,
+          check_in_deadline: withSeconds(schedule.check_in_deadline),
+          check_out_start: withSeconds(schedule.check_out_start),
+        })),
+        ...(input.participant_overrides
+          ? {
+            participant_overrides: input.participant_overrides.map((rule) => ({
+              ...rule,
+              check_in_deadline: withSeconds(rule.check_in_deadline),
+            })),
+          }
+          : {}),
+      },
+    });
   });
   const rows = await db.query('SELECT * FROM operational_settings WHERE id = 1');
   const [savedSchedules, savedOverrides] = await Promise.all([

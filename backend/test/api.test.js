@@ -576,6 +576,72 @@ test('auth, role permissions, idempotent batch sync, and monthly report', async 
     false,
   );
 
+  assert.equal(
+    (await request('/admin-tools/activity-logs', { token: operatorToken })).response.status,
+    403,
+  );
+  assert.equal(
+    (await request('/admin-tools/backup', { token: operatorToken })).response.status,
+    403,
+  );
+  const activityLog = await request('/admin-tools/activity-logs?page_size=100', {
+    token: adminToken,
+  });
+  assert.equal(activityLog.response.status, 200);
+  assert.ok(activityLog.data.logs.some((item) =>
+    item.action === 'operational_settings.updated' &&
+    item.actor_username === 'admin-test' &&
+    item.before_data?.check_in_deadline,
+  ));
+  assert.ok(activityLog.data.logs.some((item) =>
+    item.action === 'attendance.recorded' &&
+    item.entity_id === scan.id_unik,
+  ));
+  const operatorChange = await request('/pengaturan', {
+    method: 'PUT',
+    token: operatorToken,
+    body: {
+      timezone: 'Asia/Jakarta',
+      check_in_deadline: '09:00',
+      lateness_tolerance_minutes: 0,
+      check_out_start: '15:00',
+    },
+  });
+  assert.equal(operatorChange.response.status, 403);
+
+  const backupResponse = await request('/admin-tools/backup', { token: adminToken });
+  assert.equal(backupResponse.response.status, 200);
+  assert.equal(backupResponse.data.format, 'ruang-hadir-backup');
+  assert.equal(backupResponse.data.version, 1);
+  assert.equal(
+    backupResponse.data.tables.attendance_logs.length,
+    (await db.query('SELECT COUNT(*) AS count FROM attendance_logs'))[0].count,
+  );
+  assert.ok(backupResponse.data.tables.activity_logs.length > 0);
+  const malformedRestore = await request('/admin-tools/backup/restore', {
+    method: 'POST',
+    token: adminToken,
+    body: { format: 'not-a-backup' },
+  });
+  assert.equal(malformedRestore.response.status, 400);
+  const restore = await request('/admin-tools/backup/restore', {
+    method: 'POST',
+    token: adminToken,
+    body: backupResponse.data,
+  });
+  assert.equal(restore.response.status, 200);
+  assert.equal(restore.data.restored, true);
+  assert.equal(
+    (await db.query('SELECT COUNT(*) AS count FROM attendance_logs'))[0].count,
+    backupResponse.data.tables.attendance_logs.length,
+  );
+  assert.ok((await db.query(
+    "SELECT id FROM activity_logs WHERE action = 'database.backup.restored'",
+  )).length);
+  assert.ok((await db.query(
+    "SELECT id FROM activity_logs WHERE action = 'database.backup.exported'",
+  )).length);
+
   for (let attempt = 0; attempt < 35; attempt += 1) {
     const statusResult = await request('/auth/menu-pin/status', { token: adminToken });
     assert.equal(statusResult.response.status, 200);
