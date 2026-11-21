@@ -5,17 +5,21 @@ import bcrypt from 'bcryptjs';
 import { config } from './config.js';
 
 const DUMMY_HASH = bcrypt.hashSync(randomBytes(32).toString('base64url'), 10);
-const duration = /^(\d+)(s|m|h|d)$/.exec(config.jwtTtl);
-if (!duration) throw new Error('JWT_TTL harus berupa durasi seperti 8h atau 30m.');
-const ttlSeconds = Number(duration[1]) * ({ s: 1, m: 60, h: 3600, d: 86400 })[duration[2]];
+const ttlSeconds = (value) => {
+  const duration = /^([1-9]\d*)(s|m|h|d)$/.exec(value);
+  if (!duration) throw new Error('Masa berlaku JWT harus berupa durasi positif seperti 8h atau 30d.');
+  return Number(duration[1]) * ({ s: 1, m: 60, h: 3600, d: 86400 })[duration[2]];
+};
+ttlSeconds(config.jwtTtl);
+ttlSeconds(config.schoolJwtTtl);
 
 function encode(value) {
   return Buffer.from(JSON.stringify(value)).toString('base64url');
 }
 
-export function signToken(payload) {
+export function signToken(payload, ttl = config.jwtTtl) {
   const now = Math.floor(Date.now() / 1000);
-  const body = encode({ ...payload, iat: now, exp: now + ttlSeconds });
+  const body = encode({ ...payload, iat: now, exp: now + ttlSeconds(ttl) });
   const input = `v1.${body}`;
   const signature = createHmac('sha256', config.jwtSecret).update(input).digest('base64url');
   return `${input}.${signature}`;

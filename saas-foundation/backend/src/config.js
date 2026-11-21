@@ -18,6 +18,7 @@ export const config = Object.freeze({
   port: Number(process.env.PORT ?? 4100),
   jwtSecret,
   jwtTtl: process.env.JWT_TTL ?? '8h',
+  schoolJwtTtl: process.env.SCHOOL_JWT_TTL ?? '30d',
   publicWebUrl: process.env.PUBLIC_WEB_URL?.trim() ?? '',
   publicApiUrl: process.env.PUBLIC_API_URL?.trim() ?? '',
   backupDirectory: process.env.BACKUP_DIRECTORY?.trim() ?? '',

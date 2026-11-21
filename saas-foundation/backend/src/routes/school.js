@@ -406,9 +406,9 @@ router.post('/auth/login', asyncRoute(async (req, res) => {
       schoolId: String(user.sekolah_id),
       schoolCode: user.school_code,
       authVersion: Number(user.auth_version ?? 0),
-    }),
+    }, config.schoolJwtTtl),
     token_type: 'Bearer',
-    expires_in: process.env.JWT_TTL ?? '8h',
+    expires_in: config.schoolJwtTtl,
     user: {
       id: String(user.id), username: user.username, display_name: user.display_name,
       role_name: user.role_name,

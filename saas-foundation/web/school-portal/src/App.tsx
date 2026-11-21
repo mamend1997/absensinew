@@ -183,10 +183,13 @@ const initialDate = new Date().toISOString().slice(0, 10);
 
 function readSession(): SchoolSession | null {
   try {
-    const raw = sessionStorage.getItem(SESSION_KEY);
+    const raw = localStorage.getItem(SESSION_KEY) ?? sessionStorage.getItem(SESSION_KEY);
+    if (raw) localStorage.setItem(SESSION_KEY, raw);
+    sessionStorage.removeItem(SESSION_KEY);
     return raw ? JSON.parse(raw) as SchoolSession : null;
   } catch (error) {
     console.error('Sesi sekolah lokal tidak dapat dibaca.', error);
+    localStorage.removeItem(SESSION_KEY);
     sessionStorage.removeItem(SESSION_KEY);
     return null;
   }
@@ -383,6 +386,7 @@ export default function App() {
   const [deviceName, setDeviceName] = useState('Scanner sekolah');
   const [operationalForm, setOperationalForm] = useState(initialSettings);
   const [scannerPreferences, setScannerPreferences] = useState(initialScannerPreferences);
+  const [scannerPreferencesReady, setScannerPreferencesReady] = useState(false);
   const [scannerPinForm, setScannerPinForm] = useState('');
   const [scannerMenuOpen, setScannerMenuOpen] = useState(false);
   const [scannerMenuPin, setScannerMenuPin] = useState('');
@@ -463,7 +467,10 @@ export default function App() {
   const can = (permission: Permission) => permissions.includes(permission);
   useEffect(() => {
     if (!session) return;
-    setDeviceKey(sessionStorage.getItem(deviceStorageKey) ?? '');
+    const savedDeviceKey = localStorage.getItem(deviceStorageKey) ?? sessionStorage.getItem(deviceStorageKey);
+    if (savedDeviceKey) localStorage.setItem(deviceStorageKey, savedDeviceKey);
+    sessionStorage.removeItem(deviceStorageKey);
+    setDeviceKey(savedDeviceKey ?? '');
     void request<{ session?: SchoolSession; school?: SchoolInfo; user?: UserInfo }>(
       '/school/auth/me',
       session.token,
@@ -472,7 +479,7 @@ export default function App() {
         ? { ...session, school: result.school, user: result.user }
         : session);
       setSession(refreshed);
-      sessionStorage.setItem(SESSION_KEY, JSON.stringify(refreshed));
+      localStorage.setItem(SESSION_KEY, JSON.stringify(refreshed));
       setOfflineMode(false);
       setPage(initialPage(refreshed));
       if (!refreshed.school.subscription_expired) {
@@ -534,17 +541,22 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!session || page !== 'scanner') return;
+    if (!session || page !== 'scanner' || !scannerPreferencesReady) return;
+    void startCamera(scannerPreferences);
     return () => {
       controlsRef.current?.stop();
       controlsRef.current = null;
       setCameraActive(false);
     };
-  }, [page, session?.school.id]);
+  }, [page, session?.school.id, scannerPreferencesReady]);
 
   useEffect(() => {
-    if (!session) return;
+    if (!session) {
+      setScannerPreferencesReady(false);
+      return;
+    }
     let active = true;
+    setScannerPreferencesReady(false);
     setScannerPreferences(initialScannerPreferences);
     void database(session.school.id)
       .then((db) => db.get('scannerPreferences', 'default'))
@@ -553,6 +565,9 @@ export default function App() {
       })
       .catch((reason: unknown) => {
         if (active) setError(reason instanceof Error ? reason.message : 'Pengaturan scanner lokal gagal dimuat.');
+      })
+      .finally(() => {
+        if (active) setScannerPreferencesReady(true);
       });
     return () => { active = false; };
   }, [session?.school.id]);
@@ -687,7 +702,7 @@ export default function App() {
         user: { ...result.user, ...current.user, permissions: current.user.permissions },
       };
       setSession(nextSession);
-      sessionStorage.setItem(SESSION_KEY, JSON.stringify(nextSession));
+      localStorage.setItem(SESSION_KEY, JSON.stringify(nextSession));
       setLoginForm((current) => ({ ...current, password: '' }));
       setPage(initialPage(nextSession));
     } catch (reason) {
@@ -819,8 +834,8 @@ export default function App() {
   function signOut() {
     controlsRef.current?.stop();
     controlsRef.current = null;
-    sessionStorage.removeItem(SESSION_KEY);
-    if (deviceStorageKey) sessionStorage.removeItem(deviceStorageKey);
+    localStorage.removeItem(SESSION_KEY);
+    if (deviceStorageKey) localStorage.removeItem(deviceStorageKey);
     setSession(null);
     setParticipants([]);
     setPage('dashboard');
@@ -1500,7 +1515,7 @@ export default function App() {
         { method: 'POST', body: { device_name: deviceName } },
       );
       if (!result.api_key) throw new Error('Server tidak mengembalikan API Key perangkat.');
-      sessionStorage.setItem(deviceStorageKey, result.api_key);
+      localStorage.setItem(deviceStorageKey, result.api_key);
       setDeviceKey(result.api_key);
       if (result.device) setDevices((current) => [...current, result.device!]);
       setMessage('Perangkat terdaftar. Simpan API Key ini; key hanya ditampilkan saat dibuat.');
