@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 
 const TOKEN_KEY = 'saas_super_admin_token';
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '');
-type SubscriptionStatus = 'trial' | 'aktif' | 'suspend';
+type SubscriptionStatus = 'trial' | 'aktif' | 'suspend' | 'lifetime';
 
 interface School {
   id: number;
@@ -14,6 +14,7 @@ interface School {
   subscription_expires_at: string | null;
   participant_quota: number;
   is_active: boolean | number;
+  admin_username: string | null;
 }
 
 interface WhatsappGatewaySettings {
@@ -33,6 +34,18 @@ interface SchoolForm {
     display_name: string;
     password: string;
   };
+}
+
+interface SchoolEditForm {
+  name: string;
+  subscription_status: SubscriptionStatus;
+  participant_quota: number;
+}
+
+interface ResetCredentials {
+  schoolName: string;
+  username: string;
+  temporaryPassword: string;
 }
 
 const emptyForm: SchoolForm = {
@@ -113,6 +126,35 @@ export default function App() {
   const [gatewayBusy, setGatewayBusy] = useState(false);
   const [apkDriveUrl, setApkDriveUrl] = useState('');
   const [apkBusy, setApkBusy] = useState(false);
+  const [applicationName, setApplicationName] = useState('Ruang Hadir');
+  const [applicationNameBusy, setApplicationNameBusy] = useState(false);
+  const [editingSchool, setEditingSchool] = useState<School | null>(null);
+  const [schoolEditForm, setSchoolEditForm] = useState<SchoolEditForm>({
+    name: '',
+    subscription_status: 'trial',
+    participant_quota: 500,
+  });
+  const [deleteTarget, setDeleteTarget] = useState<School | null>(null);
+  const [deleteConfirmation, setDeleteConfirmation] = useState('');
+  const [resetCredentials, setResetCredentials] = useState<ResetCredentials | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    fetch(`${API_BASE}/branding`, { cache: 'no-store' })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`Nama aplikasi gagal dimuat (${response.status}).`);
+        return response.json() as Promise<{ application_name?: string }>;
+      })
+      .then((result) => {
+        if (active && result.application_name) setApplicationName(result.application_name);
+      })
+      .catch((reason: unknown) => console.error('Nama aplikasi gagal dimuat.', reason));
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    document.title = `Super Admin · ${applicationName}`;
+  }, [applicationName]);
 
   useEffect(() => {
     let active = true;
@@ -176,6 +218,13 @@ export default function App() {
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Link APK gagal dimuat.'));
   }, [token]);
 
+  useEffect(() => {
+    if (!token) return;
+    request<{ application_name: string }>('/super-admin/settings/application-name', token)
+      .then((result) => setApplicationName(result.application_name))
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Nama aplikasi gagal dimuat.'));
+  }, [token]);
+
   async function login(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
@@ -234,6 +283,104 @@ export default function App() {
       setError(reason instanceof Error ? reason.message : 'Perubahan sekolah gagal disimpan.');
     } finally {
       setBusy(false);
+    }
+  }
+
+  function openSchoolEditor(school: School) {
+    setEditingSchool(school);
+    setSchoolEditForm({
+      name: school.name,
+      subscription_status: school.subscription_status,
+      participant_quota: Number(school.participant_quota),
+    });
+  }
+
+  async function saveSchoolEdit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editingSchool) return;
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await request(`/super-admin/schools/${editingSchool.id}`, token, {
+        method: 'PATCH',
+        body: {
+          name: schoolEditForm.name,
+          subscription_status: schoolEditForm.subscription_status,
+          participant_quota: Number(schoolEditForm.participant_quota),
+        },
+      });
+      setNotice(`Perubahan ${schoolEditForm.name} disimpan.`);
+      setEditingSchool(null);
+      await loadSchools();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Data sekolah gagal diperbarui.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resetSchoolPassword(school: School) {
+    if (!window.confirm(`Buat kata sandi sementara untuk akun Admin ${school.name}${school.admin_username ? ` (${school.admin_username})` : ''}? Kata sandi saat ini langsung diganti.`)) return;
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await request<{ username: string; temporary_password: string }>(
+        `/super-admin/schools/${school.id}/admin-password/reset`,
+        token,
+        { method: 'POST', body: {} },
+      );
+      setResetCredentials({
+        schoolName: school.name,
+        username: result.username,
+        temporaryPassword: result.temporary_password,
+      });
+      setNotice('Kata sandi sementara berhasil dibuat. Salin dan sampaikan dengan aman.');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Kata sandi Admin gagal diatur ulang.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteSchool() {
+    if (!deleteTarget) return;
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await request(`/super-admin/schools/${deleteTarget.id}`, token, {
+        method: 'DELETE',
+        body: { confirm_school_name: deleteConfirmation },
+      });
+      setNotice(`Data sekolah ${deleteTarget.name} dan data terkait telah dihapus permanen.`);
+      setDeleteTarget(null);
+      setDeleteConfirmation('');
+      await loadSchools();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Sekolah gagal dihapus.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveApplicationName(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setApplicationNameBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await request<{ application_name: string }>('/super-admin/settings/application-name', token, {
+        method: 'PUT',
+        body: { application_name: applicationName.trim() },
+      });
+      setApplicationName(result.application_name);
+      setNotice('Nama aplikasi diperbarui di portal Super Admin dan portal sekolah.');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Nama aplikasi gagal disimpan.');
+    } finally {
+      setApplicationNameBusy(false);
     }
   }
 
@@ -398,7 +545,7 @@ export default function App() {
       <main className="login-shell">
         <form className="login-card" onSubmit={(event) => void login(event)}>
           <div className="brand-mark">RH</div>
-          <p className="eyebrow">RUANG HADIR · PLATFORM</p>
+          <p className="eyebrow">{applicationName.toLocaleUpperCase('id-ID')} · PLATFORM</p>
           <h1>Super Admin SaaS</h1>
           <p className="muted">Kelola tenant sekolah dan status langganan platform.</p>
           {error && <div className="alert error">{error}</div>}
@@ -414,7 +561,7 @@ export default function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div className="brand"><div className="brand-mark">RH</div><div><strong>Ruang Hadir</strong><small>Platform SaaS</small></div></div>
+        <div className="brand"><div className="brand-mark">RH</div><div><strong>{applicationName}</strong><small>Platform SaaS</small></div></div>
         <div className="top-actions"><span className="role-pill">Super Admin</span><button className="button secondary" onClick={signOut}>Keluar</button></div>
       </header>
       <div className="content">
@@ -440,6 +587,18 @@ export default function App() {
             <label>Pilih logo<input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void selectLogo(event.target.files?.[0])} /></label>
             <button className="button primary" disabled={busy || !logoDataUrl}>{busy ? 'Menyimpan…' : 'Simpan logo'}</button>
             <button className="button secondary" type="button" disabled={busy} onClick={() => void removeLogo()}>Hapus logo</button>
+          </form>
+        </section>
+        <section className="panel name-panel">
+          <div>
+            <h2>Nama aplikasi</h2>
+            <p className="muted">Nama ini ditampilkan di portal Super Admin dan halaman sekolah.</p>
+          </div>
+          <form className="name-form" onSubmit={(event) => void saveApplicationName(event)}>
+            <label>Nama aplikasi
+              <input required maxLength={120} value={applicationName} onChange={(event) => setApplicationName(event.target.value)} />
+            </label>
+            <button className="button primary" disabled={applicationNameBusy}>{applicationNameBusy ? 'Menyimpan…' : 'Simpan nama'}</button>
           </form>
         </section>
         <section className="panel gateway-panel">
@@ -487,7 +646,7 @@ export default function App() {
             <label>Slug unik<input required maxLength={100} pattern="[a-z0-9-]+" value={form.slug} onChange={(event) => setForm((current) => ({ ...current, slug: slugify(event.target.value) }))} /></label>
             <label>Status
               <select value={form.subscription_status} onChange={(event) => setForm((current) => ({ ...current, subscription_status: event.target.value as SubscriptionStatus }))}>
-                <option value="trial">Uji coba</option><option value="aktif">Aktif</option><option value="suspend">Ditangguhkan</option>
+                <option value="trial">Uji coba</option><option value="aktif">Aktif</option><option value="lifetime">Lifetime</option><option value="suspend">Ditangguhkan</option>
               </select>
             </label>
             <label>Kuota peserta<input type="number" min={1} max={1000000} required value={form.participant_quota} onChange={(event) => setForm((current) => ({ ...current, participant_quota: Number(event.target.value) }))} /></label>
@@ -501,7 +660,7 @@ export default function App() {
           <div className="section-title"><div><h2>Daftar tenant</h2><p className="muted">{schools.length} sekolah</p></div><button className="button secondary" onClick={() => void loadSchools()}>Muat ulang</button></div>
           <div className="table-scroll">
             <table>
-              <thead><tr><th>Sekolah</th><th>Kode 4 digit</th><th>Status langganan</th><th>Kuota</th><th>Masa berlaku</th><th>Aksi kode</th></tr></thead>
+              <thead><tr><th>Sekolah</th><th>Kode 4 digit</th><th>Status langganan</th><th>Kuota</th><th>Masa berlaku</th><th>Aksi kode</th><th>Aksi sekolah</th></tr></thead>
               <tbody>
                 {schools.map((school) => (
                   <tr key={school.id}>
@@ -515,12 +674,12 @@ export default function App() {
                           value={school.subscription_status}
                           onChange={(event) => setSchools((current) => current.map((item) => item.id === school.id ? { ...item, subscription_status: event.target.value as SubscriptionStatus } : item))}
                         >
-                          <option value="trial">Uji coba</option><option value="aktif">Aktif</option><option value="suspend">Ditangguhkan</option>
+                          <option value="trial">Uji coba</option><option value="aktif">Aktif</option><option value="lifetime">Lifetime</option><option value="suspend">Ditangguhkan</option>
                         </select>
                       </div>
                     </td>
                     <td><input className="quota-input" type="number" min={1} value={school.participant_quota} onChange={(event) => setSchools((current) => current.map((item) => item.id === school.id ? { ...item, participant_quota: Number(event.target.value) } : item))} /></td>
-                    <td>{school.subscription_expires_at ? new Date(school.subscription_expires_at).toLocaleDateString('id-ID') : school.trial_ends_at ? `Trial s/d ${new Date(school.trial_ends_at).toLocaleDateString('id-ID')}` : '—'}</td>
+                    <td>{school.subscription_status === 'lifetime' ? 'Selamanya' : school.subscription_expires_at ? new Date(school.subscription_expires_at).toLocaleDateString('id-ID') : school.trial_ends_at ? `Trial s/d ${new Date(school.trial_ends_at).toLocaleDateString('id-ID')}` : '—'}</td>
                     <td>
                       <div className="code-actions">
                         <input
@@ -535,15 +694,72 @@ export default function App() {
                         <button className="button secondary small" disabled={busy} onClick={() => void updateSchool(school)}>Simpan</button>
                       </div>
                     </td>
+                    <td>
+                      <div className="school-actions">
+                        <button className="button secondary small" disabled={busy} onClick={() => openSchoolEditor(school)}>Edit</button>
+                        <button className="button secondary small" disabled={busy} onClick={() => void resetSchoolPassword(school)}>Reset password</button>
+                        <button className="button danger small" disabled={busy} onClick={() => { setDeleteTarget(school); setDeleteConfirmation(''); }}>Hapus</button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
-                {!schools.length && <tr><td colSpan={6} className="empty">Belum ada sekolah.</td></tr>}
+                {!schools.length && <tr><td colSpan={7} className="empty">Belum ada sekolah.</td></tr>}
               </tbody>
             </table>
           </div>
           <p className="fine-print">Perubahan kode membatalkan login sekolah yang memakai kode lama. Sampaikan kode terbaru ke operator sekolah.</p>
         </section>
       </div>
+      {editingSchool && (
+        <div className="modal-backdrop" role="presentation">
+          <form className="modal-card" onSubmit={(event) => void saveSchoolEdit(event)}>
+            <h2>Edit sekolah</h2>
+            <p className="muted">Perbarui nama, status langganan, dan kuota untuk {editingSchool.name}.</p>
+            <label>Nama sekolah<input required maxLength={180} value={schoolEditForm.name} onChange={(event) => setSchoolEditForm((current) => ({ ...current, name: event.target.value }))} /></label>
+            <label>Status langganan
+              <select value={schoolEditForm.subscription_status} onChange={(event) => setSchoolEditForm((current) => ({ ...current, subscription_status: event.target.value as SubscriptionStatus }))}>
+                <option value="trial">Uji coba</option><option value="aktif">Aktif</option><option value="lifetime">Lifetime</option><option value="suspend">Ditangguhkan</option>
+              </select>
+            </label>
+            <label>Kuota peserta<input type="number" min={1} max={1000000} required value={schoolEditForm.participant_quota} onChange={(event) => setSchoolEditForm((current) => ({ ...current, participant_quota: Number(event.target.value) }))} /></label>
+            <div className="modal-actions">
+              <button className="button secondary" type="button" disabled={busy} onClick={() => setEditingSchool(null)}>Batal</button>
+              <button className="button primary" disabled={busy}>{busy ? 'Menyimpan…' : 'Simpan perubahan'}</button>
+            </div>
+          </form>
+        </div>
+      )}
+      {deleteTarget && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal-card">
+            <h2>Hapus sekolah permanen</h2>
+            <p className="danger-copy">Tindakan ini menghapus sekolah, peserta, absensi, akun pengguna, serta data operasional dan tidak dapat dibatalkan.</p>
+            <label>Ketik nama sekolah <strong>{deleteTarget.name}</strong> untuk mengonfirmasi
+              <input autoComplete="off" value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} />
+            </label>
+            <div className="modal-actions">
+              <button className="button secondary" disabled={busy} onClick={() => { setDeleteTarget(null); setDeleteConfirmation(''); }}>Batal</button>
+              <button className="button danger" disabled={busy || deleteConfirmation !== deleteTarget.name} onClick={() => void deleteSchool()}>{busy ? 'Menghapus…' : 'Hapus permanen'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {resetCredentials && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal-card">
+            <h2>Kata sandi sementara dibuat</h2>
+            <p className="muted">Akun Admin {resetCredentials.schoolName}: <strong>{resetCredentials.username}</strong></p>
+            <label>Kata sandi baru
+              <input readOnly value={resetCredentials.temporaryPassword} onFocus={(event) => event.currentTarget.select()} />
+            </label>
+            <p className="danger-copy">Kata sandi lama sudah tidak berlaku. Salin dan sampaikan kata sandi ini secara aman; nilainya tidak akan ditampilkan lagi setelah ditutup.</p>
+            <div className="modal-actions">
+              <button className="button secondary" onClick={() => void navigator.clipboard.writeText(resetCredentials.temporaryPassword).then(() => setNotice('Kata sandi disalin ke clipboard.')).catch(() => setError('Clipboard tidak dapat diakses; pilih dan salin kata sandi secara manual.'))}>Salin kata sandi</button>
+              <button className="button primary" onClick={() => setResetCredentials(null)}>Selesai</button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

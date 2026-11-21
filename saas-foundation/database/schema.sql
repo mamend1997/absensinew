@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS super_admins (
 
 CREATE TABLE IF NOT EXISTS platform_branding (
     id TINYINT UNSIGNED NOT NULL,
+    application_name VARCHAR(120) NOT NULL DEFAULT 'Ruang Hadir',
     logo_mime_type VARCHAR(32) NULL,
     logo_data MEDIUMBLOB NULL,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -51,7 +52,7 @@ CREATE TABLE IF NOT EXISTS schools (
     slug VARCHAR(100) NOT NULL,
     school_code CHAR(4) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     name VARCHAR(180) NOT NULL,
-    subscription_status ENUM('trial', 'aktif', 'suspend') NOT NULL DEFAULT 'trial',
+    subscription_status ENUM('trial', 'aktif', 'suspend', 'lifetime') NOT NULL DEFAULT 'trial',
     trial_ends_at DATETIME NULL,
     subscription_expires_at DATETIME NULL,
     participant_quota INT UNSIGNED NOT NULL DEFAULT 500,

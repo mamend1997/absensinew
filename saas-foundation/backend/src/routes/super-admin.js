@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { Router } from 'express';
 import { generateUniqueSchoolCode, isValidSchoolCode } from '../core/school-code.js';
 import { parseLogoDataUrl } from '../core/branding.js';
@@ -80,6 +81,22 @@ router.put('/branding/logo', requireSuperAdmin, asyncRoute(async (req, res) => {
     [mimeType, data],
   );
   res.json({ message: 'Logo platform diperbarui.' });
+}));
+
+router.get('/settings/application-name', requireSuperAdmin, asyncRoute(async (req, res) => {
+  const [[branding]] = await pool.execute(
+    'SELECT application_name FROM platform_branding WHERE id = 1',
+  );
+  res.json({ application_name: branding?.application_name ?? 'Ruang Hadir' });
+}));
+
+router.put('/settings/application-name', requireSuperAdmin, asyncRoute(async (req, res) => {
+  const applicationName = validateString(req.body?.application_name, 'Nama aplikasi', 120);
+  await pool.execute(
+    'UPDATE platform_branding SET application_name = ? WHERE id = 1',
+    [applicationName],
+  );
+  res.json({ application_name: applicationName, message: 'Nama aplikasi diperbarui.' });
 }));
 
 router.delete('/branding/logo', requireSuperAdmin, asyncRoute(async (req, res) => {
@@ -168,7 +185,11 @@ router.use(requireSuperAdmin);
 router.get('/schools', asyncRoute(async (req, res) => {
   const [rows] = await pool.execute(
     `SELECT id, slug, school_code, name, subscription_status, trial_ends_at,
-            subscription_expires_at, participant_quota, timezone, is_active, created_at, updated_at
+            subscription_expires_at, participant_quota, timezone, is_active, created_at, updated_at,
+            (SELECT u.username
+               FROM users u JOIN roles r ON r.sekolah_id = u.sekolah_id AND r.id = u.role_id
+              WHERE u.sekolah_id = schools.id AND r.role_key = 'admin-sekolah'
+              ORDER BY u.id LIMIT 1) AS admin_username
        FROM schools ORDER BY id DESC`,
   );
   res.json({ schools: rows });
@@ -194,8 +215,8 @@ router.post('/schools', asyncRoute(async (req, res) => {
     throw fail(400, 'participant_quota tidak valid.', 'VALIDATION_ERROR');
   }
   const status = req.body.subscription_status ?? 'trial';
-  if (!['trial', 'aktif'].includes(status)) {
-    throw fail(400, 'subscription_status harus trial atau aktif.', 'VALIDATION_ERROR');
+  if (!['trial', 'aktif', 'lifetime'].includes(status)) {
+    throw fail(400, 'subscription_status harus trial, aktif, atau lifetime.', 'VALIDATION_ERROR');
   }
   const timezone = req.body.timezone ?? 'Asia/Jakarta';
   try {
@@ -232,15 +253,20 @@ router.post('/schools', asyncRoute(async (req, res) => {
 router.patch('/schools/:id', asyncRoute(async (req, res) => {
   const allowed = ['name', 'subscription_status', 'trial_ends_at',
     'subscription_expires_at', 'participant_quota', 'timezone', 'is_active'];
-  const entries = Object.entries(req.body ?? {}).filter(([key]) => allowed.includes(key));
-  if (!entries.length || entries.length !== Object.keys(req.body ?? {}).length) {
+  const changes = { ...(req.body ?? {}) };
+  if (changes.subscription_status === 'lifetime') {
+    changes.trial_ends_at = null;
+    changes.subscription_expires_at = null;
+  }
+  const entries = Object.entries(changes).filter(([key]) => allowed.includes(key));
+  if (!entries.length || entries.length !== Object.keys(changes).length) {
     throw fail(400, 'Field perubahan tidak valid atau kosong.', 'VALIDATION_ERROR');
   }
   const values = [];
   for (const [key, value] of entries) {
     if (key === 'name') values.push(validateString(value, key, 180));
     else if (key === 'subscription_status') {
-      if (!['trial', 'aktif', 'suspend'].includes(value)) throw fail(400, 'Status langganan tidak valid.');
+      if (!['trial', 'aktif', 'suspend', 'lifetime'].includes(value)) throw fail(400, 'Status langganan tidak valid.');
       values.push(value);
     } else if (key === 'participant_quota') {
       if (!Number.isInteger(value) || value < 1 || value > 1000000) throw fail(400, 'Kuota tidak valid.');
@@ -273,6 +299,69 @@ router.patch('/schools/:id', asyncRoute(async (req, res) => {
     [req.params.id],
   );
   res.json({ school });
+}));
+
+router.post('/schools/:id/admin-password/reset', asyncRoute(async (req, res) => {
+  const schoolId = req.params.id;
+  if (!/^[1-9]\d*$/.test(schoolId)) throw fail(400, 'ID sekolah tidak valid.', 'VALIDATION_ERROR');
+  const [[admin]] = await pool.execute(
+    `SELECT u.id, u.username
+       FROM users u JOIN roles r ON r.sekolah_id = u.sekolah_id AND r.id = u.role_id
+      WHERE u.sekolah_id = ? AND r.role_key = 'admin-sekolah' AND u.is_active = TRUE
+      ORDER BY u.id LIMIT 1`,
+    [schoolId],
+  );
+  if (!admin) throw fail(404, 'Akun Admin sekolah aktif tidak ditemukan.', 'NOT_FOUND');
+  const temporaryPassword = randomBytes(18).toString('base64url');
+  const passwordHash = await hashPassword(temporaryPassword);
+  await pool.execute(
+    'UPDATE users SET password_hash = ? WHERE id = ? AND sekolah_id = ?',
+    [passwordHash, admin.id, schoolId],
+  );
+  res.json({
+    username: admin.username,
+    temporary_password: temporaryPassword,
+    message: 'Kata sandi sementara dibuat. Simpan dan sampaikan dengan aman.',
+  });
+}));
+
+router.delete('/schools/:id', asyncRoute(async (req, res) => {
+  const schoolId = req.params.id;
+  if (!/^[1-9]\d*$/.test(schoolId)) throw fail(400, 'ID sekolah tidak valid.', 'VALIDATION_ERROR');
+  const confirmation = req.body?.confirm_school_name;
+  if (typeof confirmation !== 'string' || confirmation.length > 180) {
+    throw fail(400, 'Ketik nama sekolah sebagai konfirmasi.', 'VALIDATION_ERROR');
+  }
+  const name = await inTransaction(async (connection) => {
+    const [[school]] = await connection.execute(
+      'SELECT name FROM schools WHERE id = ? FOR UPDATE',
+      [schoolId],
+    );
+    if (!school) throw fail(404, 'Sekolah tidak ditemukan.', 'NOT_FOUND');
+    if (confirmation !== school.name) {
+      throw fail(400, 'Nama konfirmasi tidak cocok. Tidak ada data yang dihapus.', 'VALIDATION_ERROR');
+    }
+    const tenantTables = [
+      'attendance_logs',
+      'attendance_exceptions',
+      'activity_logs',
+      'operational_settings',
+      'school_holidays',
+      'weekly_operational_schedules',
+      'scanner_devices',
+      'participants',
+      'users',
+      'classrooms',
+      'units',
+      'roles',
+    ];
+    for (const table of tenantTables) {
+      await connection.execute(`DELETE FROM \`${table}\` WHERE sekolah_id = ?`, [schoolId]);
+    }
+    await connection.execute('DELETE FROM schools WHERE id = ?', [schoolId]);
+    return school.name;
+  });
+  res.json({ message: `Data sekolah ${name} dan seluruh data terkait telah dihapus permanen.` });
 }));
 
 router.post('/schools/:id/code/reset', asyncRoute(async (req, res) => {

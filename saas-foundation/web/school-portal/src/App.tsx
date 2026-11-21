@@ -223,12 +223,14 @@ function downloadReport(rows: ReportRow[]) {
 
 export default function App() {
   const [session, setSession] = useState<SchoolSession | null>(readSession);
+  const [applicationName, setApplicationName] = useState('Ruang Hadir');
   const [page, setPage] = useState<Page>('dashboard');
   const [loginView, setLoginView] = useState<LoginView>('login');
   const [loginForm, setLoginForm] = useState({ school_code: '', username: '', password: '' });
   const [registrationForm, setRegistrationForm] = useState(initialRegistrationForm);
   const [registrationChallengeId, setRegistrationChallengeId] = useState('');
   const [registrationOtp, setRegistrationOtp] = useState('');
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [showRegistrationPassword, setShowRegistrationPassword] = useState(false);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [classrooms, setClassrooms] = useState<Classroom[]>([]);
@@ -301,6 +303,24 @@ export default function App() {
       if (link) link.href = '/favicon.svg';
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    fetch(`${API_BASE}/branding`, { cache: 'no-store' })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`Nama aplikasi gagal dimuat (${response.status}).`);
+        return response.json() as Promise<{ application_name?: string }>;
+      })
+      .then((result) => {
+        if (active && result.application_name) setApplicationName(result.application_name);
+      })
+      .catch((reason: unknown) => console.error('Nama aplikasi gagal dimuat.', reason));
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    document.title = `${applicationName} · Portal Sekolah`;
+  }, [applicationName]);
 
   const permissions = session?.user.permissions ?? [];
   const can = (permission: Permission) => permissions.includes(permission);
@@ -877,7 +897,7 @@ export default function App() {
         {loginView === 'login' && <form className="login-card" onSubmit={(event) => void login(event)}>
           <div className="brand-mark">RH</div>
           <p className="eyebrow">PORTAL SEKOLAH</p>
-          <h1>Masuk ke Ruang Hadir</h1>
+          <h1>Masuk ke {applicationName}</h1>
           <p className="muted">Gunakan kode sekolah 4 digit dan akun sekolah Anda.</p>
           {error && <div className="alert error">{error}</div>}
           {notice && <div className="alert success">{notice}</div>}
@@ -885,9 +905,14 @@ export default function App() {
             <input inputMode="numeric" autoComplete="organization" maxLength={4} pattern="\d{4}" required value={loginForm.school_code} onChange={(event) => setLoginForm((current) => ({ ...current, school_code: event.target.value.replace(/\D/g, '').slice(0, 4) }))} placeholder="Contoh: 4829" />
           </label>
           <label>Username / nomor WhatsApp<input autoComplete="username" required value={loginForm.username} onChange={(event) => setLoginForm((current) => ({ ...current, username: event.target.value }))} /></label>
-          <label>Password<input type="password" autoComplete="current-password" required value={loginForm.password} onChange={(event) => setLoginForm((current) => ({ ...current, password: event.target.value }))} /></label>
+          <label>Password
+            <span className="password-input-wrap">
+              <input type={showLoginPassword ? 'text' : 'password'} autoComplete="current-password" required value={loginForm.password} onChange={(event) => setLoginForm((current) => ({ ...current, password: event.target.value }))} />
+              <button className="password-eye" type="button" onClick={() => setShowLoginPassword((visible) => !visible)} aria-label={showLoginPassword ? 'Sembunyikan kata sandi' : 'Tampilkan kata sandi'}><PasswordEye visible={showLoginPassword} /></button>
+            </span>
+          </label>
           <button className="button primary" disabled={busy}>{busy ? 'Memeriksa…' : 'Masuk ke sekolah'}</button>
-          <button className="text-button register-link" type="button" onClick={() => { setLoginView('register'); setError(''); setNotice(''); }}>Belum punya akun sekolah? Daftarkan sekolah</button>
+          <button className="button secondary register-school-button" type="button" onClick={() => { setLoginView('register'); setError(''); setNotice(''); }}>Belum punya akun sekolah? Daftarkan sekolah</button>
           <small className="muted">Login Super Admin tersedia di portal platform yang terpisah.</small>
         </form>}
         {loginView === 'register' && <form className="login-card registration-card" onSubmit={(event) => void startRegistration(event)}>
@@ -895,7 +920,7 @@ export default function App() {
           <div className="brand-mark">RH</div>
           <p className="eyebrow">PENDAFTARAN SEKOLAH</p>
           <h1>Daftarkan sekolah</h1>
-          <p className="muted">Kami akan mengirim kode verifikasi ke WhatsApp admin. Akun mendapat masa uji coba 30 hari.</p>
+          <p className="muted">Kami akan mengirim kode verifikasi ke WhatsApp admin. Akun mendapat masa uji coba 30 hari. Kode sekolah 4 digit dibuat otomatis setelah verifikasi dan digunakan saat login.</p>
           {error && <div className="alert error">{error}</div>}
           {notice && <div className="alert success">{notice}</div>}
           <label>Nama sekolah<input autoComplete="organization" maxLength={180} required value={registrationForm.school_name} onChange={(event) => setRegistrationForm((current) => ({ ...current, school_name: event.target.value }))} /></label>

@@ -18,6 +18,7 @@ h3 { margin: 0; font-size: 13px; }
 .registration-card { max-height: calc(100dvh - 28px); overflow-y: auto; }
 .register-link, .back-link { justify-self: center; padding: 5px 0; color: #176f4c; font-size: 11px; }
 .back-link { justify-self: start; }
+.register-school-button { width: 100%; white-space: normal; }
 .password-input-wrap { position: relative; display: block; }
 .password-input-wrap input { padding-right: 48px; }
 .password-eye { position: absolute; top: 50%; right: 7px; display: grid; width: 34px; height: 34px; place-items: center; transform: translateY(-50%); border: 0; border-radius: 7px; background: transparent; color: #60736a; }

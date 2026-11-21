@@ -42,6 +42,13 @@ app.get('/api/branding/logo', asyncRoute(async (req, res) => {
   res.set('Cache-Control', 'public, max-age=300');
   res.type(branding.logo_mime_type).send(branding.logo_data);
 }));
+app.get('/api/branding', asyncRoute(async (req, res) => {
+  const [[branding]] = await pool.execute(
+    'SELECT application_name FROM platform_branding WHERE id = 1',
+  );
+  res.set('Cache-Control', 'public, max-age=60');
+  res.json({ application_name: branding?.application_name ?? 'Ruang Hadir' });
+}));
 app.get('/api/platform/downloads', asyncRoute(async (req, res) => {
   const [[settings]] = await pool.execute(
     'SELECT apk_drive_url FROM platform_download_settings WHERE id = 1',

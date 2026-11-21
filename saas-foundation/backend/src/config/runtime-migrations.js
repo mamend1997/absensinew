@@ -1,4 +1,37 @@
 export async function ensureRuntimeMigrations(pool) {
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS platform_branding (
+      id TINYINT UNSIGNED NOT NULL,
+      application_name VARCHAR(120) NOT NULL DEFAULT 'Ruang Hadir',
+      logo_mime_type VARCHAR(32) NULL,
+      logo_data MEDIUMBLOB NULL,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      CONSTRAINT chk_platform_branding_singleton CHECK (id = 1)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+  await pool.execute('INSERT IGNORE INTO platform_branding (id) VALUES (1)');
+  const [brandingColumns] = await pool.execute(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'platform_branding'`,
+  );
+  if (!brandingColumns.some((column) => column.COLUMN_NAME === 'application_name')) {
+    await pool.execute(
+      "ALTER TABLE platform_branding ADD COLUMN application_name VARCHAR(120) NOT NULL DEFAULT 'Ruang Hadir'",
+    );
+  }
+
+  const [[schoolStatusColumn]] = await pool.execute(
+    `SELECT COLUMN_TYPE FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'schools'
+        AND COLUMN_NAME = 'subscription_status'`,
+  );
+  if (schoolStatusColumn && !schoolStatusColumn.COLUMN_TYPE.includes('lifetime')) {
+    await pool.execute(
+      "ALTER TABLE schools MODIFY subscription_status ENUM('trial', 'aktif', 'suspend', 'lifetime') NOT NULL DEFAULT 'trial'",
+    );
+  }
+
   const [columns] = await pool.execute(
     `SELECT COLUMN_NAME FROM information_schema.COLUMNS
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'`,
