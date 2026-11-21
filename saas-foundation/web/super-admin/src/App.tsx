@@ -285,7 +285,9 @@ export default function App() {
   const [backupBotToken, setBackupBotToken] = useState('');
   const [backupChatId, setBackupChatId] = useState('');
   const [backupBusy, setBackupBusy] = useState(false);
-  const [backupAction, setBackupAction] = useState<'save' | 'run' | 'download' | null>(null);
+  const [backupAction, setBackupAction] = useState<'save' | 'run' | 'download' | 'restore' | null>(null);
+  const [platformRestoreFile, setPlatformRestoreFile] = useState<File | null>(null);
+  const [platformRestoreConfirmation, setPlatformRestoreConfirmation] = useState('');
   const [otpRateLimit, setOtpRateLimit] = useState<OtpRateLimitSettings>({
     max_requests_per_phone: 10,
     window_minutes: 30,
@@ -957,6 +959,71 @@ export default function App() {
     }
   }
 
+  async function downloadPlatformJsonBackup() {
+    setBackupBusy(true);
+    setBackupAction('download');
+    setError('');
+    try {
+      const response = await fetch(`${API_BASE}/super-admin/settings/backup/export`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as { error?: string | { message?: string } };
+        const message = typeof payload.error === 'string' ? payload.error : payload.error?.message;
+        throw new Error(message || `Unduhan gagal (${response.status}).`);
+      }
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `ruang-hadir-platform-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+      setNotice('File backup JSON berhasil diunduh. Simpan di tempat yang aman.');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Backup JSON gagal diunduh.');
+    } finally {
+      setBackupBusy(false);
+      setBackupAction(null);
+    }
+  }
+
+  async function restorePlatformBackup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!platformRestoreFile || platformRestoreConfirmation !== 'PULIHKAN') {
+      setError('Pilih file JSON dan ketik PULIHKAN untuk mengonfirmasi.');
+      return;
+    }
+    setBackupBusy(true);
+    setBackupAction('restore');
+    setError('');
+    setNotice('');
+    try {
+      const response = await fetch(`${API_BASE}/super-admin/settings/backup/restore`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${token}`,
+          'content-type': 'application/json',
+        },
+        body: await platformRestoreFile.text(),
+      });
+      const payload = await response.json().catch(() => ({})) as {
+        message?: string;
+        error?: string | { message?: string };
+      };
+      if (!response.ok) {
+        const message = typeof payload.error === 'string' ? payload.error : payload.error?.message;
+        throw new Error(message || `Restore gagal (${response.status}).`);
+      }
+      setNotice(payload.message ?? 'Backup platform berhasil dipulihkan.');
+      window.setTimeout(() => window.location.reload(), 1200);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Restore backup platform gagal.');
+    } finally {
+      setBackupBusy(false);
+      setBackupAction(null);
+    }
+  }
+
   async function resetCode(school: School) {
     const entered = (manualCodes[school.id] ?? '').trim();
     const manualCode = entered || undefined;
@@ -1209,6 +1276,7 @@ export default function App() {
           <a href="#payment-gateways">Payment gateway</a>
           <a href="#account-recovery">Nomor pemulihan</a>
           <a href="#automatic-backup">Backup otomatis</a>
+          <a href="#backup-restore">Unduh / restore</a>
           <a href="#otp-rate-limit">Batas OTP</a>
           <a href="#school-tenants">Akun sekolah</a>
           <a href="#subscription-payments">Pembayaran</a>
@@ -1380,6 +1448,31 @@ export default function App() {
               <button className="button secondary" type="button" disabled={backupBusy || !backupSettings.bot_configured} onClick={() => void runBackupNow()}>{backupAction === 'run' ? 'Membuat backup…' : 'Backup sekarang'}</button>
               {['success', 'notification_failed'].includes(backupSettings.last_status) && <button className="button secondary" type="button" disabled={backupBusy} onClick={() => void downloadPlatformBackup()}>{backupAction === 'download' ? 'Mengunduh…' : 'Unduh backup terenkripsi'}</button>}
             </div>
+          </form>
+        </section>
+        <section id="backup-restore" className="panel backup-restore-panel">
+          <div>
+            <h2>Backup manual platform</h2>
+            <p className="muted">Unduh snapshot seluruh database dalam JSON bertanda tangan. File mencakup data semua sekolah dan harus disimpan secara aman. Telegram hanya menerima notifikasi, bukan file berisi data sekolah.</p>
+            <button className="button secondary" type="button" disabled={backupBusy} onClick={() => void downloadPlatformJsonBackup()}>
+              {backupBusy && backupAction === 'download' ? 'Membuat JSON…' : 'Unduh backup JSON'}
+            </button>
+          </div>
+          <form className="platform-backup-form" onSubmit={(event) => void restorePlatformBackup(event)}>
+            <h3>Pulihkan backup platform</h3>
+            <p className="alert warning">Restore akan mengganti data platform dan seluruh sekolah dengan isi file. Pengaturan backup otomatis dipertahankan. Pastikan Anda memiliki backup terkini.</p>
+            <label>File backup JSON
+              <input type="file" accept=".json,application/json" required disabled={backupBusy} onChange={(event) => {
+                setPlatformRestoreFile(event.currentTarget.files?.[0] ?? null);
+                event.currentTarget.value = '';
+              }} />
+            </label>
+            <label>Ketik PULIHKAN untuk mengonfirmasi
+              <input value={platformRestoreConfirmation} onChange={(event) => setPlatformRestoreConfirmation(event.target.value)} autoComplete="off" disabled={backupBusy} />
+            </label>
+            <button className="button danger" disabled={backupBusy || !platformRestoreFile || platformRestoreConfirmation !== 'PULIHKAN'}>
+              {backupBusy && backupAction === 'restore' ? 'Memulihkan…' : 'Pulihkan seluruh platform'}
+            </button>
           </form>
         </section>
         <section className="panel gateway-panel">

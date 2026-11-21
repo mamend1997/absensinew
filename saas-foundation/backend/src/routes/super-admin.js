@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
+import express from 'express';
 import { config } from '../config.js';
+import {
+  createPlatformDatabaseBackup,
+  restoreDatabaseBackup,
+} from '../core/database-backup.js';
 import {
   decryptPlatformBackupCredentials,
   encryptPlatformBackupCredentials,
@@ -583,6 +588,30 @@ router.get('/settings/backup/latest', asyncRoute(async (req, res, next) => {
   });
   stream.pipe(res);
 }));
+
+router.get('/settings/backup/export', asyncRoute(async (req, res) => {
+  const backup = await createPlatformDatabaseBackup();
+  res.set('Cache-Control', 'no-store');
+  res.attachment(`ruang-hadir-platform-backup-${new Date().toISOString().slice(0, 10)}.json`);
+  res.type('application/json').send(JSON.stringify(backup));
+}));
+
+router.post(
+  '/settings/backup/restore',
+  express.raw({ type: 'application/json', limit: '100mb' }),
+  asyncRoute(async (req, res) => {
+    if (!Buffer.isBuffer(req.body) || !req.body.length) {
+      throw fail(400, 'Pilih file backup JSON yang valid.', 'INVALID_BACKUP');
+    }
+    const connection = await pool.getConnection();
+    try {
+      const result = await restoreDatabaseBackup(connection, req.body, 'platform');
+      res.json({ ...result, message: 'Backup platform berhasil dipulihkan.' });
+    } finally {
+      connection.release();
+    }
+  }),
+);
 
 router.get('/schools', asyncRoute(async (req, res) => {
   const [rows] = await pool.execute(

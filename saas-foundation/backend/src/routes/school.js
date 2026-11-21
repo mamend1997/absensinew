@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { Router } from 'express';
+import express, { Router } from 'express';
+import {
+  createSchoolDatabaseBackup,
+  restoreDatabaseBackup,
+} from '../core/database-backup.js';
 import {
   createProviderPayment, getDuitkuPaymentMethods,
 } from '../core/billing.js';
@@ -105,6 +109,12 @@ function validateSchoolGatewaySettings(body) {
 function requireBillingAdmin(req) {
   if (req.schoolUser.role_key !== 'admin-sekolah') {
     throw fail(403, 'Hanya Admin Sekolah yang dapat mengelola langganan.', 'FORBIDDEN');
+  }
+}
+
+function requireSchoolAdmin(req) {
+  if (req.schoolUser.role_key !== 'admin-sekolah') {
+    throw fail(403, 'Hanya Admin Sekolah yang dapat mengelola backup.', 'FORBIDDEN');
   }
 }
 
@@ -1474,6 +1484,41 @@ router.post('/settings/google-sheets/resync', requireSchoolUser,
       },
     });
   }));
+
+router.get('/backup/export', requireSchoolUser, asyncRoute(async (req, res) => {
+  requireSchoolAdmin(req);
+  const backup = await createSchoolDatabaseBackup(req.schoolUser.sekolah_id);
+  res.set('Cache-Control', 'no-store');
+  res.attachment(`ruang-hadir-school-${req.schoolUser.school_code}-backup-${new Date().toISOString().slice(0, 10)}.json`);
+  res.type('application/json').send(JSON.stringify(backup));
+}));
+
+router.post(
+  '/backup/restore',
+  requireSchoolUser,
+  (req, res, next) => { try { requireSchoolAdmin(req); next(); } catch (error) { next(error); } },
+  express.raw({ type: 'application/json', limit: '100mb' }),
+  asyncRoute(async (req, res) => {
+    if (!Buffer.isBuffer(req.body) || !req.body.length) {
+      throw fail(400, 'Pilih file backup JSON yang valid.', 'INVALID_BACKUP');
+    }
+    const connection = await pool.getConnection();
+    try {
+      const result = await restoreDatabaseBackup(
+        connection,
+        req.body,
+        'school',
+        req.schoolUser.sekolah_id,
+      );
+      res.json({
+        ...result,
+        message: 'Data operasional sekolah berhasil dipulihkan. Akun dan langganan tidak diubah.',
+      });
+    } finally {
+      connection.release();
+    }
+  }),
+);
 
 router.get('/billing', requireSchoolUser, asyncRoute(async (req, res) => {
   requireBillingAdmin(req);

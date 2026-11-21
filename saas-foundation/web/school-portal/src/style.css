@@ -299,6 +299,12 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
 .scanner-page[data-school-theme="white"] .scan-manual-button { border-color: #b6d8c0; background: #fff; color: #14532d; }
 .participant-import, .participant-schedule-editor { display: grid; gap: 12px; }
 .school-branding-panel, .school-branding-form { display: grid; gap: 12px; }
+.school-backup-panel { display: grid; grid-template-columns: minmax(0, .9fr) minmax(280px, 1.1fr); align-items: start; gap: 20px; }
+.school-backup-panel h2, .school-backup-panel h3 { margin: 0 0 8px; }
+.school-backup-panel .muted, .school-backup-panel .alert { margin: 6px 0 10px; }
+.school-backup-form { display: grid; gap: 10px; }
+.school-backup-form label { display: grid; gap: 6px; font-size: 10px; }
+.school-backup-form input:not([type="checkbox"]) { min-height: 38px; font-size: 11px; }
 .school-branding-logo-row { display: flex; align-items: center; gap: 14px; }
 .school-branding-preview { display: grid; width: 76px; height: 76px; flex: 0 0 auto; place-items: center; overflow: hidden; border: 1px solid #d8e1da; border-radius: 14px; background: #d7f0dc; color: #1c6b46; font: 800 20px Manrope, sans-serif; }
 .school-branding-preview img { width: 100%; height: 100%; object-fit: contain; }
@@ -440,7 +446,7 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
   .participant-import .heading-actions > * { width: 100%; }
   .section-title { align-items: flex-start; flex-direction: column; }
   .section-title > .heading-actions { width: 100%; flex-wrap: wrap; }
-  .school-whatsapp-panel { grid-template-columns: 1fr; }
+  .school-whatsapp-panel, .school-backup-panel { grid-template-columns: 1fr; }
   .billing-status-panel, .billing-form .form-grid { grid-template-columns: 1fr; }
   .scanner-active .kiosk-layout { padding: 8px 9px 12px; }
   .scanner-page { gap: 0; }

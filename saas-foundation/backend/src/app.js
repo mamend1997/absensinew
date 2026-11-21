@@ -33,6 +33,10 @@ app.use(express.urlencoded({ extended: false, limit: '20kb' }));
 app.use(express.json({
   limit: '2mb',
   strict: true,
+  type: (req) => !(
+    req.method === 'POST' &&
+    ['/api/super-admin/settings/backup/restore', '/api/school/backup/restore'].includes(req.path)
+  ),
   verify(req, res, buffer) {
     if (req.originalUrl.startsWith('/api/payments/kasera/webhook')) {
       req.rawBody = Buffer.from(buffer);

@@ -593,6 +593,9 @@ export default function App() {
   const [schoolBrandingName, setSchoolBrandingName] = useState('');
   const [schoolLogoUpload, setSchoolLogoUpload] = useState('');
   const [schoolBrandingBusy, setSchoolBrandingBusy] = useState(false);
+  const [schoolBackupBusy, setSchoolBackupBusy] = useState(false);
+  const [schoolRestoreFile, setSchoolRestoreFile] = useState<File | null>(null);
+  const [schoolRestoreConfirmation, setSchoolRestoreConfirmation] = useState('');
   const [page, setPage] = useState<Page>(() =>
     new URLSearchParams(window.location.search).get('billing') === 'return' ? 'billing' : 'dashboard');
   const [loginView, setLoginView] = useState<LoginView>('login');
@@ -2283,6 +2286,85 @@ export default function App() {
     }
   }
 
+  async function downloadSchoolBackup() {
+    if (!session) return;
+    setSchoolBackupBusy(true);
+    try {
+      const response = await fetch(`${API_BASE}/school/backup/export`, {
+        headers: { authorization: `Bearer ${session.token}` },
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as { error?: string | { message?: string } };
+        const message = typeof payload.error === 'string' ? payload.error : payload.error?.message;
+        throw new Error(message || `Unduhan gagal (${response.status}).`);
+      }
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `ruang-hadir-school-${session.school.school_code}-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+      setMessage('Backup sekolah berhasil diunduh. Simpan file dengan aman; akun dan langganan tidak disertakan.');
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Backup sekolah gagal diunduh.', true);
+    } finally {
+      setSchoolBackupBusy(false);
+    }
+  }
+
+  async function restoreSchoolBackup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session || !schoolRestoreFile || schoolRestoreConfirmation !== 'PULIHKAN') {
+      setMessage('Pilih file JSON dan ketik PULIHKAN untuk mengonfirmasi.', true);
+      return;
+    }
+    setSchoolBackupBusy(true);
+    try {
+      const response = await fetch(`${API_BASE}/school/backup/restore`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${session.token}`,
+          'content-type': 'application/json',
+        },
+        body: await schoolRestoreFile.text(),
+      });
+      const payload = await response.json().catch(() => ({})) as {
+        message?: string;
+        error?: string | { message?: string };
+      };
+      if (!response.ok) {
+        const message = typeof payload.error === 'string' ? payload.error : payload.error?.message;
+        throw new Error(message || `Restore gagal (${response.status}).`);
+      }
+      setSchoolRestoreFile(null);
+      setSchoolRestoreConfirmation('');
+      setMessage(payload.message ?? 'Data sekolah berhasil dipulihkan.');
+      try {
+        await Promise.all([
+          loadSchoolData(session),
+          request<{ branding: SchoolBranding }>('/school/branding', session.token)
+            .then(({ branding }) => {
+              setSchoolBranding(branding);
+              setSchoolBrandingName(branding.application_name);
+            }),
+          request<{ settings: SchoolWhatsappGatewaySettings }>('/school/settings/whatsapp-gateway', session.token)
+            .then(({ settings }) => setWhatsappSettings(settings)),
+          request<{ settings: GoogleSheetsSettings }>('/school/settings/google-sheets', session.token)
+            .then(({ settings }) => setGoogleSheetsSettings(settings)),
+        ]);
+      } catch (reason) {
+        setMessage(
+          `Restore berhasil, tetapi sebagian tampilan belum diperbarui: ${reason instanceof Error ? reason.message : 'muat ulang halaman.'}`,
+          true,
+        );
+      }
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Restore sekolah gagal.', true);
+    } finally {
+      setSchoolBackupBusy(false);
+    }
+  }
+
   async function deleteSchoolLogo() {
     if (!session || !await requestConfirmation({
       title: 'Hapus logo sekolah',
@@ -3084,6 +3166,32 @@ export default function App() {
                       {googleSheetsBusy ? 'Memproses…' : 'Kirim ulang riwayat'}
                     </button>}
                 </form> : <p className="muted">URL: {googleSheetsSettings.web_app_url || 'Belum dikonfigurasi'}</p>}
+              </section>}
+              {session.user.role_key === 'admin-sekolah' && <section className="panel school-backup-panel">
+                <div>
+                  <h2>Backup &amp; restore sekolah</h2>
+                  <p className="muted">Unduh JSON berisi data operasional sekolah. Restore mengganti data operasional dari file, tetapi mempertahankan akun, akses, perangkat scanner, dan langganan.</p>
+                  <p className="muted">File backup dapat berisi data peserta dan kehadiran. Simpan dengan aman. File tidak dikirim ke Telegram.</p>
+                  <button type="button" className="button secondary" disabled={schoolBackupBusy} onClick={() => void downloadSchoolBackup()}>
+                    {schoolBackupBusy ? 'Memproses…' : 'Unduh backup JSON'}
+                  </button>
+                </div>
+                <form className="school-backup-form" onSubmit={(event) => void restoreSchoolBackup(event)}>
+                  <h3>Pulihkan backup sekolah</h3>
+                  <p className="alert warning">Data operasional sekolah saat ini akan diganti. Akun, akses, perangkat scanner, dan masa langganan tidak diubah.</p>
+                  <label>File backup JSON
+                    <input type="file" accept=".json,application/json" required disabled={schoolBackupBusy} onChange={(event) => {
+                      setSchoolRestoreFile(event.currentTarget.files?.[0] ?? null);
+                      event.currentTarget.value = '';
+                    }} />
+                  </label>
+                  <label>Ketik PULIHKAN untuk mengonfirmasi
+                    <input value={schoolRestoreConfirmation} onChange={(event) => setSchoolRestoreConfirmation(event.target.value)} autoComplete="off" disabled={schoolBackupBusy} />
+                  </label>
+                  <button className="button danger" disabled={schoolBackupBusy || !schoolRestoreFile || schoolRestoreConfirmation !== 'PULIHKAN'}>
+                    {schoolBackupBusy ? 'Memulihkan…' : 'Pulihkan data sekolah'}
+                  </button>
+                </form>
               </section>}
             </section>
           )}
