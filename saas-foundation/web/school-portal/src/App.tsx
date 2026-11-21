@@ -2241,6 +2241,30 @@ export default function App() {
     }
   }
 
+  async function resyncGoogleSheetsHistory() {
+    if (!session || !await requestConfirmation({
+      title: 'Kirim ulang riwayat ke Google Sheets',
+      message: 'Backend akan mengirim ulang seluruh riwayat absensi ke Apps Script. Baris dengan ID unik yang sama tidak akan digandakan.',
+      confirmLabel: 'Kirim ulang riwayat',
+    })) return;
+    setGoogleSheetsBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await request<{ settings: GoogleSheetsSettings }>(
+        '/school/settings/google-sheets/resync',
+        session.token,
+        { method: 'POST' },
+      );
+      setGoogleSheetsSettings(result.settings);
+      setNotice('Kirim ulang riwayat dijadwalkan. Pantau status sinkronisasi di sini.');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Riwayat gagal dijadwalkan untuk dikirim ulang.');
+    } finally {
+      setGoogleSheetsBusy(false);
+    }
+  }
+
   async function testSchoolWhatsappGateway() {
     if (!session) return;
     setWhatsappTestBusy(true);
@@ -2530,7 +2554,7 @@ export default function App() {
                 <div className="scan-welcome" aria-live="polite"><span className="scan-welcome-track">{lastScan || settings.scan_welcome_message}</span></div>
               </header>
 
-              {pendingCount > 0 && <div className="scan-controls-row"><div className="scan-queue-summary"><span className="queue-mini-count">{pendingCount}</span><span>pending · sinkron otomatis</span></div></div>}
+              {pendingCount > 0 && <div className="scan-controls-row"><div className="scan-queue-summary"><span className="queue-mini-count">{pendingCount}</span><span>belum ke server · dikirim otomatis</span></div></div>}
 
               <div className="scan-camera-shell">
                 <div className={`scan-camera-frame ${cameraActive ? 'camera-live' : ''}`}>
@@ -2901,7 +2925,7 @@ export default function App() {
               {can('settings.operational.view') && <section className="panel google-sheets-panel">
                 <div>
                   <h2>Sinkronisasi Google Sheets</h2>
-                  <p className="muted">Riwayat lama dan absensi baru dikirim otomatis di latar belakang. Data scan offline masuk setelah perangkat kembali online.</p>
+                  <p className="muted">Riwayat lama dan absensi baru dikirim otomatis di latar belakang. Status scan di scanner hanya berarti data sudah diterima server; status pengiriman ke Google Sheets dipantau terpisah di sini.</p>
                   <span className={`gateway-status ${googleSheetsSettings.is_enabled && googleSheetsSettings.is_configured ? 'ready' : ''}`}>
                     {googleSheetsSettings.is_enabled && googleSheetsSettings.is_configured ? '● Aktif' : '○ Belum aktif'}
                   </span>
@@ -2923,6 +2947,10 @@ export default function App() {
                   <label>Secret sinkronisasi<input type="password" autoComplete="new-password" placeholder={googleSheetsSettings.is_configured ? 'Tersimpan — kosongkan untuk mempertahankan' : 'Masukkan secret yang sama dengan Script Properties'} value={googleSheetsSecret} onChange={(event) => setGoogleSheetsSecret(event.target.value)} /></label>
                   <label className="school-whatsapp-toggle"><input type="checkbox" checked={googleSheetsSettings.is_enabled} onChange={(event) => setGoogleSheetsSettings((current) => ({ ...current, is_enabled: event.target.checked }))} /> Aktifkan sinkronisasi</label>
                   <button className="button primary" disabled={googleSheetsBusy}>{googleSheetsBusy ? 'Menyimpan…' : 'Simpan pengaturan'}</button>
+                  {googleSheetsSettings.is_enabled && googleSheetsSettings.is_configured &&
+                    <button className="button" type="button" disabled={googleSheetsBusy} onClick={() => void resyncGoogleSheetsHistory()}>
+                      {googleSheetsBusy ? 'Memproses…' : 'Kirim ulang riwayat'}
+                    </button>}
                 </form> : <p className="muted">URL: {googleSheetsSettings.web_app_url || 'Belum dikonfigurasi'}</p>}
               </section>}
             </section>
@@ -3136,13 +3164,13 @@ function LocalQueueList({ schoolId, refreshKey }: { schoolId: string | number; r
     }).catch((error: unknown) => console.error('Riwayat lokal gagal dimuat.', error));
     return () => { active = false; };
   }, [schoolId, refreshKey]);
-  return <div className="table-scroll"><table><thead><tr><th>Nama</th><th>Tanggal</th><th>Waktu</th><th>Jenis</th><th>Status sync</th></tr></thead><tbody>
+  return <div className="table-scroll"><table><thead><tr><th>Nama</th><th>Tanggal</th><th>Waktu</th><th>Jenis</th><th>Status server</th></tr></thead><tbody>
     {items.map((item) => <tr key={item.id_unik}>
       <td>{item.participant_name ?? participantNames.get(item.id_peserta) ?? 'Nama tidak tersedia'}</td>
       <td>{formatAttendanceDate(item.attendance_date)}</td>
       <td>{toLocalTime(item.client_timestamp)}</td>
       <td>{item.jenis_absen === 'check_in' ? 'Masuk' : 'Pulang'}</td>
-      <td><span className={`tag ${item.status_sync}`}>{item.status_sync}</span></td>
+      <td><span className={`tag ${item.status_sync}`}>{item.status_sync === 'synced' ? 'Tersimpan di server' : 'Belum ke server'}</span></td>
     </tr>)}
     {!items.length && <tr><td colSpan={5} className="empty">Belum ada scan tersimpan di perangkat.</td></tr>}
   </tbody></table></div>;

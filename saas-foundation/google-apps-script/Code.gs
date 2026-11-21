@@ -65,7 +65,16 @@ function doPost(event) {
     dataSheet.hideSheet();
     return jsonResponse({ ok: true, accepted_ids: acceptedIds });
   } catch (error) {
-    return jsonResponse({ ok: false, error: 'sync_failed', accepted_ids: [] });
+    const detail = error && error.message
+      ? String(error.message).replace(/[\r\n]/g, ' ').slice(0, 300)
+      : 'Unknown Apps Script error';
+    console.error('Google Sheets sync failed:', detail);
+    return jsonResponse({
+      ok: false,
+      error: 'sync_failed',
+      detail,
+      accepted_ids: [],
+    });
   } finally {
     if (lock.hasLock()) lock.releaseLock();
   }

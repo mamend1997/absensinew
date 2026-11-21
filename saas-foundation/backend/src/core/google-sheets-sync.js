@@ -75,10 +75,13 @@ export async function sendAttendanceToGoogleSheets({ schoolId, ids, connection =
   );
   if (!response.ok || !result || typeof result !== 'object' ||
       result.ok !== true || ids.some((id) => !accepted.has(id))) {
+    const detail = typeof result?.detail === 'string'
+      ? ` (${result.detail.slice(0, 300)})`
+      : '';
     throw fail(
       502,
-      typeof result.error === 'string'
-        ? `Google Sheets menolak sinkronisasi: ${result.error}`
+      result && typeof result.error === 'string'
+        ? `Google Sheets menolak sinkronisasi: ${result.error}${detail}`
         : 'Google Sheets belum menerima semua data absensi.',
       'GOOGLE_SHEETS_SYNC_FAILED',
     );

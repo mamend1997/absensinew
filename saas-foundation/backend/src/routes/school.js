@@ -1343,7 +1343,7 @@ router.put('/settings/google-sheets', requireSchoolUser,
       throw fail(400, 'Status aktif Google Sheets tidak valid.', 'VALIDATION_ERROR');
     }
     const [[existing]] = await pool.execute(
-      `SELECT web_app_url, token_ciphertext, token_iv, token_auth_tag
+      `SELECT web_app_url, token_ciphertext, token_iv, token_auth_tag, is_enabled
          FROM school_google_sheets_config WHERE sekolah_id = ?`,
       [req.schoolUser.sekolah_id],
     );
@@ -1388,7 +1388,10 @@ router.put('/settings/google-sheets', requireSchoolUser,
       [req.schoolUser.sekolah_id, webAppUrl, encrypted.ciphertext,
         encrypted.iv, encrypted.authTag, body.is_enabled],
     );
-    const resetSyncCursor = !existing || webAppUrl !== existing.web_app_url || Boolean(sharedSecret);
+    const resetSyncCursor = !existing
+      || webAppUrl !== existing.web_app_url
+      || Boolean(sharedSecret)
+      || (body.is_enabled && !Boolean(Number(existing.is_enabled)));
     await pool.execute(
       `INSERT INTO school_google_sheets_sync_state (sekolah_id)
        VALUES (?)
@@ -1412,6 +1415,52 @@ router.put('/settings/google-sheets', requireSchoolUser,
         secret_hint: 'Secret tersimpan terenkripsi',
         last_sync_at: syncState?.last_success_at ?? null,
         sync_error: syncState?.last_error ?? null,
+      },
+    });
+  }));
+
+router.post('/settings/google-sheets/resync', requireSchoolUser,
+  requirePermission('settings.operational.edit'), asyncRoute(async (req, res) => {
+    const [[settings]] = await pool.execute(
+      `SELECT web_app_url, token_ciphertext
+         FROM school_google_sheets_config
+        WHERE sekolah_id = ? AND is_enabled = TRUE`,
+      [req.schoolUser.sekolah_id],
+    );
+    if (!settings?.web_app_url || !settings?.token_ciphertext) {
+      throw fail(409, 'Aktifkan Google Sheets sebelum mengirim ulang riwayat.', 'SYNC_NOT_CONFIGURED');
+    }
+    const connection = await pool.getConnection();
+    const lockName = `google-sheets-${req.schoolUser.sekolah_id}`;
+    let locked = false;
+    try {
+      const [[lock]] = await connection.execute('SELECT GET_LOCK(?, 0) AS acquired', [lockName]);
+      locked = Number(lock?.acquired) === 1;
+      if (!locked) {
+        throw fail(409, 'Sinkronisasi sedang berjalan. Coba kirim ulang riwayat kembali sebentar lagi.', 'SYNC_IN_PROGRESS');
+      }
+      await connection.execute(
+        `INSERT INTO school_google_sheets_sync_state (sekolah_id)
+         VALUES (?)
+         ON DUPLICATE KEY UPDATE last_synced_id = 0, last_attempt_at = NULL,
+           last_success_at = NULL, last_error = NULL`,
+        [req.schoolUser.sekolah_id],
+      );
+    } finally {
+      try {
+        if (locked) await connection.execute('SELECT RELEASE_LOCK(?)', [lockName]);
+      } finally {
+        connection.release();
+      }
+    }
+    res.json({
+      settings: {
+        web_app_url: settings.web_app_url,
+        is_enabled: true,
+        is_configured: true,
+        secret_hint: 'Secret tersimpan terenkripsi',
+        last_sync_at: null,
+        sync_error: null,
       },
     });
   }));

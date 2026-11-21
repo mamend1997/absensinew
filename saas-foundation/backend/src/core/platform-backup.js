@@ -5,6 +5,7 @@ import { lookup } from 'node:dns/promises';
 import { request as httpsRequest } from 'node:https';
 import { config } from '../config.js';
 import { inTransaction, pool } from '../db.js';
+import { createPinnedGatewayLookup } from './whatsapp-gateway.js';
 
 const key = createHash('sha256')
   .update('ruang-hadir-platform-backup-v1\0')
@@ -107,11 +108,15 @@ async function notifyTelegram(credentials, text) {
   let addresses;
   try {
     addresses = await lookup(hostname, { all: true, verbatim: true });
-  } catch {
-    throw new Error('DNS api.telegram.org gagal. Periksa koneksi jaringan backend.');
+  } catch (error) {
+    const code = typeof error.code === 'string' ? ` (${error.code})` : '';
+    throw new Error(`DNS api.telegram.org gagal${code}. Periksa koneksi jaringan backend.`);
   }
-  const address = addresses.find(({ family }) => family === 4) ?? addresses[0];
-  if (!address) throw new Error('Telegram tidak dapat dihubungi.');
+  if (!addresses.length) throw new Error('Telegram tidak dapat dihubungi.');
+  const pinnedAddresses = [...addresses].sort((left, right) => {
+    if (left.family === right.family) return 0;
+    return left.family === 4 ? -1 : 1;
+  });
   const body = JSON.stringify({ chat_id: credentials.chat_id, text });
   await new Promise((resolvePromise, reject) => {
     const request = httpsRequest({
@@ -121,8 +126,7 @@ async function notifyTelegram(credentials, text) {
       path: `/bot${encodeURIComponent(credentials.bot_token)}/sendMessage`,
       method: 'POST',
       servername: hostname,
-      lookup: (_name, _options, callback) =>
-        callback(null, address.address, address.family),
+      lookup: createPinnedGatewayLookup(pinnedAddresses),
       headers: {
         'content-type': 'application/json',
         'content-length': Buffer.byteLength(body),
@@ -154,11 +158,14 @@ async function notifyTelegram(credentials, text) {
       timedOut = true;
       request.destroy(new Error('Telegram timeout.'));
     });
-    request.on('error', () => reject(new Error(
-      timedOut
-        ? 'Koneksi Telegram timeout setelah 10 detik.'
-        : 'Koneksi ke Telegram gagal. Periksa akses jaringan backend.',
-    )));
+    request.on('error', (error) => {
+      const code = typeof error.code === 'string' ? ` (${error.code})` : '';
+      reject(new Error(
+        timedOut
+          ? 'Koneksi Telegram timeout setelah 10 detik.'
+          : `Koneksi ke Telegram gagal${code}. Periksa akses jaringan backend.`,
+      ));
+    });
     request.end(body);
   });
 }
