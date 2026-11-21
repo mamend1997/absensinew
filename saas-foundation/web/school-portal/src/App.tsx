@@ -379,32 +379,39 @@ function initialPage(currentSession: SchoolSession): Page {
 }
 
 function playAttendanceTone(success: boolean) {
-  if (!('AudioContext' in window)) return;
-  try {
-    const context = new AudioContext();
-    void context.resume().then(() => {
-      const start = context.currentTime + 0.02;
-      const notes = success
-        ? [{ frequency: 880, at: 0 }, { frequency: 1175, at: 0.12 }]
-        : [{ frequency: 370, at: 0 }, { frequency: 220, at: 0.18 }];
-      notes.forEach((note, index) => {
-        const oscillator = context.createOscillator();
-        const gain = context.createGain();
-        oscillator.type = 'sine';
-        oscillator.frequency.value = note.frequency;
-        gain.gain.value = 0.055;
-        oscillator.connect(gain);
-        gain.connect(context.destination);
-        oscillator.onended = () => {
-          if (index === notes.length - 1) void context.close();
-        };
-        oscillator.start(start + note.at);
-        oscillator.stop(start + note.at + 0.11);
-      });
-    }).catch((error: unknown) => console.warn('Suara notifikasi absensi tidak dapat diputar.', error));
-  } catch (error) {
-    console.warn('Suara notifikasi absensi tidak tersedia.', error);
-  }
+  const fileName = success ? 'berhasil.wav' : 'gagal.wav';
+  const audio = new Audio(`/audio/${fileName}`);
+  audio.volume = 1;
+
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let timeout = 0;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      audio.removeEventListener('ended', finish);
+      audio.removeEventListener('error', onError);
+      resolve();
+    };
+    const onError = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      audio.removeEventListener('ended', finish);
+      audio.removeEventListener('error', onError);
+      audio.pause();
+      reject(new Error(`File suara ${fileName} gagal diputar.`));
+    };
+
+    audio.addEventListener('ended', finish, { once: true });
+    audio.addEventListener('error', onError, { once: true });
+    timeout = window.setTimeout(() => {
+      audio.pause();
+      finish();
+    }, 5000);
+    void audio.play().catch(onError);
+  });
 }
 
 function attendanceMessage(
@@ -416,21 +423,54 @@ function attendanceMessage(
   );
 }
 
-function speakAttendanceMessage(text: string) {
-  if (!('speechSynthesis' in window) || !('SpeechSynthesisUtterance' in window)) return;
-  try {
-    const synthesis = window.speechSynthesis;
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'id-ID';
-    utterance.rate = 0.92;
-    utterance.pitch = 1.05;
-    utterance.onerror = (event) => console.warn('Ucapan absensi tidak dapat diputar.', event.error);
-    const voices = synthesis.getVoices();
-    utterance.voice = voices.find((voice) => voice.lang.toLowerCase().startsWith('id')) ?? null;
-    synthesis.cancel();
+async function speakAttendanceMessage(text: string) {
+  if (!('speechSynthesis' in window) || !('SpeechSynthesisUtterance' in window)) {
+    throw new Error('TTS tidak tersedia pada perangkat ini.');
+  }
+
+  const synthesis = window.speechSynthesis;
+  synthesis.cancel();
+  let voices = synthesis.getVoices();
+  if (!voices.length) {
+    voices = await new Promise<SpeechSynthesisVoice[]>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeout);
+        synthesis.removeEventListener('voiceschanged', finish);
+        resolve(synthesis.getVoices());
+      };
+      const timeout = window.setTimeout(finish, 1000);
+      synthesis.addEventListener('voiceschanged', finish, { once: true });
+    });
+  }
+
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = 'id-ID';
+  utterance.rate = 0.92;
+  utterance.pitch = 1.05;
+  utterance.volume = 1;
+  utterance.voice = voices.find((voice) => voice.lang.toLowerCase().startsWith('id')) ?? null;
+
+  await new Promise<void>((resolve, reject) => {
+    utterance.onend = () => resolve();
+    utterance.onerror = (event) => reject(new Error(`TTS gagal diputar: ${event.error}.`));
     synthesis.speak(utterance);
+  });
+}
+
+async function announceAttendance(message: string, success: boolean) {
+  try {
+    await playAttendanceTone(success);
   } catch (error) {
-    console.warn('Ucapan absensi tidak tersedia.', error);
+    console.warn('Suara notifikasi absensi tidak dapat diputar.', error);
+  }
+
+  try {
+    await speakAttendanceMessage(message);
+  } catch (error) {
+    console.warn('Ucapan absensi tidak dapat diputar.', error);
   }
 }
 
@@ -670,6 +710,7 @@ export default function App() {
   const [pendingCount, setPendingCount] = useState(0);
   const [online, setOnline] = useState(navigator.onLine);
   const [lastScan, setLastScan] = useState('');
+  const [scanPopup, setScanPopup] = useState<{ message: string; success: boolean; id: number } | null>(null);
   const [historyResetVersion, setHistoryResetVersion] = useState(0);
   const [manualCode, setManualCode] = useState('');
   const [manualAttendanceOpen, setManualAttendanceOpen] = useState(false);
@@ -706,12 +747,16 @@ export default function App() {
   const controlsRef = useRef<{ stop: () => void } | null>(null);
   const wedgeTimerRef = useRef<number | undefined>(undefined);
   const scanFeedbackTimerRef = useRef<number | undefined>(undefined);
+  const scanPopupTimerRef = useRef<number | undefined>(undefined);
   const lastScanAtRef = useRef(new Map<string, number>());
   const confirmationResolverRef = useRef<((accepted: boolean) => void) | null>(null);
   const reportAbortRef = useRef<AbortController | null>(null);
   useEffect(() => () => {
     if (scanFeedbackTimerRef.current !== undefined) {
       window.clearTimeout(scanFeedbackTimerRef.current);
+    }
+    if (scanPopupTimerRef.current !== undefined) {
+      window.clearTimeout(scanPopupTimerRef.current);
     }
   }, []);
 
@@ -1433,9 +1478,8 @@ export default function App() {
         status: attendanceStatus,
         reason: '',
       });
-      showScanFeedback(successMessage);
-      playAttendanceTone(true);
-      speakAttendanceMessage(successMessage);
+      showScanFeedback(successMessage, true);
+      void announceAttendance(successMessage, true);
       await refreshPendingCount();
       if (online) {
         try {
@@ -1447,14 +1491,12 @@ export default function App() {
               await removeQueuedScan(scan.id_unik);
             } catch (cleanupError) {
               console.error('Scan yang ditolak tidak dapat dihapus dari antrean perangkat.', cleanupError);
-              setMessage('Masa aktif sekolah habis. Perpanjang langganan; scan terakhir belum tercatat dan masih tersimpan di antrean perangkat.', true);
             }
             return false;
           }
-          setMessage(reason instanceof Error ? reason.message : 'Scan tersimpan lokal; sinkronisasi akan dicoba ulang.');
+          console.warn('Scan tetap tersimpan lokal; sinkronisasi akan dicoba ulang.', reason);
         }
       }
-      else setMessage(`${participant.full_name} masuk antrean offline.`);
       return true;
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : 'Scan gagal diproses.';
@@ -1463,15 +1505,15 @@ export default function App() {
         status: '',
         reason: message,
       });
-      showScanFeedback(failureMessage);
-      playAttendanceTone(false);
-      speakAttendanceMessage(failureMessage);
-      setMessage(message, true);
+      showScanFeedback(failureMessage, false);
+      void announceAttendance(failureMessage, false);
       return false;
     }
   }
 
-  function showScanFeedback(message: string) {
+  function showScanFeedback(message: string, success: boolean) {
+    setError('');
+    setNotice('');
     setLastScan(message);
     if (scanFeedbackTimerRef.current !== undefined) {
       window.clearTimeout(scanFeedbackTimerRef.current);
@@ -1480,6 +1522,14 @@ export default function App() {
       setLastScan('');
       scanFeedbackTimerRef.current = undefined;
     }, 5000);
+    setScanPopup((current) => ({ message, success, id: (current?.id ?? 0) + 1 }));
+    if (scanPopupTimerRef.current !== undefined) {
+      window.clearTimeout(scanPopupTimerRef.current);
+    }
+    scanPopupTimerRef.current = window.setTimeout(() => {
+      setScanPopup(null);
+      scanPopupTimerRef.current = undefined;
+    }, 1000);
   }
 
   function handleWedgeChange(value: string) {
@@ -2733,7 +2783,6 @@ export default function App() {
         {(error || notice) && <div className="toast-layer" aria-live={error ? 'assertive' : 'polite'}>
           <div className={`toast-popup ${error ? 'error' : 'success'}`} role={error ? 'alert' : 'status'}>
             <span>{error || notice}</span>
-            <button type="button" aria-label="Tutup notifikasi" onClick={() => { setError(''); setNotice(''); }}>×</button>
           </div>
         </div>}
       </main>
@@ -2825,6 +2874,9 @@ export default function App() {
                 </div>
                 <LocalQueueList schoolId={session.school.id} refreshKey={`${lastScan}:${historyResetVersion}`} />
               </section>
+              {scanPopup && <div className="scan-feedback-layer" aria-live={scanPopup.success ? 'polite' : 'assertive'}>
+                <div key={scanPopup.id} className={`scan-feedback-popup ${scanPopup.success ? 'success' : 'error'}`} role={scanPopup.success ? 'status' : 'alert'}>{scanPopup.message}</div>
+              </div>}
 
             </section>
           )}
@@ -3113,7 +3165,12 @@ export default function App() {
                 <section className="attendance-speech-settings">
                   <div>
                     <h2>Pesan scanner & suara absensi</h2>
-                    <p className="muted">Teks berhasil/gagal dibacakan melalui TTS perangkat dan ditampilkan pada banner scanner. Variabel: <code>{'{name}'}</code>, <code>{'{status}'}</code>, <code>{'{reason}'}</code>.</p>
+                    <p className="muted">Teks yang diatur akan tampil pada pop-up dan dibacakan setelah suara WAV. Variabel: <code>{'{name}'}</code>, <code>{'{status}'}</code>, <code>{'{reason}'}</code>.</p>
+                  </div>
+                  <div className="attendance-speech-tests">
+                    <button className="button secondary small" type="button" onClick={() => void playAttendanceTone(true).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Suara berhasil gagal diputar.'))}>Tes berhasil.wav</button>
+                    <button className="button secondary small" type="button" onClick={() => void playAttendanceTone(false).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Suara gagal.wav gagal diputar.'))}>Tes gagal.wav</button>
+                    <button className="button secondary small" type="button" onClick={() => void speakAttendanceMessage(attendanceMessage(operationalForm.scan_success_message, { name: 'Contoh peserta', status: 'hadir tepat waktu', reason: '' })).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'TTS gagal diputar.'))}>Tes TTS</button>
                   </div>
                   <label>Teks sambutan scanner
                     <textarea maxLength={255} required rows={2} value={operationalForm.scan_welcome_message} onChange={(event) => setOperationalForm((current) => ({ ...current, scan_welcome_message: event.target.value }))} />
@@ -3373,7 +3430,6 @@ export default function App() {
       {(error || notice) && <div className="toast-layer" aria-live={error ? 'assertive' : 'polite'}>
         <div className={`toast-popup ${error ? 'error' : 'success'}`} role={error ? 'alert' : 'status'}>
           <span>{error || notice}</span>
-          <button type="button" aria-label="Tutup notifikasi" onClick={() => { setError(''); setNotice(''); }}>×</button>
         </div>
       </div>}
       {confirmationDialog && <div

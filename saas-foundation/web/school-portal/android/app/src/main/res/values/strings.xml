@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">Ruang Hadir</string>
-    <string name="title_activity_main">Ruang Hadir</string>
-    <string name="package_name">id.absensi.ruanghadir</string>
-    <string name="custom_url_scheme">id.absensi.ruanghadir</string>
+    <string name="app_name">Dongkap</string>
+    <string name="title_activity_main">Dongkap Edu</string>
+    <string name="package_name">id.absensi.dongkap</string>
+    <string name="custom_url_scheme">id.absensi.dongkap</string>
 </resources>
