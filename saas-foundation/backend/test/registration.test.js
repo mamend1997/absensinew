@@ -14,6 +14,7 @@ import {
 
 process.env.JWT_SECRET ??= randomBytes(48).toString('base64url');
 const {
+  createPinnedGatewayLookup,
   decryptGatewayToken,
   createWhatsappGatewayPayload,
   encryptGatewayToken,
@@ -89,4 +90,20 @@ test('WhatsApp gateway payload matches the configured send-message API contract'
     createWhatsappGatewayPayload('+628123456789', 'Pesan uji', 'gateway_test'),
     { to: '+628123456789', message: 'Pesan uji', event: 'gateway_test' },
   );
+});
+
+test('WhatsApp pinned DNS lookup honors Node requests for all resolved addresses', () => {
+  const addresses = [
+    { address: '8.8.8.8', family: 4 },
+    { address: '2606:4700:4700::1111', family: 6 },
+  ];
+  const pinnedLookup = createPinnedGatewayLookup(addresses);
+  let allResult;
+  let singleResult;
+
+  pinnedLookup('gateway.example', { all: true }, (...args) => { allResult = args; });
+  pinnedLookup('gateway.example', { all: false }, (...args) => { singleResult = args; });
+
+  assert.deepEqual(allResult, [null, addresses]);
+  assert.deepEqual(singleResult, [null, '8.8.8.8', 4]);
 });

@@ -65,6 +65,15 @@ function isPublicAddress(address) {
     !(a === 203 && b === 0);
 }
 
+export function createPinnedGatewayLookup(addresses) {
+  const firstAddress = addresses[0];
+  if (!firstAddress) throw new TypeError('Alamat gateway wajib tersedia.');
+  return (_hostname, options, callback) => {
+    if (options?.all) callback(null, addresses);
+    else callback(null, firstAddress.address, firstAddress.family);
+  };
+}
+
 export async function sendWhatsappMessage(urlValue, token, phone, message, event = 'notification') {
   const url = validateGatewayUrl(urlValue);
   let addresses;
@@ -87,7 +96,7 @@ export async function sendWhatsappMessage(urlValue, token, phone, message, event
       path: `${url.pathname}${url.search}`,
       method: 'POST',
       servername: url.hostname,
-      lookup: (_hostname, _options, callback) => callback(null, address.address, address.family),
+      lookup: createPinnedGatewayLookup(addresses),
       headers: {
         authorization: `Bearer ${token}`,
         'content-type': 'application/json',

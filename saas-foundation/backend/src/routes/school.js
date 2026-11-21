@@ -946,10 +946,18 @@ const deleteParticipant = asyncRoute(async (req, res) => {
   );
   if (!found.length) throw fail(404, 'Peserta tidak ditemukan.', 'NOT_FOUND');
   scopedClassroom(req.schoolUser, found[0].classroom_id);
-  const [result] = await pool.execute(
-    'DELETE FROM participants WHERE sekolah_id = ? AND id = ?',
-    [req.schoolUser.sekolah_id, participantId],
-  );
+  let result;
+  try {
+    [result] = await pool.execute(
+      'DELETE FROM participants WHERE sekolah_id = ? AND id = ?',
+      [req.schoolUser.sekolah_id, participantId],
+    );
+  } catch (error) {
+    if (error?.code === 'ER_ROW_IS_REFERENCED_2' || error?.code === 'ER_ROW_IS_REFERENCED') {
+      throw fail(409, 'Peserta memiliki riwayat atau data terkait sehingga tidak dapat dihapus.', 'CONFLICT');
+    }
+    throw error;
+  }
   if (!result.affectedRows) throw fail(409, 'Peserta telah memiliki data terkait dan tidak dapat dihapus.', 'CONFLICT');
   res.status(204).end();
 });
@@ -1616,6 +1624,43 @@ router.get('/attendance/report', requireSchoolUser, requirePermission('attendanc
     [req.schoolUser.sekolah_id, from, to, ...scope.params],
   );
   res.json({ from, to, attendance: aggregateAttendanceReport(rows) });
+}));
+
+router.delete('/attendance/report', requireSchoolUser, requirePermission('attendance.edit'), asyncRoute(async (req, res) => {
+  const rawEntries = req.body?.entries;
+  if (!Array.isArray(rawEntries) || rawEntries.length === 0 || rawEntries.length > 500) {
+    throw fail(400, 'Pilih 1 sampai 500 riwayat absensi untuk dihapus.', 'VALIDATION_ERROR');
+  }
+  const entries = [];
+  const seen = new Set();
+  for (const entry of rawEntries) {
+    const participantId = String(entry?.participant_id ?? '');
+    const attendanceDate = entry?.attendance_date;
+    if (!/^[1-9]\d*$/.test(participantId) || !validDate(attendanceDate)) {
+      throw fail(400, 'Peserta dan tanggal riwayat absensi tidak valid.', 'VALIDATION_ERROR');
+    }
+    const key = `${attendanceDate}:${participantId}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      entries.push({ participantId, attendanceDate });
+    }
+  }
+  const scope = classroomScope(req.schoolUser, 'p');
+  const selectedRows = entries
+    .map(() => '(a.participant_id = ? AND a.attendance_date = ?)')
+    .join(' OR ');
+  const [result] = await pool.execute(
+    `DELETE a FROM attendance_logs a
+       JOIN participants p
+         ON p.id = a.participant_id AND p.sekolah_id = a.sekolah_id
+      WHERE a.sekolah_id = ? AND (${selectedRows})${scope.sql}`,
+    [
+      req.schoolUser.sekolah_id,
+      ...entries.flatMap(({ participantId, attendanceDate }) => [participantId, attendanceDate]),
+      ...scope.params,
+    ],
+  );
+  res.json({ deleted_count: result.affectedRows });
 }));
 
 export default router;

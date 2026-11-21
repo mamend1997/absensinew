@@ -215,6 +215,7 @@ interface ParticipantImportResult {
 }
 interface ReportRow {
   attendance_date: string;
+  participant_id: string;
   participant_name: string;
   participant_code: string;
   classroom_name: string;
@@ -568,6 +569,7 @@ export default function App() {
   const [reportTo, setReportTo] = useState(initialDate);
   const [reportStatus, setReportStatus] = useState('');
   const [reportClassroom, setReportClassroom] = useState('');
+  const [selectedReportEntries, setSelectedReportEntries] = useState<Set<string>>(new Set());
   const [pendingCount, setPendingCount] = useState(0);
   const [online, setOnline] = useState(navigator.onLine);
   const [lastScan, setLastScan] = useState('');
@@ -1351,7 +1353,10 @@ export default function App() {
         signal: controller.signal,
       });
       if (reportAbortRef.current === controller) {
-        setReportRows(unwrapArray<ReportRow>(result, 'attendance'));
+        const rows = unwrapArray<ReportRow>(result, 'attendance');
+        const rowKeys = new Set(rows.map((row) => `${row.attendance_date}:${row.participant_id}`));
+        setReportRows(rows);
+        setSelectedReportEntries((current) => new Set([...current].filter((key) => rowKeys.has(key))));
         setError('');
       }
     } catch (reason) {
@@ -1367,7 +1372,12 @@ export default function App() {
   }, [reportClassroom, reportFrom, reportStatus, reportTo, session?.token]);
 
   useEffect(() => {
-    if (page !== 'reports') return;
+    setSelectedReportEntries(new Set());
+  }, [reportClassroom, reportFrom, reportStatus, reportTo]);
+
+  useEffect(() => {
+    if (!session || (page !== 'dashboard' && page !== 'reports') ||
+        !hasPermission(session.user.permissions, 'attendance.view')) return;
     void loadReport();
     const timer = window.setInterval(() => void loadReport(undefined, false), 30000);
     return () => {
@@ -1376,7 +1386,67 @@ export default function App() {
       reportAbortRef.current = null;
       setBusy(false);
     };
-  }, [loadReport, page]);
+  }, [loadReport, page, session?.user.permissions]);
+
+  async function deleteReportEntries(entries: Array<Pick<ReportRow, 'participant_id' | 'attendance_date'>>) {
+    if (!session || !entries.length) return;
+    if (!await requestConfirmation({
+      title: 'Hapus riwayat rekap',
+      message: `Hapus ${entries.length} riwayat absensi dari rekap portal sekolah? Penghapusan ini tidak dapat dibatalkan. Salinan yang sudah dikirim ke Google Sheets tidak ikut dihapus.`,
+      confirmLabel: 'Hapus riwayat',
+    })) return;
+    setBusy(true);
+    try {
+      const result = await request<{ deleted_count: number }>('/school/attendance/report', session.token, {
+        method: 'DELETE',
+        body: { entries },
+      });
+      setSelectedReportEntries(new Set());
+      setMessage(`${result.deleted_count} catatan absensi berhasil dihapus dari rekap.`);
+      await loadReport(undefined, false);
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Riwayat rekap gagal dihapus.', true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeSelectedParticipants() {
+    if (!session) return;
+    const selected = participants.filter((participant) => selectedParticipantIds.has(participant.id));
+    if (!selected.length || !await requestConfirmation({
+      title: 'Hapus peserta terpilih',
+      message: `Hapus ${selected.length} peserta terpilih? Peserta yang masih memiliki riwayat absensi tidak dapat dihapus.`,
+      confirmLabel: 'Hapus peserta',
+    })) return;
+    setBusy(true);
+    let deletedCount = 0;
+    const failedIds = new Set<string>();
+    let firstError = '';
+    try {
+      for (const participant of selected) {
+        try {
+          await request(`/school/participants/${participant.id}`, session.token, { method: 'DELETE' });
+          deletedCount += 1;
+        } catch (reason) {
+          failedIds.add(participant.id);
+          if (!firstError) firstError = reason instanceof Error ? reason.message : 'Sebagian peserta gagal dihapus.';
+        }
+      }
+      await loadSchoolData(session);
+      setSelectedParticipantIds(failedIds);
+      setMessage(failedIds.size
+        ? `${deletedCount} peserta dihapus; ${failedIds.size} gagal dihapus. ${firstError}`
+        : `${deletedCount} peserta berhasil dihapus.`);
+    } catch (reason) {
+      setSelectedParticipantIds(failedIds);
+      setMessage(reason instanceof Error
+        ? `Penghapusan peserta selesai sebagian, tetapi daftar peserta gagal diperbarui: ${reason.message}`
+        : 'Penghapusan peserta selesai sebagian, tetapi daftar peserta gagal diperbarui.', true);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   function requestConfirmation(dialog: ConfirmationDialog) {
     return new Promise<boolean>((resolve) => {
@@ -1634,6 +1704,11 @@ export default function App() {
     try {
       await request(`/school/participants/${participant.id}`, session.token, { method: 'DELETE' });
       await loadSchoolData(session);
+      setSelectedParticipantIds((current) => {
+        const next = new Set(current);
+        next.delete(participant.id);
+        return next;
+      });
       setMessage('Peserta berhasil dihapus.');
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : 'Peserta gagal dinonaktifkan.', true);
@@ -2026,8 +2101,7 @@ export default function App() {
   const navItems = useMemo(() => {
     const items: { id: Page; label: string; permission?: Permission | Permission[] }[] = [
       { id: 'scanner', label: 'Scanner', permission: 'scanner.use' },
-      { id: 'dashboard', label: 'Ringkasan', permission: 'dashboard.view' },
-      { id: 'reports', label: 'Rekap', permission: 'attendance.view' },
+      { id: 'dashboard', label: 'Ringkasan & Rekap', permission: ['dashboard.view', 'attendance.view'] },
       { id: 'participants', label: 'Peserta', permission: 'participants.view' },
       { id: 'settings', label: 'Pengaturan', permission: 'settings.operational.view' },
       { id: 'roles', label: 'Akun & Role', permission: ['school.users.view', 'school.roles.view'] },
@@ -2187,7 +2261,7 @@ export default function App() {
           ))}
         </nav>}
         <main className={page === 'scanner' ? 'content scanner-kiosk' : 'content'}>
-          {page === 'dashboard' && (
+          {page === 'dashboard' && can('dashboard.view') && (
             <section>
               <p className="eyebrow">DASHBOARD SEKOLAH</p>
               <h1>Ringkasan absensi</h1>
@@ -2197,7 +2271,7 @@ export default function App() {
                 <article className="metric-card"><span>Antrean belum terkirim</span><strong>{pendingCount}</strong></article>
                 <article className="metric-card"><span>Status koneksi</span><strong className={connected ? 'text-green' : 'text-red'}>{connected ? 'Online' : 'Offline'}</strong></article>
               </div>
-              <div className="panel quick-panel"><h2>Akses cepat</h2><p className="muted">Buka scanner untuk absensi atau rekap untuk memantau kehadiran.</p><div className="heading-actions">{can('scanner.use') && <button className="button primary" onClick={() => setPage('scanner')}>Buka Scanner</button>}{can('attendance.view') && <button className="button secondary" onClick={() => setPage('reports')}>Lihat Rekap</button>}</div></div>
+              <div className="panel quick-panel"><h2>Akses cepat</h2><p className="muted">Buka scanner untuk mencatat absensi. Rekap tersedia di halaman ini.</p><div className="heading-actions">{can('scanner.use') && <button className="button primary" onClick={() => setPage('scanner')}>Buka Scanner</button>}</div></div>
             </section>
           )}
 
@@ -2250,21 +2324,21 @@ export default function App() {
             </section>
           )}
 
-          {page === 'reports' && (
+          {(page === 'dashboard' || page === 'reports') && can('attendance.view') && (
             <section className="report-page">
-              <div className="page-heading"><div><p className="eyebrow">LAPORAN</p><h1>Rekap absensi</h1><p className="muted">Data dimuat otomatis saat menu dibuka, diperbarui setiap 30 detik, dan mengikuti filter tanggal, kelas, serta status.</p></div></div>
+              <div className="page-heading"><div><p className="eyebrow">LAPORAN</p><h1>{page === 'dashboard' ? 'Rekap absensi' : 'Ringkasan & Rekap'}</h1><p className="muted">Data dimuat otomatis saat menu dibuka, diperbarui setiap 30 detik, dan mengikuti filter tanggal, kelas, serta status.</p></div></div>
               <form className="filter-form panel no-print" onSubmit={(event) => void loadReport(event)}>
                 <label>Dari tanggal<input type="date" required value={reportFrom} onChange={(event) => setReportFrom(event.target.value)} /></label>
                 <label>Sampai tanggal<input type="date" required value={reportTo} onChange={(event) => setReportTo(event.target.value)} /></label>
                 <label>Kelas<select value={reportClassroom} onChange={(event) => setReportClassroom(event.target.value)}><option value="">Semua kelas</option>{classrooms.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
                 <label>Status<select value={reportStatus} onChange={(event) => setReportStatus(event.target.value)}><option value="">Semua status</option><option value="hadir">Hadir</option><option value="terlambat">Terlambat</option><option value="pulang">Pulang</option><option value="belum_hadir">Tidak hadir</option></select></label>
-                <div className="heading-actions"><button className="button primary" disabled={busy}>{busy ? 'Memuat…' : 'Tampilkan'}</button>{can('attendance.export') && <button type="button" className="button secondary" onClick={() => downloadReport(reportRows)}>Ekspor CSV</button>}{can('attendance.export') && <button type="button" className="button secondary" onClick={() => window.print()}>Cetak / PDF</button>}</div>
+                <div className="heading-actions"><button className="button primary" disabled={busy}>{busy ? 'Memuat…' : 'Tampilkan'}</button>{can('attendance.export') && <button type="button" className="button secondary" onClick={() => downloadReport(reportRows)}>Ekspor CSV</button>}{can('attendance.export') && <button type="button" className="button secondary" onClick={() => window.print()}>Cetak / PDF</button>}{can('attendance.edit') && selectedReportEntries.size > 0 && <button type="button" className="button danger" disabled={busy} onClick={() => void deleteReportEntries(reportRows.filter((row) => selectedReportEntries.has(`${row.attendance_date}:${row.participant_id}`)).map(({ participant_id, attendance_date }) => ({ participant_id, attendance_date })))}>Hapus terpilih ({selectedReportEntries.size})</button>}</div>
               </form>
               <div className="panel report-print-area">
                 <div className="print-heading"><h2>{session.school.name} · Rekap Absensi</h2><p>{reportFrom} sampai {reportTo}</p></div>
-                <div className="table-scroll"><table className="report-table"><thead><tr><th>Tanggal</th><th>Nama</th><th>Kelas</th><th>Masuk</th><th>Keluar</th><th>Status</th><th>Menit telat</th></tr></thead><tbody>
-                  {reportRows.map((row, index) => <tr key={`${row.attendance_date}-${row.participant_code}-${index}`}><td>{row.attendance_date}</td><td>{row.participant_name}</td><td>{row.classroom_name}</td><td>{toLocalTime(row.check_in_at)}</td><td>{toLocalTime(row.check_out_at)}</td><td>{row.attendance_status ?? '—'}</td><td>{row.late_minutes ?? row.menit_terlambat ?? 0}</td></tr>)}
-                  {!reportRows.length && <tr><td colSpan={7} className="empty">Belum ada data untuk filter ini.</td></tr>}
+                <div className="table-scroll"><table className="report-table"><thead><tr>{can('attendance.edit') && <th className="no-print"><input type="checkbox" aria-label="Pilih semua riwayat rekap" checked={reportRows.length > 0 && reportRows.every((row) => selectedReportEntries.has(`${row.attendance_date}:${row.participant_id}`))} onChange={(event) => setSelectedReportEntries(event.target.checked ? new Set(reportRows.map((row) => `${row.attendance_date}:${row.participant_id}`)) : new Set())} /></th>}<th>Tanggal</th><th>Nama</th><th>Kelas</th><th>Masuk</th><th>Keluar</th><th>Status</th><th>Menit telat</th>{can('attendance.edit') && <th className="no-print">Aksi</th>}</tr></thead><tbody>
+                  {reportRows.map((row, index) => <tr key={`${row.attendance_date}-${row.participant_id}-${index}`}>{can('attendance.edit') && <td className="no-print"><input type="checkbox" aria-label={`Pilih rekap ${row.participant_name} tanggal ${row.attendance_date}`} checked={selectedReportEntries.has(`${row.attendance_date}:${row.participant_id}`)} onChange={(event) => setSelectedReportEntries((current) => { const next = new Set(current); const key = `${row.attendance_date}:${row.participant_id}`; if (event.target.checked) next.add(key); else next.delete(key); return next; })} /></td>}<td>{row.attendance_date}</td><td>{row.participant_name}</td><td>{row.classroom_name}</td><td>{toLocalTime(row.check_in_at)}</td><td>{toLocalTime(row.check_out_at)}</td><td>{row.attendance_status ?? '—'}</td><td>{row.late_minutes ?? row.menit_terlambat ?? 0}</td>{can('attendance.edit') && <td className="no-print"><button type="button" className="button danger small" disabled={busy} onClick={() => void deleteReportEntries([{ participant_id: row.participant_id, attendance_date: row.attendance_date }])}>Hapus</button></td>}</tr>)}
+                  {!reportRows.length && <tr><td colSpan={can('attendance.edit') ? 9 : 7} className="empty">Belum ada data untuk filter ini.</td></tr>}
                 </tbody></table></div>
               </div>
             </section>
@@ -2322,8 +2396,8 @@ export default function App() {
                 <div className="heading-actions"><button type="button" className="button primary" disabled={busy} onClick={() => void saveParticipantSchedule()}>{busy ? 'Menyimpan…' : 'Simpan jadwal khusus'}</button></div>
               </div>}
               <div className="panel">
-                <div className="section-title"><div><h2>{participants.length} peserta lokal</h2><p className="muted">Data di-cache per sekolah pada perangkat ini.</p></div><div className="heading-actions">{can('participants.qr.print') && <button className="button secondary" onClick={() => void printSelectedQrs()}>Cetak QR terpilih</button>}<button className="button secondary" onClick={() => session && void loadSchoolData(session)}>Sinkronkan master</button></div></div>
-                <div className="table-scroll"><table><thead><tr><th><input type="checkbox" aria-label="Pilih semua peserta" checked={participants.length > 0 && selectedParticipantIds.size === participants.length} onChange={(event) => setSelectedParticipantIds(event.target.checked ? new Set(participants.map((item) => item.id)) : new Set())} /></th><th>Nama</th><th>Kelas</th><th>QR / Barcode</th><th className="no-print">Aksi</th></tr></thead><tbody>
+                <div className="section-title"><div><h2>{participants.length} peserta lokal</h2><p className="muted">Data di-cache per sekolah pada perangkat ini.</p></div><div className="heading-actions">{can('participants.qr.print') && <button className="button secondary" onClick={() => void printSelectedQrs()}>Cetak QR terpilih</button>}{can('participants.delete') && selectedParticipantIds.size > 0 && <button className="button danger" disabled={busy} onClick={() => void removeSelectedParticipants()}>Hapus terpilih ({selectedParticipantIds.size})</button>}<button className="button secondary" onClick={() => session && void loadSchoolData(session)}>Sinkronkan master</button></div></div>
+                <div className="table-scroll"><table><thead><tr><th><input type="checkbox" aria-label="Pilih semua peserta" checked={participants.length > 0 && participants.every((item) => selectedParticipantIds.has(item.id))} onChange={(event) => setSelectedParticipantIds(event.target.checked ? new Set(participants.map((item) => item.id)) : new Set())} /></th><th>Nama</th><th>Kelas</th><th>QR / Barcode</th><th className="no-print">Aksi</th></tr></thead><tbody>
                   {participants.map((participant) => <tr key={participant.id}><td><input type="checkbox" aria-label={`Pilih ${participant.full_name}`} checked={selectedParticipantIds.has(participant.id)} onChange={(event) => setSelectedParticipantIds((current) => { const next = new Set(current); if (event.target.checked) next.add(participant.id); else next.delete(participant.id); return next; })} /></td><td>{participant.full_name}</td><td>{participant.classroom_name ?? classrooms.find((item) => item.id === participant.classroom_id)?.name ?? '—'}</td><td><code>{participant.qr_code}</code></td><td className="no-print"><div className="participant-actions">{can('participants.edit') && <><button className="button secondary small" onClick={() => editParticipant(participant)}>Edit</button><button className="button secondary small" onClick={() => openParticipantSchedule(participant.id)}>Atur jam</button></>}{can('participants.delete') && <button className="button danger small" onClick={() => void removeParticipant(participant)}>Hapus</button>}</div></td></tr>)}
                   {!participants.length && <tr><td colSpan={5} className="empty">Master peserta belum tersedia. Hubungkan jaringan untuk mengambil data sekolah.</td></tr>}
                 </tbody></table></div>
