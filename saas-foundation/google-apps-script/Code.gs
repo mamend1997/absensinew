@@ -1,9 +1,26 @@
 const DATA_SHEET_NAME = 'Absensi';
-const SUMMARY_SHEET_NAME = 'Rekap Bulanan';
-const ORDER_SHEET_NAME = 'Urutan Peserta';
-const CORRECTIONS_SHEET_NAME = 'Koreksi Absensi';
+const LEGACY_SUMMARY_SHEET_NAME = 'Rekap Bulanan';
+const LEGACY_ORDER_SHEET_NAME = 'Urutan Peserta';
+const LEGACY_CORRECTIONS_SHEET_NAME = 'Koreksi Absensi';
 const CLEAR_CUTOFF_PROPERTY = 'ATTENDANCE_CLEAR_CUTOFF_MS';
 const RESET_PIN_PROPERTY = 'RESET_PIN';
+const SUMMARY_PARTICIPANT_ID_HEADER = 'participant_id';
+const SUMMARY_OVERRIDE_PREFIX = '__attendance_override__';
+const SUMMARY_BASELINE_PREFIX = '__attendance_baseline__';
+const MONTH_NAMES = [
+  'Januari',
+  'Februari',
+  'Maret',
+  'April',
+  'Mei',
+  'Juni',
+  'Juli',
+  'Agustus',
+  'September',
+  'Oktober',
+  'November',
+  'Desember',
+];
 const DATA_HEADERS = [
   'id_unik',
   'participant_code',
@@ -38,9 +55,11 @@ function onOpen() {
 }
 
 function onEdit(event) {
-  if (!event || !event.range || event.range.getSheet().getName() !== SUMMARY_SHEET_NAME) return;
+  if (!event || !event.range ||
+      !isMonthlySummarySheetName(event.range.getSheet().getName())) return;
   const summarySheet = event.range.getSheet();
-  const participantIdColumn = findSummaryParticipantIdColumn(summarySheet);
+  const metadata = findSummaryMetadata(summarySheet);
+  const participantIdColumn = metadata.participantIdColumn;
   if (!participantIdColumn) {
     event.source.toast(
       'ID peserta belum tersedia. Jalankan pembaruan rekap terlebih dahulu.',
@@ -55,21 +74,34 @@ function onEdit(event) {
 
   const timeZone = event.source.getSpreadsheetTimeZone() || 'Asia/Jakarta';
   const dateByFirstColumn = getSummaryDateColumns(summarySheet, participantIdColumn);
+  const participantIds = summarySheet
+    .getRange(firstRow, participantIdColumn, lastRow - firstRow + 1, 1)
+    .getDisplayValues()
+    .map((row) => row[0]);
+  const baselineValues = readSummaryBaselineValues(
+    summarySheet,
+    metadata,
+    firstRow,
+    lastRow,
+    participantIds,
+  );
+  const overrideValues = readSummaryOverrideValues(
+    summarySheet,
+    metadata,
+    firstRow,
+    lastRow,
+    participantIds,
+  );
   const result = buildSummaryEditCorrections(
     event.range.getValues(),
     event.range.getRow(),
     event.range.getColumn(),
     firstRow,
-    summarySheet
-      .getRange(firstRow, participantIdColumn, lastRow - firstRow + 1, 1)
-      .getDisplayValues()
-      .map((row) => row[0]),
-    summarySheet
-      .getRange(firstRow, 2, lastRow - firstRow + 1, 1)
-      .getDisplayValues()
-      .map((row) => row[0]),
+    participantIds,
     dateByFirstColumn,
     timeZone,
+    baselineValues,
+    overrideValues,
   );
   if (!result.corrections.length && !result.unmappedCount) return;
 
@@ -77,13 +109,7 @@ function onEdit(event) {
   lock.waitLock(10000);
   try {
     if (result.corrections.length) {
-      saveAttendanceCorrections(
-        getAttendanceCorrectionsSheet(event.source),
-        result.corrections,
-      );
-    }
-    if (result.corrections.length) {
-      applyAttendanceCorrectionsToSummary(summarySheet, result.corrections);
+      saveMonthlySummaryCorrections(summarySheet, result.corrections);
     }
     if (result.unmappedCount) {
       event.source.toast(
@@ -93,7 +119,7 @@ function onEdit(event) {
       );
     } else if (result.corrections.length) {
       event.source.toast(
-        'Koreksi waktu tersimpan dan akan tetap berlaku setelah sinkronisasi.',
+        'Koreksi absensi tersimpan di sheet bulan ini.',
         'Rekap Absensi',
         5,
       );
@@ -124,7 +150,7 @@ function clearAllAttendanceHistory() {
 
   const confirmation = ui.alert(
     'Hapus seluruh riwayat absensi?',
-    'Data sumber dan rekap akan dihapus. Riwayat lama yang dikirim ulang dari backend juga akan diabaikan; scan baru setelah penghapusan tetap diterima.',
+    'Data sumber dan seluruh rekap bulanan akan dihapus. Riwayat lama yang dikirim ulang dari backend juga akan diabaikan; scan baru setelah penghapusan tetap diterima.',
     ui.ButtonSet.YES_NO,
   );
   if (confirmation !== ui.Button.YES) return;
@@ -134,24 +160,24 @@ function clearAllAttendanceHistory() {
   try {
     const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
     const dataSheet = getDataSheet(spreadsheet);
-    const summarySheet = getSummarySheet(spreadsheet);
-    const correctionsSheet = getAttendanceCorrectionsSheet(spreadsheet);
     dataSheet.clearContents();
     dataSheet.getRange(1, 1, 1, DATA_HEADERS.length).setValues([DATA_HEADERS]);
+    const monthKey = currentMonthKey(spreadsheet.getSpreadsheetTimeZone());
+    const summarySheet = getSummarySheet(spreadsheet, monthKey);
+    spreadsheet.getSheets()
+      .filter((sheet) => isMonthlySummarySheetName(sheet.getName()) ||
+        [LEGACY_SUMMARY_SHEET_NAME, LEGACY_ORDER_SHEET_NAME,
+          LEGACY_CORRECTIONS_SHEET_NAME].includes(sheet.getName()))
+      .filter((sheet) => sheet !== summarySheet)
+      .forEach((sheet) => spreadsheet.deleteSheet(sheet));
+    showSummaryMetadataColumns(summarySheet, findSummaryMetadata(summarySheet).columns);
     summarySheet.clear();
-    if (correctionsSheet.getLastRow() > 1) {
-      correctionsSheet.getRange(
-        2,
-        1,
-        correctionsSheet.getLastRow() - 1,
-        CORRECTION_HEADERS.length,
-      ).clearContent();
-    }
+    removeLegacySupportSheets(spreadsheet);
     PropertiesService.getScriptProperties().setProperty(
       CLEAR_CUTOFF_PROPERTY,
       String(Date.now()),
     );
-    renderMonthlySummary(spreadsheet, dataSheet, summarySheet);
+    renderMonthlySummary(spreadsheet, dataSheet, summarySheet, monthKey, []);
     dataSheet.hideSheet();
   } finally {
     if (lock.hasLock()) lock.releaseLock();
@@ -178,7 +204,6 @@ function doPost(event) {
 
     const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
     const dataSheet = getDataSheet(spreadsheet);
-    const summarySheet = getSummarySheet(spreadsheet);
     const lastRow = dataSheet.getLastRow();
     const existingRows = lastRow > 1
       ? dataSheet.getRange(2, 1, lastRow - 1, DATA_HEADERS.length).getDisplayValues()
@@ -192,6 +217,8 @@ function doPost(event) {
     ) || 0;
     const acceptedIds = [];
     const newRows = [];
+    const timeZone = spreadsheet.getSpreadsheetTimeZone() || 'Asia/Jakarta';
+    const monthKeys = new Set([currentMonthKey(timeZone)]);
     for (const record of request.records) {
       if (!record || typeof record.id_unik !== 'string' || !record.id_unik ||
           !/^\d{4}-\d{2}-\d{2}$/.test(String(record.attendance_date || '')) ||
@@ -204,6 +231,7 @@ function doPost(event) {
         acceptedIds.push(record.id_unik);
         continue;
       }
+      monthKeys.add(String(record.attendance_date).slice(0, 7));
       const existingRecord = existing.get(record.id_unik);
       if (!existingRecord) {
         newRows.push(DATA_HEADERS.map((header) => safeCell(record[header])));
@@ -222,7 +250,21 @@ function doPost(event) {
       dataSheet.getRange(dataSheet.getLastRow() + 1, 1, newRows.length, DATA_HEADERS.length)
         .setValues(newRows);
     }
-    renderMonthlySummary(spreadsheet, dataSheet, summarySheet);
+    migrateLegacySummarySheet(spreadsheet, currentMonthKey(timeZone));
+    const recordsByMonth = groupAttendanceRecordsByMonth(
+      readAttendanceRecords(dataSheet),
+      timeZone,
+    );
+    Array.from(monthKeys).sort().forEach((monthKey) => {
+      const summarySheet = getSummarySheet(spreadsheet, monthKey);
+      renderMonthlySummary(
+        spreadsheet,
+        dataSheet,
+        summarySheet,
+        monthKey,
+        recordsByMonth.get(monthKey) || [],
+      );
+    });
     dataSheet.hideSheet();
     return jsonResponse({ ok: true, accepted_ids: acceptedIds });
   } catch (error) {
@@ -268,8 +310,33 @@ function refreshMonthlySummary() {
     lock.waitLock(10000);
     const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
     const dataSheet = getDataSheet(spreadsheet);
-    const summarySheet = getSummarySheet(spreadsheet);
-    renderMonthlySummary(spreadsheet, dataSheet, summarySheet);
+    const timeZone = spreadsheet.getSpreadsheetTimeZone() || 'Asia/Jakarta';
+    const recordsByMonth = groupAttendanceRecordsByMonth(
+      readAttendanceRecords(dataSheet),
+      timeZone,
+    );
+    const monthKeys = new Set(recordsByMonth.keys());
+    const activeMonthKey = currentMonthKey(timeZone);
+    monthKeys.add(activeMonthKey);
+    migrateLegacySummarySheet(spreadsheet, activeMonthKey);
+    const migrateLegacySupport = Boolean(
+      spreadsheet.getSheetByName(LEGACY_ORDER_SHEET_NAME) ||
+      spreadsheet.getSheetByName(LEGACY_CORRECTIONS_SHEET_NAME),
+    );
+    Array.from(monthKeys).sort().forEach((monthKey) => {
+      const sheetName = monthSheetName(monthKey);
+      if (monthKey !== activeMonthKey && !migrateLegacySupport &&
+          spreadsheet.getSheetByName(sheetName)) return;
+      const summarySheet = getSummarySheet(spreadsheet, monthKey);
+      renderMonthlySummary(
+        spreadsheet,
+        dataSheet,
+        summarySheet,
+        monthKey,
+        recordsByMonth.get(monthKey) || [],
+      );
+    });
+    removeLegacySupportSheets(spreadsheet);
     dataSheet.hideSheet();
   } finally {
     if (lock.hasLock()) lock.releaseLock();
@@ -304,27 +371,159 @@ function getDataSheet(spreadsheet) {
   return sheet;
 }
 
-function getSummarySheet(spreadsheet) {
-  let sheet = spreadsheet.getSheetByName(SUMMARY_SHEET_NAME);
-  if (!sheet) sheet = spreadsheet.insertSheet(SUMMARY_SHEET_NAME);
+function getSummarySheet(spreadsheet, monthKey) {
+  const sheetName = monthSheetName(monthKey);
+  let sheet = spreadsheet.getSheetByName(sheetName);
+  if (!sheet && monthKey === currentMonthKey(spreadsheet.getSpreadsheetTimeZone())) {
+    const legacySheet = spreadsheet.getSheetByName(LEGACY_SUMMARY_SHEET_NAME);
+    if (legacySheet) {
+      legacySheet.setName(sheetName);
+      sheet = legacySheet;
+    }
+  }
+  if (!sheet) sheet = spreadsheet.insertSheet(sheetName);
   if (sheet.isSheetHidden()) sheet.showSheet();
   return sheet;
 }
 
-function getParticipantOrderSheet(spreadsheet) {
-  return getSupportSheet(spreadsheet, ORDER_SHEET_NAME, ORDER_HEADERS);
+function currentMonthKey(timeZone) {
+  return Utilities.formatDate(new Date(), timeZone || 'Asia/Jakarta', 'yyyy-MM');
 }
 
-function getAttendanceCorrectionsSheet(spreadsheet) {
-  return getSupportSheet(spreadsheet, CORRECTIONS_SHEET_NAME, CORRECTION_HEADERS);
+function monthSheetName(monthKey) {
+  const match = /^(\d{4})-(\d{2})$/.exec(monthKey);
+  if (!match) throw new Error(`Invalid attendance month: ${monthKey}`);
+  const month = Number(match[2]);
+  if (month < 1 || month > 12) throw new Error(`Invalid attendance month: ${monthKey}`);
+  return `${MONTH_NAMES[month - 1]} ${match[1]}`;
 }
 
-function findSummaryParticipantIdColumn(sheet) {
+function monthKeyFromSheetName(name) {
+  const match = /^(.+) (\d{4})$/.exec(name);
+  if (!match) return '';
+  const month = MONTH_NAMES.indexOf(match[1]) + 1;
+  return month ? `${match[2]}-${String(month).padStart(2, '0')}` : '';
+}
+
+function isMonthlySummarySheetName(name) {
+  return Boolean(monthKeyFromSheetName(name));
+}
+
+function readAttendanceRecords(dataSheet) {
+  if (dataSheet.getLastRow() <= 1) return [];
+  const rows = dataSheet.getRange(
+    2,
+    1,
+    dataSheet.getLastRow() - 1,
+    DATA_HEADERS.length,
+  ).getValues();
+  return rows.map((row) =>
+    Object.fromEntries(DATA_HEADERS.map((header, index) => [header, row[index]])));
+}
+
+function groupAttendanceRecordsByMonth(records, timeZone) {
+  const grouped = new Map();
+  records.forEach((record) => {
+    const date = attendanceDateKey(record.attendance_date, timeZone);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+    const monthKey = date.slice(0, 7);
+    if (!grouped.has(monthKey)) grouped.set(monthKey, []);
+    grouped.get(monthKey).push(record);
+  });
+  return grouped;
+}
+
+function migrateLegacySummarySheet(spreadsheet, currentMonth) {
+  const legacySheet = spreadsheet.getSheetByName(LEGACY_SUMMARY_SHEET_NAME);
+  const currentSheetName = monthSheetName(currentMonth);
+  if (legacySheet && !spreadsheet.getSheetByName(currentSheetName)) {
+    legacySheet.setName(currentSheetName);
+  }
+}
+
+function removeLegacySupportSheets(spreadsheet) {
+  [LEGACY_ORDER_SHEET_NAME, LEGACY_CORRECTIONS_SHEET_NAME].forEach((name) => {
+    const sheet = spreadsheet.getSheetByName(name);
+    if (sheet) spreadsheet.deleteSheet(sheet);
+  });
+}
+
+function readPreviousMonthOrder(spreadsheet, monthKey) {
+  const previousSheets = spreadsheet.getSheets()
+    .map((sheet) => ({ sheet, monthKey: monthKeyFromSheetName(sheet.getName()) }))
+    .filter((entry) => entry.monthKey && entry.monthKey < monthKey)
+    .sort((left, right) => right.monthKey.localeCompare(left.monthKey));
+  for (const entry of previousSheets) {
+    const metadata = findSummaryMetadata(entry.sheet);
+    if (!metadata.participantIdColumn || entry.sheet.getLastRow() < 3) continue;
+    const order = new Map();
+    entry.sheet.getRange(
+      3,
+      metadata.participantIdColumn,
+      entry.sheet.getLastRow() - 2,
+      1,
+    ).getDisplayValues().forEach((row, index) => {
+      const id = String(row[0] || '').trim();
+      if (/^[1-9]\d*$/.test(id) && !order.has(id)) order.set(id, index);
+    });
+    if (order.size) return order;
+  }
+  return new Map();
+}
+
+function findSummaryMetadata(sheet) {
   const lastColumn = sheet.getLastColumn();
-  if (!lastColumn) return 0;
-  const headers = sheet.getRange(1, 1, 1, lastColumn).getDisplayValues()[0];
-  const index = headers.indexOf('participant_id');
-  return index < 0 ? 0 : index + 1;
+  const headers = lastColumn
+    ? sheet.getRange(1, 1, 1, lastColumn).getDisplayValues()[0]
+    : [];
+  const participantIdIndex = headers.indexOf(SUMMARY_PARTICIPANT_ID_HEADER);
+  const correctionColumns = new Map();
+  const columns = [];
+  if (participantIdIndex >= 0) columns.push(participantIdIndex + 1);
+  headers.forEach((header, index) => {
+    const text = String(header || '');
+    const match = new RegExp(
+      `^${SUMMARY_OVERRIDE_PREFIX}(\\d{4}-\\d{2}-\\d{2})__(check_in|late_minutes|check_out)$`,
+    ).exec(text);
+    const totalMatch = new RegExp(`^${SUMMARY_OVERRIDE_PREFIX}total_late_minutes$`).exec(text);
+    if (match) {
+      correctionColumns.set(attendanceCorrectionKey('', match[1], match[2]), index + 1);
+    } else if (totalMatch) {
+      correctionColumns.set(attendanceCorrectionKey('', '', 'total_late_minutes'), index + 1);
+    } else {
+      return;
+    }
+    columns.push(index + 1);
+  });
+  const baselineColumns = new Map();
+  headers.forEach((header, index) => {
+    const text = String(header || '');
+    const match = new RegExp(
+      `^${SUMMARY_BASELINE_PREFIX}(\\d{4}-\\d{2}-\\d{2})__(check_in|late_minutes|check_out)$`,
+    ).exec(text);
+    const totalMatch = new RegExp(`^${SUMMARY_BASELINE_PREFIX}total_late_minutes$`).exec(text);
+    if (match) {
+      baselineColumns.set(attendanceCorrectionKey('', match[1], match[2]), index + 1);
+    } else if (totalMatch) {
+      baselineColumns.set(attendanceCorrectionKey('', '', 'total_late_minutes'), index + 1);
+    } else {
+      return;
+    }
+    columns.push(index + 1);
+  });
+  return {
+    participantIdColumn: participantIdIndex < 0 ? 0 : participantIdIndex + 1,
+    correctionColumns,
+    baselineColumns,
+    columns,
+  };
+}
+
+function showSummaryMetadataColumns(sheet, columns) {
+  if (!columns.length) return;
+  const firstColumn = Math.min(...columns);
+  const lastColumn = Math.max(...columns);
+  sheet.showColumns(firstColumn, lastColumn - firstColumn + 1);
 }
 
 function getSummaryDateColumns(sheet, participantIdColumn) {
@@ -343,95 +542,213 @@ function getSummaryDateColumns(sheet, participantIdColumn) {
   return dateColumns;
 }
 
-function applyAttendanceCorrectionsToSummary(sheet, corrections) {
-  const participantIdColumn = findSummaryParticipantIdColumn(sheet);
-  if (!participantIdColumn) return;
+function readMonthlySummaryState(sheet, timeZone) {
+  const metadata = findSummaryMetadata(sheet);
+  const state = { order: new Map(), corrections: new Map(), metadataColumns: metadata.columns };
+  if (!metadata.participantIdColumn || sheet.getLastRow() < 3) return state;
   const lastRow = sheet.getLastRow();
-  if (lastRow < 3) return;
-  const participantRows = new Map();
-  sheet.getRange(3, participantIdColumn, lastRow - 2, 1)
+  const rowCount = lastRow - 2;
+  const firstMetadataColumn = Math.min(...metadata.columns);
+  const lastMetadataColumn = Math.max(...metadata.columns);
+  const metadataRows = sheet.getRange(
+    3,
+    firstMetadataColumn,
+    rowCount,
+    lastMetadataColumn - firstMetadataColumn + 1,
+  ).getDisplayValues();
+  const participantIdOffset = metadata.participantIdColumn - firstMetadataColumn;
+  const participantIds = metadataRows.map((row) =>
+    String(row[participantIdOffset] || '').trim());
+  participantIds.forEach((id, index) => {
+    if (/^[1-9]\d*$/.test(id) && !state.order.has(id)) state.order.set(id, index);
+  });
+  metadata.correctionColumns.forEach((column, key) => {
+    const [, date, eventType] = key.split('\u0000');
+    const columnOffset = column - firstMetadataColumn;
+    metadataRows.forEach((row, index) => {
+      const participantId = participantIds[index];
+      const value = String(row[columnOffset] || '').trim();
+      if (!participantId || !value) return;
+      const action = value.toLowerCase() === 'clear' ? 'clear' : 'set';
+      const correctionValue = action === 'set'
+        ? normalizeSummaryCorrectionValue(value, eventType, timeZone, index + 3)
+        : '';
+      const correctionKey = attendanceCorrectionKey(participantId, date, eventType);
+      state.corrections.set(correctionKey, {
+        participantId,
+        date,
+        eventType,
+        action,
+        value: correctionValue,
+      });
+    });
+  });
+  return state;
+}
+
+function readSummaryBaselineValues(sheet, metadata, firstRow, lastRow, participantIds) {
+  return readSummaryMetadataValues(
+    sheet,
+    metadata.baselineColumns,
+    firstRow,
+    lastRow,
+    participantIds,
+  );
+}
+
+function readSummaryOverrideValues(sheet, metadata, firstRow, lastRow, participantIds) {
+  return readSummaryMetadataValues(
+    sheet,
+    metadata.correctionColumns,
+    firstRow,
+    lastRow,
+    participantIds,
+  );
+}
+
+function readSummaryMetadataValues(sheet, columns, firstRow, lastRow, participantIds) {
+  const metadataValues = new Map();
+  if (!columns.size) return metadataValues;
+  const rowCount = lastRow - firstRow + 1;
+  const columnNumbers = Array.from(columns.values());
+  const firstMetadataColumn = Math.min(...columnNumbers);
+  const lastMetadataColumn = Math.max(...columnNumbers);
+  const rows = sheet.getRange(
+    firstRow,
+    firstMetadataColumn,
+    rowCount,
+    lastMetadataColumn - firstMetadataColumn + 1,
+  ).getDisplayValues();
+  columns.forEach((column, key) => {
+    const [, date, eventType] = key.split('\u0000');
+    const offset = column - firstMetadataColumn;
+    rows.forEach((row, index) => {
+      const participantId = String(participantIds[index] || '').trim();
+      if (!participantId) return;
+      metadataValues.set(
+        attendanceCorrectionKey(participantId, date, eventType),
+        String(row[offset] || '').trim(),
+      );
+    });
+  });
+  return metadataValues;
+}
+
+function readLegacyParticipantOrder(spreadsheet) {
+  const sheet = spreadsheet.getSheetByName(LEGACY_ORDER_SHEET_NAME);
+  const order = new Map();
+  if (!sheet || sheet.getLastRow() < 2) return order;
+  const headers = sheet.getRange(1, 1, 1, ORDER_HEADERS.length).getDisplayValues()[0];
+  if (ORDER_HEADERS.some((header, index) => headers[index] !== header)) {
+    throw new Error(`Invalid headers in ${LEGACY_ORDER_SHEET_NAME}`);
+  }
+  sheet.getRange(2, 1, sheet.getLastRow() - 1, ORDER_HEADERS.length)
     .getDisplayValues()
     .forEach((row, index) => {
       const id = String(row[0] || '').trim();
-      if (id && !participantRows.has(id)) participantRows.set(id, index + 3);
+      if (/^[1-9]\d*$/.test(id) && !order.has(id)) order.set(id, index);
     });
-  const dateColumns = getSummaryDateColumns(sheet, participantIdColumn);
+  return order;
+}
+
+function readLegacyAttendanceCorrections(spreadsheet, timeZone) {
+  const sheet = spreadsheet.getSheetByName(LEGACY_CORRECTIONS_SHEET_NAME);
+  if (!sheet) return new Map();
+  const headers = sheet.getRange(1, 1, 1, CORRECTION_HEADERS.length).getDisplayValues()[0];
+  if (CORRECTION_HEADERS.some((header, index) => headers[index] !== header)) {
+    throw new Error(`Invalid headers in ${LEGACY_CORRECTIONS_SHEET_NAME}`);
+  }
+  return readAttendanceCorrections(sheet, timeZone);
+}
+
+function saveMonthlySummaryCorrections(sheet, corrections) {
+  const metadata = findSummaryMetadata(sheet);
+  if (!metadata.participantIdColumn) throw new Error('Monthly summary has no participant IDs.');
+  const lastRow = sheet.getLastRow();
+  const participantRows = new Map();
+  if (lastRow >= 3) {
+    sheet.getRange(3, metadata.participantIdColumn, lastRow - 2, 1)
+      .getDisplayValues()
+      .forEach((row, index) => {
+        const id = String(row[0] || '').trim();
+        if (id && !participantRows.has(id)) participantRows.set(id, index + 3);
+      });
+  }
+  const dateColumns = getSummaryDateColumns(sheet, metadata.participantIdColumn);
   const firstColumnByDate = new Map(
     Array.from(dateColumns.entries()).map(([column, date]) => [date, column]),
   );
+  const firstTotalColumn = 3 + dateColumns.size * DATE_HEADERS.length;
   corrections.forEach((correction) => {
     const row = participantRows.get(correction.participantId);
-    const firstColumn = firstColumnByDate.get(correction.date);
-    if (!row || !firstColumn) return;
-    const column = firstColumn + (correction.eventType === 'check_in' ? 0 : 2);
-    sheet.getRange(row, column).setValue(correction.action === 'clear' ? '' : correction.time);
+    const metadataColumn = metadata.correctionColumns.get(
+      attendanceCorrectionKey('', correction.date, correction.eventType),
+    );
+    const firstColumn = correction.eventType === 'total_late_minutes'
+      ? firstTotalColumn
+      : firstColumnByDate.get(correction.date);
+    if (!row || !metadataColumn || !firstColumn) {
+      throw new Error(`Could not locate ${correction.eventType} correction cell for ${correction.date || 'total'}.`);
+    }
+    sheet.getRange(row, metadataColumn)
+      .setValue(correction.action === 'inherit'
+        ? ''
+        : correction.action === 'clear'
+          ? 'clear'
+          : correction.value);
+    const visibleColumn = correction.eventType === 'total_late_minutes'
+      ? firstColumn
+      : firstColumn + (
+        correction.eventType === 'check_in' ? 0
+          : correction.eventType === 'late_minutes' ? 1
+            : 2
+      );
+    sheet.getRange(row, visibleColumn)
+      .setValue(correction.action === 'clear'
+        ? ''
+        : correction.eventType.includes('late_minutes')
+          ? Number(correction.value)
+          : correction.value);
   });
 }
 
-function getSupportSheet(spreadsheet, sheetName, headers) {
-  let sheet = spreadsheet.getSheetByName(sheetName);
-  if (!sheet) sheet = spreadsheet.insertSheet(sheetName);
-  if (sheet.isSheetHidden()) sheet.showSheet();
-  if (sheet.getLastRow() === 0) {
-    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-    sheet.setFrozenRows(1);
-    if (sheetName === CORRECTIONS_SHEET_NAME) {
-      const validationRows = Math.max(sheet.getMaxRows() - 1, 1);
-      sheet.getRange(2, 4, validationRows, 1).setDataValidation(
-        SpreadsheetApp.newDataValidation()
-          .requireValueInList(['check_in', 'check_out'], true)
-          .setAllowInvalid(false)
-          .build(),
-      );
-      sheet.getRange(2, 5, validationRows, 1).setDataValidation(
-        SpreadsheetApp.newDataValidation()
-          .requireValueInList(['set', 'clear'], true)
-          .setAllowInvalid(false)
-          .build(),
-      );
-      sheet.getRange(2, 3, validationRows, 1).setNumberFormat('yyyy-mm-dd');
-      sheet.getRange(2, 6, validationRows, 1).setNumberFormat('HH:mm:ss');
-    }
-  } else {
-    const actualHeaders = sheet.getRange(1, 1, 1, headers.length).getDisplayValues()[0];
-    if (headers.some((header, index) => actualHeaders[index] !== header)) {
-      throw new Error(`Invalid headers in ${sheetName}`);
-    }
-  }
-  return sheet;
-}
-
-function renderMonthlySummary(spreadsheet, dataSheet, summarySheet) {
+function renderMonthlySummary(spreadsheet, dataSheet, summarySheet, monthKey, allRecords) {
   const timeZone = spreadsheet.getSpreadsheetTimeZone() || 'Asia/Jakarta';
-  const rawRows = dataSheet.getLastRow() > 1
-    ? dataSheet.getRange(2, 1, dataSheet.getLastRow() - 1, DATA_HEADERS.length).getValues()
-    : [];
-  const records = rawRows.map((row) =>
-    Object.fromEntries(DATA_HEADERS.map((header, index) => [header, row[index]])));
-  const participantOrder = updateParticipantOrderSheet(
-    getParticipantOrderSheet(spreadsheet),
-    records,
-  );
-  const corrections = readAttendanceCorrections(
-    getAttendanceCorrectionsSheet(spreadsheet),
-    timeZone,
-  );
-  const monthKey = Utilities.formatDate(new Date(), timeZone, 'yyyy-MM');
+  const records = allRecords || readAttendanceRecords(dataSheet);
+  const previousState = readMonthlySummaryState(summarySheet, timeZone);
+  const participantOrder = previousState.order.size
+    ? previousState.order
+    : readLegacyParticipantOrder(spreadsheet);
+  if (!participantOrder.size) {
+    const previousOrder = readPreviousMonthOrder(spreadsheet, monthKey);
+    previousOrder.forEach((value, key) => participantOrder.set(key, value));
+  }
+  const corrections = readLegacyAttendanceCorrections(spreadsheet, timeZone);
+  previousState.corrections.forEach((value, key) => corrections.set(key, value));
   const summary = buildMonthlySummary(records, timeZone, monthKey, participantOrder, corrections);
   const firstTotalColumn = 3 + summary.dates.length * DATE_HEADERS.length;
   const lastColumn = firstTotalColumn + TOTAL_HEADERS.length - 1;
-  const participantIdColumn = lastColumn + 1;
+  const metadataStartColumn = lastColumn + 1;
+  const metadataHeaders = [
+    SUMMARY_PARTICIPANT_ID_HEADER,
+    ...summary.dates.flatMap((date) => ['check_in', 'late_minutes', 'check_out']
+      .map((eventType) => `${SUMMARY_OVERRIDE_PREFIX}${date}__${eventType}`)),
+    `${SUMMARY_OVERRIDE_PREFIX}total_late_minutes`,
+    ...summary.dates.flatMap((date) => ['check_in', 'late_minutes', 'check_out']
+      .map((eventType) => `${SUMMARY_BASELINE_PREFIX}${date}__${eventType}`)),
+    `${SUMMARY_BASELINE_PREFIX}total_late_minutes`,
+  ];
 
   const filter = summarySheet.getFilter();
   if (filter) filter.remove();
-  const oldParticipantIdColumn = findSummaryParticipantIdColumn(summarySheet);
-  if (oldParticipantIdColumn) summarySheet.showColumns(oldParticipantIdColumn);
+  showSummaryMetadataColumns(summarySheet, previousState.metadataColumns);
   unmergeSummaryHeaders(summarySheet);
   summarySheet.clear();
-  if (participantIdColumn > summarySheet.getMaxColumns()) {
+  const requiredColumnCount = metadataStartColumn + metadataHeaders.length - 1;
+  if (requiredColumnCount > summarySheet.getMaxColumns()) {
     summarySheet.insertColumnsAfter(
       summarySheet.getMaxColumns(),
-      participantIdColumn - summarySheet.getMaxColumns(),
+      requiredColumnCount - summarySheet.getMaxColumns(),
     );
   }
 
@@ -454,12 +771,37 @@ function renderMonthlySummary(spreadsheet, dataSheet, summarySheet) {
       .setBorder(true, true, true, true, true, true, '#000000', SpreadsheetApp.BorderStyle.SOLID);
     summarySheet.getRange(3, 2, summary.rows.length, 1).setHorizontalAlignment('left');
   }
-  summarySheet.getRange(1, participantIdColumn).setValue('participant_id');
+  summarySheet.getRange(1, metadataStartColumn, 1, metadataHeaders.length)
+    .setValues([metadataHeaders]);
   if (summary.participantIds.length) {
-    summarySheet.getRange(3, participantIdColumn, summary.participantIds.length, 1)
-      .setValues(summary.participantIds.map((id) => [id]));
+    const metadataRows = summary.participantIds.map((participantId, index) => {
+      const totalCorrection = corrections.get(
+        attendanceCorrectionKey(participantId, '', 'total_late_minutes'),
+      );
+      return [
+        participantId,
+        ...summary.dates.flatMap((date) => ['check_in', 'late_minutes', 'check_out'].map((eventType) => {
+          const correction = corrections.get(
+            attendanceCorrectionKey(participantId, date, eventType),
+          );
+          if (!correction) return '';
+          return correction.action === 'clear' ? 'clear' : correction.value;
+        })),
+        totalCorrection
+          ? totalCorrection.action === 'clear' ? 'clear' : totalCorrection.value
+          : '',
+        ...summary.baselineRows[index],
+        ...summary.baselineTotalRows[index],
+      ];
+    });
+    summarySheet.getRange(
+      3,
+      metadataStartColumn,
+      metadataRows.length,
+      metadataHeaders.length,
+    ).setValues(metadataRows);
   }
-  summarySheet.hideColumns(participantIdColumn);
+  summarySheet.hideColumns(metadataStartColumn, metadataHeaders.length);
   summarySheet.getRange(1, 1, 2, lastColumn)
     .setBackground('#ffff00')
     .setFontWeight('bold')
@@ -489,61 +831,6 @@ function unmergeSummaryHeaders(summarySheet) {
   headerRange.getMergedRanges().forEach((range) => range.breakApart());
 }
 
-function updateParticipantOrderSheet(sheet, records) {
-  const lastRow = sheet.getLastRow();
-  const oldRows = lastRow > 1
-    ? sheet.getRange(2, 1, lastRow - 1, ORDER_HEADERS.length).getValues()
-    : [];
-  const participants = new Map();
-  for (const record of records) {
-    const id = String(record.participant_id || '').trim();
-    if (!/^[1-9]\d*$/.test(id)) continue;
-    const timestamp = parseTimestamp(record.client_timestamp)?.getTime() || 0;
-    const current = participants.get(id);
-    if (!current || timestamp >= current.timestamp) {
-      participants.set(id, {
-        id,
-        name: String(record.participant_name || ''),
-        code: String(record.participant_code || ''),
-        timestamp,
-      });
-    }
-  }
-
-  const existingIds = new Set();
-  const updatedRows = oldRows.map((row) => {
-    const id = String(row[0] || '').trim();
-    if (!id) return row;
-    existingIds.add(id);
-    const participant = participants.get(id);
-    return participant
-      ? [id, participant.name || row[1], participant.code || row[2]]
-      : row;
-  });
-  if (updatedRows.length) {
-    sheet.getRange(2, 1, updatedRows.length, ORDER_HEADERS.length).setValues(updatedRows);
-  }
-
-  const newRows = Array.from(participants.values())
-    .filter((participant) => !existingIds.has(participant.id))
-    .sort((left, right) => compareParticipantIds(left.id, right.id))
-    .map((participant) => [participant.id, participant.name, participant.code]);
-  if (newRows.length) {
-    sheet.getRange(sheet.getLastRow() + 1, 1, newRows.length, ORDER_HEADERS.length)
-      .setValues(newRows);
-  }
-
-  const allRows = sheet.getLastRow() > 1
-    ? sheet.getRange(2, 1, sheet.getLastRow() - 1, ORDER_HEADERS.length).getDisplayValues()
-    : [];
-  const order = new Map();
-  allRows.forEach((row, index) => {
-    const id = String(row[0] || '').trim();
-    if (/^[1-9]\d*$/.test(id) && !order.has(id)) order.set(id, index);
-  });
-  return order;
-}
-
 function readAttendanceCorrections(sheet, timeZone) {
   const lastRow = sheet.getLastRow();
   if (lastRow <= 1) return new Map();
@@ -566,7 +853,7 @@ function readAttendanceCorrections(sheet, timeZone) {
     if (corrections.has(key)) {
       throw new Error(`Koreksi Absensi ganda untuk peserta ${participantId}, tanggal ${date}, ${eventType}.`);
     }
-    corrections.set(key, { participantId, date, eventType, action, time });
+    corrections.set(key, { participantId, date, eventType, action, value: time });
   });
   return corrections;
 }
@@ -577,9 +864,10 @@ function buildSummaryEditCorrections(
   rangeFirstColumn,
   dataFirstRow,
   participantIds,
-  participantNames,
   dateByFirstColumn,
   timeZone,
+  baselineValues = new Map(),
+  existingOverrides = new Map(),
 ) {
   const corrections = [];
   let unmappedCount = 0;
@@ -590,11 +878,19 @@ function buildSummaryEditCorrections(
     row.forEach((value, columnIndex) => {
       const absoluteColumn = rangeFirstColumn + columnIndex;
       if (absoluteColumn < 3) return;
-      const columnOffset = (absoluteColumn - 3) % 3;
-      if (columnOffset !== 0 && columnOffset !== 2) return;
-      const firstDateColumn = absoluteColumn - columnOffset;
-      const date = dateByFirstColumn.get(firstDateColumn);
-      if (!date) return;
+      const firstTotalColumn = 3 + dateByFirstColumn.size * DATE_HEADERS.length;
+      let date = '';
+      let columnOffset = -1;
+      let eventType = '';
+      if (absoluteColumn === firstTotalColumn) {
+        eventType = 'total_late_minutes';
+      } else {
+        columnOffset = (absoluteColumn - 3) % DATE_HEADERS.length;
+        const firstDateColumn = absoluteColumn - columnOffset;
+        date = dateByFirstColumn.get(firstDateColumn);
+        if (!date) return;
+        eventType = ['check_in', 'late_minutes', 'check_out'][columnOffset];
+      }
 
       const participantId = String(participantIds[participantIndex] || '').trim();
       if (!/^[1-9]\d*$/.test(participantId)) {
@@ -602,65 +898,29 @@ function buildSummaryEditCorrections(
         return;
       }
       const isCleared = value == null || String(value).trim() === '';
+      const correctionValue = isCleared
+        ? ''
+        : normalizeSummaryCorrectionValue(value, eventType, timeZone, absoluteRow);
+      const correctionKey = attendanceCorrectionKey(participantId, date, eventType);
+      const previousOverride = existingOverrides.get(correctionKey);
+      const clearingExplicitOverride = isCleared && previousOverride &&
+        previousOverride.toLowerCase() !== 'clear';
+      const action = baselineValues.has(correctionKey) &&
+          baselineValues.get(correctionKey) === correctionValue && !clearingExplicitOverride
+        ? 'inherit'
+        : isCleared
+          ? 'clear'
+          : 'set';
       corrections.push({
         participantId,
-        participantName: participantNames[participantIndex] || '',
         date,
-        eventType: columnOffset === 0 ? 'check_in' : 'check_out',
-        action: isCleared ? 'clear' : 'set',
-        time: isCleared ? '' : normalizeCorrectionTime(value, timeZone, absoluteRow),
+        eventType,
+        action,
+        value: correctionValue,
       });
     });
   });
   return { corrections, unmappedCount };
-}
-
-function saveAttendanceCorrections(sheet, corrections) {
-  const lastRow = sheet.getLastRow();
-  const existingRows = lastRow > 1
-    ? sheet.getRange(2, 1, lastRow - 1, CORRECTION_HEADERS.length).getValues()
-    : [];
-  const timeZone = sheet.getParent().getSpreadsheetTimeZone() || 'Asia/Jakarta';
-  const rowByKey = new Map();
-  existingRows.forEach((row, index) => {
-    const participantId = String(row[0] || '').trim();
-    if (!participantId) return;
-    const date = attendanceDateKey(row[2], timeZone);
-    const eventType = String(row[3] || '').trim();
-    const key = attendanceCorrectionKey(participantId, date, eventType);
-    if (rowByKey.has(key)) {
-      throw new Error(`Koreksi Absensi ganda pada baris ${rowByKey.get(key)} dan ${index + 2}.`);
-    }
-    rowByKey.set(key, index + 2);
-  });
-
-  const updates = [];
-  const inserts = [];
-  corrections.forEach((correction) => {
-    const key = attendanceCorrectionKey(
-      correction.participantId,
-      correction.date,
-      correction.eventType,
-    );
-    const values = [
-      correction.participantId,
-      correction.participantName,
-      correction.date,
-      correction.eventType,
-      correction.action,
-      correction.time,
-    ];
-    const rowNumber = rowByKey.get(key);
-    if (rowNumber) updates.push({ rowNumber, values });
-    else inserts.push(values);
-  });
-  updates.forEach(({ rowNumber, values }) => {
-    sheet.getRange(rowNumber, 1, 1, CORRECTION_HEADERS.length).setValues([values]);
-  });
-  if (inserts.length) {
-    sheet.getRange(sheet.getLastRow() + 1, 1, inserts.length, CORRECTION_HEADERS.length)
-      .setValues(inserts);
-  }
 }
 
 function attendanceCorrectionKey(participantId, date, eventType) {
@@ -682,6 +942,18 @@ function normalizeCorrectionTime(value, timeZone, rowNumber) {
     throw new Error(`Waktu Koreksi pada baris ${rowNumber} bukan waktu yang valid.`);
   }
   return `${match[1]}:${match[2]}:${String(second).padStart(2, '0')}`;
+}
+
+function normalizeSummaryCorrectionValue(value, eventType, timeZone, rowNumber) {
+  if (eventType === 'check_in' || eventType === 'check_out') {
+    return normalizeCorrectionTime(value, timeZone, rowNumber);
+  }
+  const text = String(value).trim();
+  const minutes = Number(text);
+  if (!text || !Number.isInteger(minutes) || minutes < 0) {
+    throw new Error(`Menit keterlambatan pada baris ${rowNumber} harus berupa bilangan bulat nol atau lebih.`);
+  }
+  return String(minutes);
 }
 
 function compareParticipantIds(left, right) {
@@ -727,10 +999,14 @@ function buildMonthlySummary(records, timeZone, monthKey, participantOrder = new
       day = {
         checkedIn: false,
         checkIn: '',
+        baselineCheckIn: '',
         checkInTimestamp: null,
         checkOut: '',
+        baselineCheckOut: '',
         checkOutTimestamp: null,
         lateMinutes: 0,
+        baselineLateMinutes: 0,
+        lateMinutesPresent: false,
       };
       participant.days.set(date, day);
     }
@@ -739,25 +1015,36 @@ function buildMonthlySummary(records, timeZone, monthKey, participantOrder = new
     if (record.event_type === 'check_in') {
       day.checkedIn = true;
       day.lateMinutes = Math.max(day.lateMinutes, Number(record.late_minutes) || 0);
+      day.baselineLateMinutes = day.lateMinutes;
+      day.lateMinutesPresent = true;
       if (timestamp && (!day.checkInTimestamp || timestamp < day.checkInTimestamp)) {
         day.checkInTimestamp = timestamp;
         day.checkIn = formatClock(record.client_timestamp, timeZone);
+        day.baselineCheckIn = day.checkIn;
       }
     } else if (timestamp && (!day.checkOutTimestamp || timestamp > day.checkOutTimestamp)) {
       day.checkOutTimestamp = timestamp;
       day.checkOut = formatClock(record.client_timestamp, timeZone);
+      day.baselineCheckOut = day.checkOut;
     }
     dates.add(date);
   }
 
   for (const correction of corrections.values()) {
-    if (correction.date.slice(0, 7) !== monthKey) continue;
+    if (correction.eventType !== 'total_late_minutes' &&
+        correction.date.slice(0, 7) !== monthKey) continue;
     const participant = participants.get(`id:${correction.participantId}`);
+    if (!participant) continue;
+    if (correction.eventType === 'total_late_minutes') continue;
     const day = participant?.days.get(correction.date);
     if (!day) continue;
-    const value = correction.action === 'clear' ? '' : correction.time;
+    const value = correction.action === 'clear' ? '' : correction.value;
     if (correction.eventType === 'check_in') day.checkIn = value;
-    else day.checkOut = value;
+    else if (correction.eventType === 'check_out') day.checkOut = value;
+    else if (correction.eventType === 'late_minutes') {
+      day.lateMinutes = correction.action === 'clear' ? 0 : Number(correction.value);
+      day.lateMinutesPresent = correction.action !== 'clear';
+    }
   }
 
   const sortedDates = Array.from(dates).sort();
@@ -773,6 +1060,19 @@ function buildMonthlySummary(records, timeZone, monthKey, participantOrder = new
       if (left.id && right.id) return compareParticipantIds(left.id, right.id);
       return String(left.code || left.name).localeCompare(String(right.code || right.name));
     });
+  const baselineRows = sortedParticipants.map((participant) => {
+    const row = [];
+    for (const date of sortedDates) {
+      const day = participant.days.get(date);
+      row.push(
+        day?.baselineCheckIn || '',
+        day?.checkedIn ? day.baselineLateMinutes : '',
+        day?.baselineCheckOut || '',
+      );
+    }
+    return row;
+  });
+  const baselineTotalRows = [];
   const rows = sortedParticipants.map((participant, index) => {
     let totalLateMinutes = 0;
     let totalAttendance = 0;
@@ -785,16 +1085,27 @@ function buildMonthlySummary(records, timeZone, monthKey, participantOrder = new
       }
       row.push(
         day?.checkIn || '',
-        day && day.checkedIn ? day.lateMinutes : '',
+        day?.lateMinutesPresent ? day.lateMinutes : '',
         day?.checkOut || '',
       );
     }
-    row.push(totalLateMinutes, totalAttendance);
+    baselineTotalRows[index] = [totalLateMinutes];
+    const totalCorrection = corrections.get(
+      attendanceCorrectionKey(String(participant.id || ''), '', 'total_late_minutes'),
+    );
+    row.push(
+      totalCorrection
+        ? totalCorrection.action === 'clear' ? '' : Number(totalCorrection.value)
+        : totalLateMinutes,
+      totalAttendance,
+    );
     return row;
   });
   return {
     dates: sortedDates,
     rows,
+    baselineRows,
+    baselineTotalRows,
     participantIds: sortedParticipants.map((participant) => participant.id),
   };
 }

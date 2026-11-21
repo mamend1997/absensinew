@@ -1817,6 +1817,20 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
           acceptedIds.push(id);
           continue;
         }
+        if (!String(error.message || '').includes('uq_attendance_daily_event')) {
+          throw new Error('daily_duplicate');
+        }
+        const [sameDayEvent] = await pool.execute(
+          `SELECT id_unik FROM attendance_logs
+            WHERE sekolah_id = ? AND participant_id = ?
+              AND attendance_date = ? AND event_type = ?
+            LIMIT 1`,
+          [schoolId, participant.id, calculation.date, eventType],
+        );
+        if (sameDayEvent.length) {
+          acceptedIds.push(id);
+          continue;
+        }
         throw new Error('daily_duplicate');
       }
       acceptedIds.push(id);

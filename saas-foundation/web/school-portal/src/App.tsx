@@ -299,6 +299,13 @@ interface QueuedScan {
   menit_terlambat: number;
   status_sync: 'pending' | 'synced';
 }
+interface DailyAttendanceState {
+  key: string;
+  participant_id: string;
+  attendance_date: string;
+  check_in: boolean;
+  check_out: boolean;
+}
 interface ScannerPreferences {
   cameraFacing: 'user' | 'environment';
   scanSpeed: 'fast' | 'balanced';
@@ -313,6 +320,7 @@ interface ScannerCache extends DBSchema {
     value: QueuedScan;
     indexes: { 'by-status': QueuedScan['status_sync'] };
   };
+  attendanceState: { key: string; value: DailyAttendanceState };
 }
 interface ScanResult { date: string; status: string | null; lateMinutes: number; reason?: string }
 type LoginView = 'login' | 'register' | 'verify' | 'forgot-password' | 'reset-password';
@@ -596,7 +604,7 @@ function PasswordEye({ visible }: { visible: boolean }) {
 
 function database(schoolId: string | number): Promise<IDBPDatabase<ScannerCache>> {
   if (!('indexedDB' in window)) throw new Error('Penyimpanan lokal tidak tersedia pada browser ini.');
-  return openDB<ScannerCache>(`saas-school-${schoolId}`, 3, {
+  return openDB<ScannerCache>(`saas-school-${schoolId}`, 4, {
     upgrade(db, oldVersion) {
       if (oldVersion < 1) {
         db.createObjectStore('participants', { keyPath: 'id' });
@@ -605,8 +613,13 @@ function database(schoolId: string | number): Promise<IDBPDatabase<ScannerCache>
       }
       if (oldVersion < 2) db.createObjectStore('settings');
       if (oldVersion < 3) db.createObjectStore('scannerPreferences');
+      if (oldVersion < 4) db.createObjectStore('attendanceState', { keyPath: 'key' });
     },
   });
+}
+
+function dailyAttendanceKey(participantId: string, attendanceDate: string) {
+  return `${participantId}:${attendanceDate}`;
 }
 
 function toLocalTime(value?: string | null) {
@@ -1221,17 +1234,32 @@ export default function App() {
   async function resetLocalHistory() {
     if (!session || !await requestConfirmation({
       title: 'Reset riwayat scanner',
-      message: 'Hapus semua riwayat scan yang tersimpan di perangkat ini? Riwayat yang belum tersinkron juga akan dihapus dan tidak dapat dipulihkan.',
-      confirmLabel: 'Hapus semua riwayat',
+      message: 'Hapus riwayat scan yang sudah tersinkron dari perangkat ini? Scan yang belum tersinkron akan tetap disimpan dan dicoba ulang.',
+      confirmLabel: 'Hapus riwayat tersinkron',
     })) return;
     try {
       const db = await database(session.school.id);
-      const transaction = db.transaction('queue', 'readwrite');
-      await transaction.store.clear();
+      const transaction = db.transaction(['queue', 'attendanceState'], 'readwrite');
+      const queue = transaction.objectStore('queue');
+      const attendanceState = transaction.objectStore('attendanceState');
+      const scans = await queue.getAll();
+      for (const scan of scans) {
+        if (scan.status_sync !== 'synced') continue;
+        const key = dailyAttendanceKey(scan.id_peserta, scan.attendance_date);
+        const previous = await attendanceState.get(key);
+        await attendanceState.put({
+          key,
+          participant_id: scan.id_peserta,
+          attendance_date: scan.attendance_date,
+          check_in: Boolean(previous?.check_in || scan.jenis_absen === 'check_in'),
+          check_out: Boolean(previous?.check_out || scan.jenis_absen === 'check_out'),
+        });
+        await queue.delete(scan.id_unik);
+      }
       await transaction.done;
-      setPendingCount(0);
+      setPendingCount(await db.countFromIndex('queue', 'by-status', 'pending'));
       setHistoryResetVersion((current) => current + 1);
-      setMessage('Semua riwayat scanner di perangkat ini berhasil dihapus.');
+      setMessage('Riwayat scan yang sudah tersinkron berhasil dihapus. Scan pending tetap tersimpan.');
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : 'Riwayat scanner gagal dihapus.', true);
     }
@@ -1435,10 +1463,22 @@ export default function App() {
         },
         async markSynced({ ids }: { sekolah_id: string; ids: string[] }) {
           const db = await database(session.school.id);
-          const tx = db.transaction('queue', 'readwrite');
+          const tx = db.transaction(['queue', 'attendanceState'], 'readwrite');
+          const queue = tx.objectStore('queue');
+          const attendanceState = tx.objectStore('attendanceState');
           for (const id of ids) {
-            const record = await tx.store.get(id);
-            if (record) await tx.store.put({ ...record, status_sync: 'synced' });
+            const record = await queue.get(id);
+            if (!record) continue;
+            await queue.put({ ...record, status_sync: 'synced' });
+            const key = dailyAttendanceKey(record.id_peserta, record.attendance_date);
+            const previous = await attendanceState.get(key);
+            await attendanceState.put({
+              key,
+              participant_id: record.id_peserta,
+              attendance_date: record.attendance_date,
+              check_in: Boolean(previous?.check_in || record.jenis_absen === 'check_in'),
+              check_out: Boolean(previous?.check_out || record.jenis_absen === 'check_out'),
+            });
           }
           await tx.done;
         },
@@ -1529,17 +1569,21 @@ export default function App() {
           settings: scanSettings,
         }) as ScanResult;
       }
+      const dailyState = await db.get(
+        'attendanceState',
+        dailyAttendanceKey(matchedParticipant.id, initialCalculation.date),
+      );
       const hasCheckIn = allScans.some((record) =>
         record.id_peserta === matchedParticipant.id &&
         record.attendance_date === initialCalculation.date &&
         record.jenis_absen === 'check_in',
-      );
+      ) || Boolean(dailyState?.check_in);
       const eventType = hasCheckIn ? 'check_out' : 'check_in';
       const duplicate = allScans.some((record) =>
         record.id_peserta === matchedParticipant.id &&
         record.attendance_date === initialCalculation.date &&
         record.jenis_absen === eventType,
-      );
+      ) || Boolean(eventType === 'check_in' ? dailyState?.check_in : dailyState?.check_out);
       if (duplicate) throw new Error('Scan jenis ini sudah tercatat di perangkat untuk hari ini.');
 
       const calculation = eventType === 'check_in'

@@ -32,7 +32,7 @@ const sandbox = {
   },
 };
 runInNewContext(
-  `${script}\nthis.buildMonthlySummary = buildMonthlySummary;\nthis.updateParticipantOrderSheet = updateParticipantOrderSheet;\nthis.readAttendanceCorrections = readAttendanceCorrections;\nthis.buildSummaryEditCorrections = buildSummaryEditCorrections;\nthis.saveAttendanceCorrections = saveAttendanceCorrections;\nthis.formatDateLabel = formatDateLabel;\nthis.shouldIncludeAfterClear = shouldIncludeAfterClear;\nthis.unmergeSummaryHeaders = unmergeSummaryHeaders;\nthis.isValidResetPin = isValidResetPin;`,
+  `${script}\nthis.buildMonthlySummary = buildMonthlySummary;\nthis.readAttendanceCorrections = readAttendanceCorrections;\nthis.readMonthlySummaryState = readMonthlySummaryState;\nthis.buildSummaryEditCorrections = buildSummaryEditCorrections;\nthis.saveMonthlySummaryCorrections = saveMonthlySummaryCorrections;\nthis.monthSheetName = monthSheetName;\nthis.monthKeyFromSheetName = monthKeyFromSheetName;\nthis.getSummarySheet = getSummarySheet;\nthis.groupAttendanceRecordsByMonth = groupAttendanceRecordsByMonth;\nthis.formatDateLabel = formatDateLabel;\nthis.shouldIncludeAfterClear = shouldIncludeAfterClear;\nthis.unmergeSummaryHeaders = unmergeSummaryHeaders;\nthis.isValidResetPin = isValidResetPin;`,
   sandbox,
 );
 
@@ -158,14 +158,14 @@ test('Apps Script follows manual participant order and keeps time corrections', 
       date: '2026-11-01',
       eventType: 'check_in',
       action: 'clear',
-      time: '',
+      value: '',
     }],
     ['18-check-in', {
       participantId: '18',
       date: '2026-11-01',
       eventType: 'check_in',
       action: 'set',
-      time: '08:15:00',
+      value: '08:15:00',
     }],
   ]));
 
@@ -175,51 +175,210 @@ test('Apps Script follows manual participant order and keeps time corrections', 
   ]);
 });
 
-test('Apps Script preserves participant order and appends newly synced participants', () => {
+test('Apps Script supports daily lateness and total lateness corrections', () => {
+  const date = '2026-11-21';
+  const summary = sandbox.buildMonthlySummary([
+    {
+      participant_id: '17',
+      participant_code: 'P17',
+      participant_name: 'Zahra',
+      attendance_date: date,
+      event_type: 'check_in',
+      client_timestamp: '2026-11-21 00:40:00.000',
+      late_minutes: 5,
+    },
+    {
+      participant_id: '17',
+      participant_code: 'P17',
+      participant_name: 'Zahra',
+      attendance_date: '2026-11-22',
+      event_type: 'check_in',
+      client_timestamp: '2026-11-22 00:45:00.000',
+      late_minutes: 3,
+    },
+  ], 'Asia/Jakarta', '2026-11', new Map(), new Map([
+    ['17\u00002026-11-21\u0000late_minutes', {
+      participantId: '17',
+      date,
+      eventType: 'late_minutes',
+      action: 'set',
+      value: '12',
+    }],
+    ['17\u0000\u0000total_late_minutes', {
+      participantId: '17',
+      date: '',
+      eventType: 'total_late_minutes',
+      action: 'set',
+      value: '25',
+    }],
+  ]));
+
+  assert.deepEqual(Array.from(summary.rows[0]), [
+    1, 'Zahra',  '07:40:00', 12, '', '07:45:00', 3, '', 25, 2,
+  ]);
+  assert.deepEqual(Array.from(summary.baselineRows[0]), [
+    '07:40:00', 5, '', '07:45:00', 3, '',
+  ]);
+  assert.deepEqual(Array.from(summary.baselineTotalRows[0]), [15]);
+
+  const dateColumns = new Map([[3, date]]);
+  const editedLateMinutes = sandbox.buildSummaryEditCorrections(
+    [[9]],
+    3,
+    4,
+    3,
+    ['17'],
+    dateColumns,
+    'Asia/Jakarta',
+    new Map([['17\u00002026-11-21\u0000late_minutes', '5']]),
+  );
+  assert.deepEqual(
+    {
+      eventType: editedLateMinutes.corrections[0].eventType,
+      action: editedLateMinutes.corrections[0].action,
+      value: editedLateMinutes.corrections[0].value,
+    },
+    { eventType: 'late_minutes', action: 'set', value: '9' },
+  );
+
+  const editedTotal = sandbox.buildSummaryEditCorrections(
+    [[20]],
+    3,
+    6,
+    3,
+    ['17'],
+    dateColumns,
+    'Asia/Jakarta',
+    new Map([['17\u0000\u0000total_late_minutes', '15']]),
+  );
+  assert.deepEqual(
+    {
+      eventType: editedTotal.corrections[0].eventType,
+      action: editedTotal.corrections[0].action,
+      value: editedTotal.corrections[0].value,
+    },
+    { eventType: 'total_late_minutes', action: 'set', value: '20' },
+  );
+  assert.throws(() => sandbox.buildSummaryEditCorrections(
+    [[1.5]],
+    3,
+    4,
+    3,
+    ['17'],
+    dateColumns,
+    'Asia/Jakarta',
+  ), /bilangan bulat/);
+});
+
+test('Apps Script reads saved lateness correction metadata', () => {
   const rows = [
-    ['participant_id', 'Nama Peserta', 'Kode Peserta'],
-    ['18', 'Ayu', 'P18'],
-    ['17', 'Zahra', 'P17'],
+    [
+      'No',
+      'Nama',
+      '21-11-2026',
+      '',
+      '',
+      'Total Terlambat',
+      'Total Hadir',
+      'participant_id',
+      '__attendance_override__2026-11-21__late_minutes',
+      '__attendance_override__total_late_minutes',
+      '__attendance_baseline__2026-11-21__late_minutes',
+      '__attendance_baseline__total_late_minutes',
+    ],
+    ['', '', 'Masuk', 'Terlambat', 'Keluar', '', '', '', '', '', '', ''],
+    [1, 'Zahra', '07:40:00', 12, '', 25, 1, '17', '12', '25', '5', '5'],
   ];
   const sheet = {
     getLastRow: () => rows.length,
-    getRange(row, column, rowCount, columnCount) {
+    getLastColumn: () => rows[0].length,
+    getRange(row, column, rowCount = 1, columnCount = 1) {
       return {
-        getValues: () => rows.slice(row - 1, row - 1 + rowCount)
-          .map((values) => values.slice(column - 1, column - 1 + columnCount)),
         getDisplayValues: () => rows.slice(row - 1, row - 1 + rowCount)
-          .map((values) => values.slice(column - 1, column - 1 + columnCount)),
-        setValues(values) {
-          values.forEach((value, index) => {
-            rows[row - 1 + index] = value.slice();
-          });
+          .map((values) => values.slice(column - 1, column - 1 + columnCount)
+            .map((value) => String(value ?? ''))),
+      };
+    },
+  };
+  const state = sandbox.readMonthlySummaryState(sheet, 'Asia/Jakarta');
+
+  assert.equal(
+    state.corrections.get('17\u00002026-11-21\u0000late_minutes').value,
+    '12',
+  );
+  assert.equal(
+    state.corrections.get('17\u0000\u0000total_late_minutes').value,
+    '25',
+  );
+  const summary = sandbox.buildMonthlySummary([{
+    participant_id: '17',
+    participant_code: 'P17',
+    participant_name: 'Zahra',
+    attendance_date: '2026-11-21',
+    event_type: 'check_in',
+    client_timestamp: '2026-11-21 00:40:00.000',
+    late_minutes: 5,
+  }], 'Asia/Jakarta', '2026-11', state.order, state.corrections);
+  assert.equal(summary.rows[0][3], 12);
+  assert.equal(summary.rows[0][5], 25);
+});
+
+test('Apps Script saves daily and total lateness edits to their metadata cells', () => {
+  const rows = [
+    [
+      'No', 'Nama', '21-11-2026', '', '', 'Total Terlambat', 'Total Hadir',
+      'participant_id',
+      '__attendance_override__2026-11-21__check_in',
+      '__attendance_override__2026-11-21__late_minutes',
+      '__attendance_override__2026-11-21__check_out',
+      '__attendance_override__total_late_minutes',
+      '__attendance_baseline__2026-11-21__check_in',
+      '__attendance_baseline__2026-11-21__late_minutes',
+      '__attendance_baseline__2026-11-21__check_out',
+      '__attendance_baseline__total_late_minutes',
+    ],
+    ['No', 'Nama', 'Masuk', 'Terlambat', 'Keluar', 'Total Terlambat', 'Total Hadir',
+      'participant_id', '', '', '', '', '', '', '', ''],
+    [1, 'Zahra', '07:40:00', 5, '', 5, 1, '17', '', '', '', '', '07:40:00', 5, '', 5],
+  ];
+  const sheet = {
+    getLastRow: () => rows.length,
+    getLastColumn: () => rows[0].length,
+    getRange(row, column, rowCount = 1, columnCount = 1) {
+      return {
+        getDisplayValues: () => rows.slice(row - 1, row - 1 + rowCount)
+          .map((values) => values.slice(column - 1, column - 1 + columnCount)
+            .map((value) => String(value ?? ''))),
+        setValue(value) {
+          rows[row - 1][column - 1] = value;
         },
       };
     },
   };
-  const order = sandbox.updateParticipantOrderSheet(sheet, [
+  sandbox.saveMonthlySummaryCorrections(sheet, [
     {
-      participant_id: '19',
-      participant_code: 'P19',
-      participant_name: 'Bima',
-      client_timestamp: '2026-11-01 01:00:00.000',
+      participantId: '17',
+      date: '2026-11-21',
+      eventType: 'late_minutes',
+      action: 'set',
+      value: '9',
     },
     {
-      participant_id: '18',
-      participant_code: 'P18',
-      participant_name: 'Ayu',
-      client_timestamp: '2026-11-01 01:00:00.000',
+      participantId: '17',
+      date: '',
+      eventType: 'total_late_minutes',
+      action: 'set',
+      value: '20',
     },
   ]);
+  const state = sandbox.readMonthlySummaryState(sheet, 'Asia/Jakarta');
 
-  assert.deepEqual(rows.slice(1).map((row) => Array.from(row)), [
-    ['18', 'Ayu', 'P18'],
-    ['17', 'Zahra', 'P17'],
-    ['19', 'Bima', 'P19'],
-  ]);
-  assert.equal(order.get('18'), 0);
-  assert.equal(order.get('17'), 1);
-  assert.equal(order.get('19'), 2);
+  assert.equal(rows[2][3], 9);
+  assert.equal(rows[2][5], 20);
+  assert.equal(rows[2][9], '9');
+  assert.equal(rows[2][11], '20');
+  assert.equal(state.corrections.get('17\u00002026-11-21\u0000late_minutes').value, '9');
+  assert.equal(state.corrections.get('17\u0000\u0000total_late_minutes').value, '20');
 });
 
 test('Apps Script parses set and clear attendance correction rows', () => {
@@ -232,7 +391,7 @@ test('Apps Script parses set and clear attendance correction rows', () => {
     getRange: () => ({ getValues: () => rows }),
   }, 'Asia/Jakarta');
 
-  assert.equal(corrections.get('17\u00002026-11-01\u0000check_in').time, '08:15:00');
+  assert.equal(corrections.get('17\u00002026-11-01\u0000check_in').value, '08:15:00');
   assert.equal(corrections.get('18\u00002026-11-01\u0000check_out').action, 'clear');
   assert.throws(() => sandbox.readAttendanceCorrections({
     getLastRow: () => 2,
@@ -250,7 +409,6 @@ test('Apps Script captures direct edits and deletions from the summary', () => {
     3,
     3,
     ['17'],
-    ['Zahra'],
     dateColumns,
     'Asia/Jakarta',
   );
@@ -261,6 +419,7 @@ test('Apps Script captures direct edits and deletions from the summary', () => {
     action: correction.action,
   })), [
     { participantId: '17', date: '2026-11-21', eventType: 'check_in', action: 'clear' },
+    { participantId: '17', date: '2026-11-21', eventType: 'late_minutes', action: 'clear' },
     { participantId: '17', date: '2026-11-21', eventType: 'check_out', action: 'clear' },
   ]);
 
@@ -270,62 +429,149 @@ test('Apps Script captures direct edits and deletions from the summary', () => {
     3,
     3,
     ['17'],
-    ['Zahra'],
     dateColumns,
     'Asia/Jakarta',
   );
   assert.equal(correctedTime.corrections[0].action, 'set');
-  assert.equal(correctedTime.corrections[0].time, '08:15:00');
+  assert.equal(correctedTime.corrections[0].value, '08:15:00');
+
+  const unchangedTime = sandbox.buildSummaryEditCorrections(
+    [['08:15:00']],
+    3,
+    3,
+    3,
+    ['17'],
+    dateColumns,
+    'Asia/Jakarta',
+    new Map([['17\u00002026-11-21\u0000check_in', '08:15:00']]),
+  );
+  assert.equal(unchangedTime.corrections[0].action, 'inherit');
+
+  const deletedOverride = sandbox.buildSummaryEditCorrections(
+    [['']],
+    3,
+    3,
+    3,
+    ['17'],
+    dateColumns,
+    'Asia/Jakarta',
+    new Map([['17\u00002026-11-21\u0000check_in', '']]),
+    new Map([['17\u00002026-11-21\u0000check_in', '08:15:00']]),
+  );
+  assert.equal(deletedOverride.corrections[0].action, 'clear');
 });
 
-test('Apps Script does not restore a directly deleted time after a new scan', () => {
-  const rows = [[
-    'participant_id',
-    'Nama Peserta',
-    'Tanggal',
-    'Jenis',
-    'Aksi',
-    'Waktu Koreksi',
-  ]];
-  const correctionsSheet = {
+test('Apps Script creates a separate sheet name for each Indonesian month', () => {
+  assert.equal(sandbox.monthSheetName('2026-11'), 'November 2026');
+  assert.equal(sandbox.monthSheetName('2026-12'), 'Desember 2026');
+  assert.equal(sandbox.monthKeyFromSheetName('November 2026'), '2026-11');
+  assert.equal(sandbox.monthKeyFromSheetName('Rekap Bulanan'), '');
+
+  const sheets = new Map();
+  const spreadsheet = {
+    getSpreadsheetTimeZone: () => 'Asia/Jakarta',
+    getSheetByName: (name) => sheets.get(name) || null,
+    insertSheet(name) {
+      const sheet = {
+        isSheetHidden: () => false,
+        showSheet() {},
+      };
+      sheets.set(name, sheet);
+      return sheet;
+    },
+  };
+  const november = sandbox.getSummarySheet(spreadsheet, '2020-11');
+  const december = sandbox.getSummarySheet(spreadsheet, '2020-12');
+  assert.notEqual(november, december);
+  assert.equal(sandbox.getSummarySheet(spreadsheet, '2020-11'), november);
+
+  const grouped = sandbox.groupAttendanceRecordsByMonth([
+    { attendance_date: '2026-11-30' },
+    { attendance_date: '2026-12-01' },
+  ], 'Asia/Jakarta');
+  assert.deepEqual(Array.from(grouped.keys()), ['2026-11', '2026-12']);
+});
+
+test('Apps Script keeps direct time deletions and row order in monthly sheet metadata', () => {
+  const rows = [
+    [
+      'No',
+      'Nama',
+      '21-11-2026',
+      '',
+      '',
+      'Total Terlambat',
+      'Total Hadir',
+      'participant_id',
+      '__attendance_override__2026-11-21__check_in',
+      '__attendance_override__2026-11-21__check_out',
+      '__attendance_baseline__2026-11-21__check_in',
+      '__attendance_baseline__2026-11-21__check_out',
+    ],
+    ['', '', 'Masuk', 'Terlambat', 'Keluar', '', '', '', '', '', '', ''],
+    [1, 'Ayu', '20:48:54', 0, '', 0, 1, '18', '', '', '20:48:54', ''],
+    [2, 'Zahra', '20:40:00', 0, '', 0, 1, '17', '', '', '20:40:00', ''],
+  ];
+  const sheet = {
     getLastRow: () => rows.length,
-    getParent: () => ({ getSpreadsheetTimeZone: () => 'Asia/Jakarta' }),
+    getLastColumn: () => rows[0].length,
     getRange(row, column, rowCount, columnCount) {
+      const height = rowCount || 1;
+      const width = columnCount || 1;
       return {
-        getValues: () => Array.from({ length: rowCount }, (_, rowIndex) =>
-          Array.from({ length: columnCount }, (_, columnIndex) =>
-            rows[row - 1 + rowIndex]?.[column - 1 + columnIndex] ?? '')),
-        setValues(values) {
-          values.forEach((value, rowIndex) => {
-            rows[row - 1 + rowIndex] = value.slice();
-          });
+        getValues: () => rows.slice(row - 1, row - 1 + height)
+          .map((values) => values.slice(column - 1, column - 1 + width)),
+        getDisplayValues: () => rows.slice(row - 1, row - 1 + height)
+          .map((values) => values.slice(column - 1, column - 1 + width)
+            .map((value) => String(value ?? ''))),
+        setValue(value) {
+          rows[row - 1][column - 1] = value;
         },
       };
     },
   };
   const edit = sandbox.buildSummaryEditCorrections(
     [['']],
+    4,
     3,
-    3,
-    3,
+    4,
     ['17'],
-    ['Zahra'],
     new Map([[3, '2026-11-21']]),
     'Asia/Jakarta',
   );
-  sandbox.saveAttendanceCorrections(correctionsSheet, edit.corrections);
-  const corrections = sandbox.readAttendanceCorrections(correctionsSheet, 'Asia/Jakarta');
-  const summary = sandbox.buildMonthlySummary([{
-    participant_id: '17',
-    participant_code: 'P17',
-    participant_name: 'Zahra',
-    attendance_date: '2026-11-21',
-    event_type: 'check_in',
-    client_timestamp: '2026-11-21 13:48:54.000',
-    late_minutes: 0,
-  }], 'Asia/Jakarta', '2026-11', new Map([['17', 0]]), corrections);
+  sandbox.saveMonthlySummaryCorrections(sheet, edit.corrections);
+  const state = sandbox.readMonthlySummaryState(sheet, 'Asia/Jakarta');
+  const summary = sandbox.buildMonthlySummary([
+    {
+      participant_id: '17',
+      participant_code: 'P17',
+      participant_name: 'Zahra',
+      attendance_date: '2026-11-21',
+      event_type: 'check_in',
+      client_timestamp: '2026-11-21 13:40:00.000',
+      late_minutes: 0,
+    },
+    {
+      participant_id: '18',
+      participant_code: 'P18',
+      participant_name: 'Ayu',
+      attendance_date: '2026-11-21',
+      event_type: 'check_in',
+      client_timestamp: '2026-11-21 13:48:54.000',
+      late_minutes: 0,
+    },
+  ], 'Asia/Jakarta', '2026-11', state.order, state.corrections);
 
-  assert.equal(summary.rows[0][2], '');
+  assert.equal(rows[3][2], '');
+  assert.equal(rows[3][8], 'clear');
+  assert.deepEqual(Array.from(summary.rows, (row) => Array.from(row)), [
+    [1, 'Ayu', '20:48:54', 0, '', 0, 1],
+    [2, 'Zahra', '', 0, '', 0, 1],
+  ]);
+  assert.deepEqual(Array.from(summary.baselineRows, (row) => Array.from(row)), [
+    ['20:48:54', 0, ''],
+    ['20:40:00', 0, ''],
+  ]);
 });
 
 test('Apps Script clear cutoff ignores old backfill but accepts new attendance', () => {
