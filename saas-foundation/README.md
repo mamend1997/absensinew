@@ -80,6 +80,8 @@ Backend ini berjalan terpisah di `backend/`; aplikasi root, web, mobile, dan
    `BOOTSTRAP_SUPER_ADMIN_USERNAME` / `BOOTSTRAP_SCHOOL_ADMIN_USERNAME`.
 5. Jalankan `npm.cmd start` atau `npm.cmd run dev`. Health check:
    `GET http://127.0.0.1:4100/api/health`. Tes: `npm.cmd test`.
+   Untuk deployment container seperti Railway, gunakan `HOST=0.0.0.0` dan
+   arahkan `MYSQL_HOST` ke host internal layanan MySQL, bukan `127.0.0.1`.
 
 Super Admin dan akun sekolah mempunyai token dan endpoint login terpisah. Setiap
 request sekolah membaca ulang user, role/permissions, status sekolah, dan kode
