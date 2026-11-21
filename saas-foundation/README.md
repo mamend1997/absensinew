@@ -120,9 +120,10 @@ Aplikasi ini memakai `https://localhost` sebagai origin Android untuk mendukung
 konteks aman kamera. API harus tersedia melalui HTTPS dan konfigurasi `CORS_ORIGINS`
 backend perlu mengizinkan `https://localhost` selain origin portal web.
 Scanner menggunakan kamera belakang dan mode scan cepat secara default; arah kamera,
-mode cepat/seimbang, serta field scanner barcode USB/Bluetooth dapat diatur pada
-Pengaturan dan disimpan lokal per perangkat. Jika field USB/Bluetooth dinonaktifkan,
-field tersebut disembunyikan dari layar scanner.
+mode cepat/seimbang, waktu layar aktif saat idle (1–60 menit), serta field scanner
+barcode USB/Bluetooth dapat diatur pada Pengaturan dan disimpan lokal per perangkat.
+Saat batas idle tercapai, kamera dijeda dan layar mengikuti waktu tidur Android.
+Jika field USB/Bluetooth dinonaktifkan, field tersebut disembunyikan dari layar scanner.
 
 1. Pasang Android Studio, JDK 21, Android SDK Platform 36, Build-Tools, dan
    Platform-Tools. Node.js 22.5 atau lebih baru diperlukan.

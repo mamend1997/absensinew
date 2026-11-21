@@ -312,6 +312,7 @@ interface ScannerPreferences {
   cameraFacing: 'user' | 'environment';
   scanSpeed: 'fast' | 'balanced';
   usbScannerEnabled: boolean;
+  screenSleepMinutes: number;
 }
 interface ScannerCache extends DBSchema {
   participants: { key: string; value: Participant };
@@ -362,6 +363,7 @@ const initialScannerPreferences: ScannerPreferences = {
   cameraFacing: 'environment',
   scanSpeed: 'fast',
   usbScannerEnabled: true,
+  screenSleepMinutes: 1,
 };
 const weekDays = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
 const initialDate = new Date().toISOString().slice(0, 10);
@@ -813,6 +815,7 @@ export default function App() {
   const [scannerUnlockBusy, setScannerUnlockBusy] = useState(false);
   const [holidayForm, setHolidayForm] = useState({ date: '', name: '' });
   const [cameraActive, setCameraActive] = useState(false);
+  const [scannerIdle, setScannerIdle] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -821,6 +824,8 @@ export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const controlsRef = useRef<{ stop: () => void } | null>(null);
   const cameraStartGenerationRef = useRef(0);
+  const scannerIdleRef = useRef(false);
+  const resetScannerIdleTimerRef = useRef<() => void>(() => {});
   const handleScanRef = useRef<
     (rawValue: string, scanMethod?: 'SCAN_QR' | 'MANUAL_INPUT') => Promise<boolean>
   >(async () => false);
@@ -1103,7 +1108,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!session || page !== 'scanner' || !scannerPreferencesReady) return;
+    if (!session || page !== 'scanner' || !scannerPreferencesReady || scannerIdle) return;
     let orientationTimer: number | undefined;
     let isLandscape = window.matchMedia('(orientation: landscape)').matches;
     const stopCamera = () => {
@@ -1146,7 +1151,7 @@ export default function App() {
       if (orientationTimer !== undefined) window.clearTimeout(orientationTimer);
       stopCamera();
     };
-  }, [page, session?.school.id, scannerPreferencesReady]);
+  }, [page, session?.school.id, scannerIdle, scannerPreferencesReady]);
 
   useEffect(() => {
     scannerPreferencesRef.current = scannerPreferences;
@@ -1161,9 +1166,16 @@ export default function App() {
     setScannerPreferencesReady(false);
     setScannerPreferences(initialScannerPreferences);
     void database(session.school.id)
-      .then((db) => db.get('scannerPreferences', 'default'))
-      .then((preferences) => {
-        if (active && preferences) setScannerPreferences({ ...initialScannerPreferences, ...preferences });
+      .then(async (db) => {
+        const preferences = await db.get('scannerPreferences', 'default');
+        if (!active || !preferences) return;
+        const restored = { ...initialScannerPreferences, ...preferences };
+        restored.screenSleepMinutes = Number.isFinite(Number(restored.screenSleepMinutes))
+          ? Math.min(60, Math.max(1, Math.round(Number(restored.screenSleepMinutes))))
+          : initialScannerPreferences.screenSleepMinutes;
+        if (restored.cameraFacing === 'user') restored.cameraFacing = 'environment';
+        setScannerPreferences(restored);
+        await db.put('scannerPreferences', restored, 'default');
       })
       .catch((reason: unknown) => {
         if (active) setError(reason instanceof Error ? reason.message : 'Pengaturan scanner lokal gagal dimuat.');
@@ -1173,6 +1185,77 @@ export default function App() {
       });
     return () => { active = false; };
   }, [session?.school.id]);
+
+  useEffect(() => {
+    if (!session || page !== 'scanner' || !scannerPreferencesReady) {
+      resetScannerIdleTimerRef.current = () => {};
+      scannerIdleRef.current = false;
+      setScannerIdle(false);
+      return;
+    }
+
+    let timer: number | undefined;
+    let wakeLock: WakeLockSentinel | null = null;
+    let wakeLockRequestInFlight = false;
+    let disposed = false;
+    const releaseWakeLock = () => {
+      const current = wakeLock;
+      wakeLock = null;
+      if (current) {
+        void current.release().catch((reason: unknown) =>
+          console.warn('Screen wake lock gagal dilepas:', reason));
+      }
+    };
+    const acquireWakeLock = async () => {
+      if (!('wakeLock' in navigator) || document.hidden || wakeLock || wakeLockRequestInFlight) return;
+      wakeLockRequestInFlight = true;
+      try {
+        const acquired = await navigator.wakeLock.request('screen');
+        if (disposed || document.hidden || scannerIdleRef.current) {
+          await acquired.release();
+          return;
+        }
+        wakeLock = acquired;
+        acquired.addEventListener('release', () => {
+          if (wakeLock === acquired) wakeLock = null;
+        }, { once: true });
+      } catch (reason) {
+        console.warn('Screen wake lock tidak tersedia:', reason);
+      } finally {
+        wakeLockRequestInFlight = false;
+      }
+    };
+    const resetIdleTimer = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      scannerIdleRef.current = false;
+      setScannerIdle(false);
+      void acquireWakeLock();
+      timer = window.setTimeout(() => {
+        timer = undefined;
+        scannerIdleRef.current = true;
+        setScannerIdle(true);
+        releaseWakeLock();
+      }, scannerPreferences.screenSleepMinutes * 60 * 1000);
+    };
+    const handleVisibilityChange = () => {
+      if (document.hidden) releaseWakeLock();
+      else resetIdleTimer();
+    };
+    resetScannerIdleTimerRef.current = resetIdleTimer;
+    window.addEventListener('pointerdown', resetIdleTimer);
+    window.addEventListener('keydown', resetIdleTimer);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    resetIdleTimer();
+    return () => {
+      disposed = true;
+      resetScannerIdleTimerRef.current = () => {};
+      window.removeEventListener('pointerdown', resetIdleTimer);
+      window.removeEventListener('keydown', resetIdleTimer);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (timer !== undefined) window.clearTimeout(timer);
+      releaseWakeLock();
+    };
+  }, [page, scannerPreferences.screenSleepMinutes, scannerPreferencesReady, session?.school.id]);
 
   useEffect(() => () => {
     if (wedgeTimerRef.current) window.clearTimeout(wedgeTimerRef.current);
@@ -1747,6 +1830,7 @@ export default function App() {
   handleScanRef.current = handleScan;
 
   function showScanFeedback(message: string, success: boolean) {
+    resetScannerIdleTimerRef.current();
     setError('');
     setNotice('');
     setLastScan(message);
@@ -3286,7 +3370,23 @@ export default function App() {
                       <option value="balanced">Seimbang — lebih hemat baterai</option>
                     </select>
                   </label>
+                  <label>Waktu layar aktif saat tidak digunakan
+                    <select
+                      value={scannerPreferences.screenSleepMinutes}
+                      onChange={(event) => void updateScannerPreferences({
+                        ...scannerPreferences,
+                        screenSleepMinutes: Number(event.target.value),
+                      })}
+                    >
+                      {Array.from({ length: 60 }, (_value, index) => index + 1).map((minutes) => (
+                        <option key={minutes} value={minutes}>
+                          {minutes === 60 ? '1 jam' : `${minutes} menit`}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
+                <p className="muted">Layar tetap aktif selama pilihan waktu sejak interaksi atau scan terakhir. Setelah itu kamera dijeda agar layar dapat tidur mengikuti pengaturan Android. Sentuh layar untuk melanjutkan scan.</p>
                 <label className="scanner-usb-toggle">
                   <input type="checkbox" checked={scannerPreferences.usbScannerEnabled} onChange={(event) => void updateScannerPreferences({ ...scannerPreferences, usbScannerEnabled: event.target.checked })} />
                   <span>Aktifkan field scanner barcode USB / Bluetooth</span>
@@ -3488,9 +3588,10 @@ export default function App() {
                     <button className="button secondary" type="button" disabled={whatsappBusy || whatsappTestBusy || !whatsappSettings.is_configured} onClick={() => void clearSchoolWhatsappSettings()}>Hapus konfigurasi</button>
                   </div>
                   {whatsappSettings.last_test_status && <div className={`gateway-test-log ${whatsappSettings.last_test_status}`}>
-                    <strong>Log tes terakhir · {whatsappSettings.last_test_status === 'success' ? 'Terkirim' : whatsappSettings.last_test_status === 'accepted' ? 'Diterima, belum terkonfirmasi' : 'Gagal'}</strong>
+                    <strong>Log tes terakhir · {whatsappSettings.last_test_status === 'success' ? 'Terkirim' : whatsappSettings.last_test_status === 'accepted' ? 'Masuk antrean gateway' : 'Gagal'}</strong>
                     {whatsappSettings.last_test_at && <time>{whatsappSettings.last_test_at} UTC</time>}
                     <p>{whatsappSettings.last_test_message}</p>
+                    {whatsappSettings.last_test_status === 'accepted' && <p className="muted">HTTP 202 berarti gateway menerima pesan untuk diproses. Status ini bukan gagal, tetapi gateway belum memberikan konfirmasi bahwa pesan telah delivered.</p>}
                   </div>}
                 </form> : <p className="muted">Konfigurasi tersedia untuk dilihat oleh akun ini.</p>}
               </section>}
