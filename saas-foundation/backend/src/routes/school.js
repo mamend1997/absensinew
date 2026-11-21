@@ -1523,7 +1523,7 @@ router.post(
 router.get('/billing', requireSchoolUser, asyncRoute(async (req, res) => {
   requireBillingAdmin(req);
   const [[school]] = await pool.execute(
-    `SELECT subscription_status, trial_ends_at, subscription_expires_at
+    `SELECT subscription_status, trial_ends_at, subscription_expires_at, billing_email
        FROM schools WHERE id = ?`,
     [req.schoolUser.sekolah_id],
   );
@@ -1539,6 +1539,7 @@ router.get('/billing', requireSchoolUser, asyncRoute(async (req, res) => {
   );
   const paymentSettings = await getPlatformPaymentSettings();
   res.json({
+    billing_email: school.billing_email,
     subscription: {
       status: school.subscription_status,
       trial_ends_at: school.trial_ends_at,
@@ -1555,6 +1556,28 @@ router.get('/billing', requireSchoolUser, asyncRoute(async (req, res) => {
       kasera: paymentSettings.kasera.active,
     },
     orders: orders.map((order) => ({ ...order, amount: Number(order.amount) })),
+  });
+}));
+
+router.put('/billing/email', requireSchoolUser, asyncRoute(async (req, res) => {
+  requireBillingAdmin(req);
+  const value = req.body?.billing_email;
+  if (typeof value !== 'string' || value.length > 254) {
+    throw fail(400, 'Email tagihan tidak valid.', 'VALIDATION_ERROR');
+  }
+  const billingEmail = value.trim();
+  if (billingEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(billingEmail)) {
+    throw fail(400, 'Email tagihan harus berupa alamat email yang valid.', 'VALIDATION_ERROR');
+  }
+  await pool.execute(
+    'UPDATE schools SET billing_email = ? WHERE id = ?',
+    [billingEmail || null, req.schoolUser.sekolah_id],
+  );
+  res.json({
+    billing_email: billingEmail,
+    message: billingEmail
+      ? 'Email tagihan Kasera berhasil disimpan. Notifikasi tagihan tetap dikirim melalui WhatsApp.'
+      : 'Email tagihan Kasera dihapus.',
   });
 }));
 

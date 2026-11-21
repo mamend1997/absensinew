@@ -186,6 +186,7 @@ interface UserInfo {
 }
 interface SchoolSession { token: string; school: SchoolInfo; user: UserInfo }
 interface BillingData {
+  billing_email: string | null;
   subscription: { status: string; trial_ends_at: string | null; expires_at: string | null; expired: boolean };
   prices: { monthly: number; lifetime: number };
   providers: { xendit: boolean; duitku: boolean; kasera: boolean };
@@ -623,6 +624,7 @@ export default function App() {
   const [billingProvider, setBillingProvider] = useState<'xendit' | 'duitku' | 'kasera'>('xendit');
   const [billingPlan, setBillingPlan] = useState<'monthly' | 'lifetime'>('monthly');
   const [billingEmail, setBillingEmail] = useState('');
+  const [billingEmailBusy, setBillingEmailBusy] = useState(false);
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([]);
   const [paymentMethod, setPaymentMethod] = useState('');
   const [billingBusy, setBillingBusy] = useState(false);
@@ -1064,6 +1066,7 @@ export default function App() {
     try {
       const result = await request<BillingData>('/school/billing', session.token);
       setBillingData(result);
+      setBillingEmail(result.billing_email ?? '');
       if (!result.providers[billingProvider]) {
         const nextProvider = (['xendit', 'kasera', 'duitku'] as const)
           .find((provider) => result.providers[provider]);
@@ -2510,6 +2513,30 @@ export default function App() {
     }
   }
 
+  async function saveBillingEmail(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session) return;
+    setBillingEmailBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await request<{ billing_email: string | null; message: string }>(
+        '/school/billing/email',
+        session.token,
+        { method: 'PUT', body: { billing_email: billingEmail.trim() } },
+      );
+      setBillingEmail(result.billing_email ?? '');
+      setBillingData((current) => current
+        ? { ...current, billing_email: result.billing_email }
+        : current);
+      setNotice(result.message);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Email tagihan gagal disimpan.');
+    } finally {
+      setBillingEmailBusy(false);
+    }
+  }
+
   async function clearSchoolWhatsappSettings() {
     if (!session || !await requestConfirmation({
       title: 'Hapus konfigurasi gateway',
@@ -3270,6 +3297,18 @@ export default function App() {
                     <div><small>Status langganan</small><strong>{billingData.subscription.status === 'lifetime' ? 'Lifetime' : billingData.subscription.expired ? 'Kedaluwarsa' : billingData.subscription.status === 'trial' ? 'Uji coba' : 'Aktif'}</strong></div>
                     <div><small>Masa berlaku</small><strong>{billingData.subscription.status === 'lifetime' ? 'Selamanya' : billingData.subscription.expires_at ? new Date(billingData.subscription.expires_at).toLocaleDateString('id-ID') : billingData.subscription.trial_ends_at ? new Date(billingData.subscription.trial_ends_at).toLocaleDateString('id-ID') : 'Belum ditentukan'}</strong></div>
                   </div>
+                  {billingData.subscription.status !== 'lifetime' && (
+                    <form className="panel billing-form" onSubmit={(event) => void saveBillingEmail(event)}>
+                      <h2>Profil tagihan Kasera</h2>
+                      <p className="muted">Email ini hanya diteruskan ke Kasera sebagai data pelanggan invoice. Aplikasi tidak mengirim notifikasi email; invoice dan tautan pembayaran otomatis H-3 dikirim ke WhatsApp Admin Sekolah. Pastikan Kasera dan WhatsApp Gateway platform aktif.</p>
+                      <div className="form-grid">
+                        <label>Email tagihan
+                          <input type="email" autoComplete="email" maxLength={254} required value={billingEmail} onChange={(event) => setBillingEmail(event.target.value)} />
+                        </label>
+                        <button className="button primary" disabled={billingEmailBusy}>{billingEmailBusy ? 'Menyimpan…' : 'Simpan email tagihan'}</button>
+                      </div>
+                    </form>
+                  )}
                   {billingData.subscription.status !== 'lifetime' && (
                     <form className="panel billing-form" onSubmit={(event) => void startBillingPayment(event)}>
                       <h2>Pilih paket</h2>

@@ -72,6 +72,22 @@ app.get('/api/platform/downloads', asyncRoute(async (req, res) => {
   res.set('Cache-Control', 'public, max-age=60');
   res.json({ apk_drive_url: settings?.apk_drive_url ?? null });
 }));
+app.use('/api/super-admin', (req, res, next) => {
+  res.once('finish', () => {
+    if (!req.superAdmin || !['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return;
+    const route = (req.originalUrl ?? req.url).split('?')[0].slice(0, 255);
+    const ipAddress = typeof req.ip === 'string' ? req.ip.slice(0, 64) : null;
+    const userAgent = req.get('user-agent')?.slice(0, 512) ?? null;
+    void pool.execute(
+      `INSERT INTO platform_audit_logs
+        (super_admin_id, username, method, route, status_code, ip_address, user_agent)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [req.superAdmin.id, req.superAdmin.username, req.method, route,
+        res.statusCode, ipAddress, userAgent],
+    ).catch((error) => console.error('Gagal menyimpan audit log Super Admin:', error));
+  });
+  next();
+});
 app.use('/api/super-admin', superAdminRoutes);
 app.use('/api/school', schoolRoutes);
 app.use('/api/payments', paymentRoutes);

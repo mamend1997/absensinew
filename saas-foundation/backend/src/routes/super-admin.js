@@ -386,6 +386,55 @@ router.put('/settings/apk-download', requireSuperAdmin, asyncRoute(async (req, r
 
 router.use(requireSuperAdmin);
 
+router.post('/auth/change-password', asyncRoute(async (req, res) => {
+  requireFields(req.body, ['current_password', 'new_password']);
+  if (!validateRegistrationPassword(req.body.new_password)) {
+    throw fail(400, 'Kata sandi minimal 8 karakter dan wajib memiliki huruf besar, angka, serta simbol.', 'VALIDATION_ERROR');
+  }
+  const [[admin]] = await pool.execute(
+    'SELECT password_hash FROM super_admins WHERE id = ? AND is_active = TRUE',
+    [req.superAdmin.id],
+  );
+  if (!await verifyPassword(req.body.current_password, admin?.password_hash)) {
+    throw fail(401, 'Kata sandi saat ini tidak benar.', 'INVALID_CREDENTIALS');
+  }
+  const passwordHash = await hashPassword(req.body.new_password);
+  const [update] = await pool.execute(
+    `UPDATE super_admins
+        SET password_hash = ?, auth_version = auth_version + 1
+      WHERE id = ? AND is_active = TRUE`,
+    [passwordHash, req.superAdmin.id],
+  );
+  if (update.affectedRows !== 1) {
+    throw fail(401, 'Sesi Super Admin tidak lagi aktif.', 'UNAUTHENTICATED');
+  }
+  res.json({ message: 'Kata sandi berhasil diubah. Silakan masuk kembali.' });
+}));
+
+router.get('/audit-logs', asyncRoute(async (req, res) => {
+  const limit = req.query.limit === undefined ? 50 : Number(req.query.limit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw fail(400, 'Jumlah audit log harus antara 1 dan 100.', 'VALIDATION_ERROR');
+  }
+  const beforeId = req.query.before_id;
+  if (beforeId !== undefined &&
+      (typeof beforeId !== 'string' || !/^[1-9]\d{0,19}$/.test(beforeId))) {
+    throw fail(400, 'Cursor audit log tidak valid.', 'VALIDATION_ERROR');
+  }
+  const [rows] = await pool.execute(
+    `SELECT id, username, method, route, status_code, ip_address, user_agent, created_at
+       FROM platform_audit_logs
+      ${beforeId ? 'WHERE id < ?' : ''}
+      ORDER BY id DESC LIMIT ?`,
+    beforeId ? [beforeId, limit] : [limit],
+  );
+  const logs = rows.map((row) => ({ ...row, id: String(row.id) }));
+  res.json({
+    logs,
+    next_before_id: logs.length === limit ? logs[logs.length - 1].id : null,
+  });
+}));
+
 router.get('/settings/payment-gateways', asyncRoute(async (req, res) => {
   res.json({ settings: await getAdminPaymentGatewaySettings() });
 }));

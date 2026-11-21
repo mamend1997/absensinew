@@ -1,4 +1,12 @@
 export async function ensureRuntimeMigrations(pool) {
+  const [schoolColumns] = await pool.execute(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'schools'`,
+  );
+  if (schoolColumns.length && !schoolColumns.some((column) => column.COLUMN_NAME === 'billing_email')) {
+    await pool.execute('ALTER TABLE schools ADD COLUMN billing_email VARCHAR(254) NULL AFTER name');
+  }
+
   const [participantColumns] = await pool.execute(
     `SELECT COLUMN_NAME FROM information_schema.COLUMNS
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'participants'`,
@@ -458,6 +466,52 @@ export async function ensureRuntimeMigrations(pool) {
         REFERENCES schools (id) ON DELETE CASCADE,
       CONSTRAINT fk_password_reset_user FOREIGN KEY (user_id)
         REFERENCES users (id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS platform_audit_logs (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      super_admin_id BIGINT UNSIGNED NULL,
+      username VARCHAR(80) NOT NULL,
+      method VARCHAR(10) NOT NULL,
+      route VARCHAR(255) NOT NULL,
+      status_code SMALLINT UNSIGNED NOT NULL,
+      ip_address VARCHAR(64) NULL,
+      user_agent VARCHAR(512) NULL,
+      created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      PRIMARY KEY (id),
+      KEY idx_platform_audit_admin_created (super_admin_id, id),
+      CONSTRAINT fk_platform_audit_admin FOREIGN KEY (super_admin_id)
+        REFERENCES super_admins (id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS school_subscription_expiry_reminders (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      sekolah_id BIGINT UNSIGNED NOT NULL,
+      expires_at DATETIME NOT NULL,
+      recipient_phone VARCHAR(32) NULL,
+      payment_order_id CHAR(36) NULL,
+      provider_order_id VARCHAR(50) NULL,
+      checkout_url VARCHAR(2048) NULL,
+      amount BIGINT UNSIGNED NULL,
+      invoice_expires_at DATETIME NULL,
+      status ENUM('pending', 'sending', 'sent', 'failed') NOT NULL DEFAULT 'pending',
+      attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
+      next_attempt_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_attempt_at DATETIME NULL,
+      last_error VARCHAR(500) NULL,
+      sent_at DATETIME NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      UNIQUE KEY uq_school_expiry_reminder (sekolah_id, expires_at),
+      UNIQUE KEY uq_school_expiry_payment_order (payment_order_id),
+      KEY idx_school_expiry_reminder_due (status, next_attempt_at, id),
+      CONSTRAINT fk_school_expiry_reminder_school FOREIGN KEY (sekolah_id)
+        REFERENCES schools (id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
 }

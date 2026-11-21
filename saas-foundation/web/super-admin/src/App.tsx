@@ -127,6 +127,17 @@ interface OtpRateLimitSettings {
   window_minutes: number;
 }
 
+interface PlatformAuditLog {
+  id: string;
+  username: string;
+  method: string;
+  route: string;
+  status_code: number;
+  ip_address: string | null;
+  user_agent: string | null;
+  created_at: string;
+}
+
 type LoginView = 'login' | 'forgot-password' | 'reset-password';
 
 const emptyForm: SchoolForm = {
@@ -230,6 +241,16 @@ export default function App() {
   const [recoveryPhoneInput, setRecoveryPhoneInput] = useState('');
   const [recoveryCurrentPassword, setRecoveryCurrentPassword] = useState('');
   const [recoveryPhoneBusy, setRecoveryPhoneBusy] = useState(false);
+  const [changePasswordForm, setChangePasswordForm] = useState({
+    current_password: '',
+    new_password: '',
+    confirm_password: '',
+  });
+  const [changePasswordBusy, setChangePasswordBusy] = useState(false);
+  const [auditLogs, setAuditLogs] = useState<PlatformAuditLog[]>([]);
+  const [auditCursor, setAuditCursor] = useState<string | null>(null);
+  const [auditBusy, setAuditBusy] = useState(false);
+  const [auditError, setAuditError] = useState('');
   const [form, setForm] = useState<SchoolForm>(emptyForm);
   const [manualCodes, setManualCodes] = useState<Record<number, string>>({});
   const [busy, setBusy] = useState(false);
@@ -385,9 +406,39 @@ export default function App() {
     }
   }, [token]);
 
+  const loadAuditLogs = useCallback(async (beforeId?: string, append = false) => {
+    if (!token) return;
+    setAuditBusy(true);
+    setAuditError('');
+    try {
+      const query = new URLSearchParams({ limit: '50' });
+      if (beforeId) query.set('before_id', beforeId);
+      const result = await request<{ logs: PlatformAuditLog[]; next_before_id: string | null }>(
+        `/super-admin/audit-logs?${query.toString()}`,
+        token,
+      );
+      setAuditLogs((current) => append ? [...current, ...result.logs] : result.logs);
+      setAuditCursor(result.next_before_id);
+    } catch (reason) {
+      setAuditError(reason instanceof Error ? reason.message : 'Audit log gagal dimuat.');
+    } finally {
+      setAuditBusy(false);
+    }
+  }, [token]);
+
   useEffect(() => {
     void loadSchools();
   }, [loadSchools]);
+
+  useEffect(() => {
+    if (!token) {
+      setAuditLogs([]);
+      setAuditCursor(null);
+      setAuditError('');
+      return;
+    }
+    void loadAuditLogs();
+  }, [token, loadAuditLogs]);
 
   useEffect(() => {
     void loadSubscriptionPayments();
@@ -576,6 +627,41 @@ export default function App() {
       setError(reason instanceof Error ? reason.message : 'Nomor WhatsApp pemulihan gagal disimpan.');
     } finally {
       setRecoveryPhoneBusy(false);
+    }
+  }
+
+  async function changeSuperAdminPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!validAdminPassword(changePasswordForm.new_password)) {
+      setError('Kata sandi minimal 8 karakter dan wajib memiliki huruf besar, angka, serta simbol.');
+      return;
+    }
+    if (changePasswordForm.new_password !== changePasswordForm.confirm_password) {
+      setError('Konfirmasi kata sandi baru tidak sama.');
+      return;
+    }
+    setChangePasswordBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await request<{ message: string }>(
+        '/super-admin/auth/change-password',
+        token,
+        {
+          method: 'POST',
+          body: {
+            current_password: changePasswordForm.current_password,
+            new_password: changePasswordForm.new_password,
+          },
+        },
+      );
+      setChangePasswordForm({ current_password: '', new_password: '', confirm_password: '' });
+      signOut();
+      setNotice(result.message);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Kata sandi gagal diubah.');
+    } finally {
+      setChangePasswordBusy(false);
     }
   }
 
@@ -1273,6 +1359,8 @@ export default function App() {
           <div className="metric"><strong>{schools.length}</strong><span>Tenant terdaftar</span></div>
         </section>
         <nav className="section-menu" aria-label="Menu Super Admin">
+          <a href="#security-profile">Profil &amp; keamanan</a>
+          <a href="#platform-audit-logs">Audit log</a>
           <a href="#payment-gateways">Payment gateway</a>
           <a href="#account-recovery">Nomor pemulihan</a>
           <a href="#automatic-backup">Backup otomatis</a>
@@ -1283,6 +1371,25 @@ export default function App() {
         </nav>
         {error && <div className="alert error">{error}</div>}
         {notice && <div className="alert success">{notice}</div>}
+        <section id="security-profile" className="panel">
+          <div>
+            <h2>Profil dan keamanan akun</h2>
+            <p className="muted">Ubah kata sandi Super Admin. Setelah berhasil, sesi ini dan sesi lain akan berakhir sehingga Anda harus masuk kembali.</p>
+          </div>
+          <form className="recovery-phone-form" onSubmit={(event) => void changeSuperAdminPassword(event)}>
+            <label>Kata sandi saat ini
+              <input type="password" autoComplete="current-password" required value={changePasswordForm.current_password} onChange={(event) => setChangePasswordForm((current) => ({ ...current, current_password: event.target.value }))} />
+            </label>
+            <label>Kata sandi baru
+              <input type="password" autoComplete="new-password" minLength={8} required value={changePasswordForm.new_password} onChange={(event) => setChangePasswordForm((current) => ({ ...current, new_password: event.target.value }))} />
+            </label>
+            <label>Konfirmasi kata sandi baru
+              <input type="password" autoComplete="new-password" minLength={8} required value={changePasswordForm.confirm_password} onChange={(event) => setChangePasswordForm((current) => ({ ...current, confirm_password: event.target.value }))} />
+            </label>
+            <small className="muted">Minimal 8 karakter, huruf besar, angka, dan simbol.</small>
+            <button className="button primary" disabled={changePasswordBusy}>{changePasswordBusy ? 'Mengubah…' : 'Ubah kata sandi'}</button>
+          </form>
+        </section>
         <section className="panel branding-panel">
           <div>
             <h2>Logo dan favicon platform</h2>
@@ -1420,6 +1527,32 @@ export default function App() {
             <label>Password saat ini<input type="password" autoComplete="current-password" required value={recoveryCurrentPassword} onChange={(event) => setRecoveryCurrentPassword(event.target.value)} /></label>
             <button className="button primary" disabled={recoveryPhoneBusy}>{recoveryPhoneBusy ? 'Menyimpan…' : 'Simpan nomor pemulihan'}</button>
           </form>
+        </section>
+        <section id="platform-audit-logs" className="panel">
+          <div className="section-title">
+            <div><h2>Audit log Super Admin</h2><p className="muted">Mencatat metode, endpoint, hasil, dan waktu setiap aksi perubahan setelah autentikasi. Isi request dan kata sandi tidak disimpan.</p></div>
+            <button className="button secondary" disabled={auditBusy} onClick={() => void loadAuditLogs()}>{auditBusy ? 'Memuat…' : 'Muat ulang'}</button>
+          </div>
+          {auditError && <div className="alert error">{auditError}</div>}
+          <div className="table-scroll">
+            <table className="tenant-table">
+              <thead><tr><th>Waktu</th><th>Akun</th><th>Aksi</th><th>Hasil</th><th>Alamat IP</th><th>User agent</th></tr></thead>
+              <tbody>
+                {auditLogs.map((log) => (
+                  <tr key={log.id}>
+                    <td>{new Date(/(?:Z|[+-]\d{2}:\d{2})$/i.test(log.created_at) ? log.created_at : `${log.created_at.replace(' ', 'T')}Z`).toLocaleString('id-ID')}</td>
+                    <td>{log.username}</td>
+                    <td><code>{log.method} {log.route}</code></td>
+                    <td>{log.status_code}</td>
+                    <td>{log.ip_address ?? '—'}</td>
+                    <td>{log.user_agent ?? '—'}</td>
+                  </tr>
+                ))}
+                {!auditLogs.length && !auditBusy && <tr><td colSpan={6}>Belum ada aksi perubahan tercatat.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          {auditCursor && <button className="button secondary" disabled={auditBusy} onClick={() => void loadAuditLogs(auditCursor, true)}>{auditBusy ? 'Memuat…' : 'Muat lebih banyak'}</button>}
         </section>
         <section id="automatic-backup" className="panel platform-backup-panel">
           <div>

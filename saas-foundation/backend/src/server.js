@@ -5,11 +5,13 @@ import { ensureRuntimeMigrations } from './config/runtime-migrations.js';
 import { startPlatformBackupWorker } from './core/platform-backup.js';
 import { startLateAttendanceNotificationWorker } from './core/late-attendance-notifications.js';
 import { startGoogleSheetsSyncWorker } from './core/google-sheets-sync.js';
+import { startSubscriptionExpiryReminderWorker } from './core/subscription-expiry-reminders.js';
 
 await ensureRuntimeMigrations(pool);
 startPlatformBackupWorker();
 startLateAttendanceNotificationWorker();
 startGoogleSheetsSyncWorker();
+startSubscriptionExpiryReminderWorker();
 
 const server = app.listen(config.port, config.host, () => {
   console.log(`SaaS backend listening on http://${config.host}:${config.port}`);
