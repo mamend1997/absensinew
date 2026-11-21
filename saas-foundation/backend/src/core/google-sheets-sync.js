@@ -56,7 +56,12 @@ export async function sendAttendanceToGoogleSheets({ schoolId, ids }) {
   const text = await response.text();
   let result;
   try { result = JSON.parse(text); } catch {
-    throw fail(502, 'Apps Script mengembalikan respons yang tidak valid.', 'GOOGLE_SHEETS_SYNC_FAILED');
+    const contentType = response.headers.get('content-type') ?? 'tidak diketahui';
+    throw fail(
+      502,
+      `Apps Script membalas bukan JSON (HTTP ${response.status}, ${contentType}). Pastikan Web App sudah di-deploy, dijalankan sebagai pemilik spreadsheet, dapat diakses Anyone, dan URL berakhir dengan /exec.`,
+      'GOOGLE_SHEETS_SYNC_FAILED',
+    );
   }
   const accepted = new Set(
     result && typeof result === 'object' && Array.isArray(result.accepted_ids)
