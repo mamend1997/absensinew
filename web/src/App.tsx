@@ -43,10 +43,8 @@ function savedTheme(): ThemeMode {
   return value === 'orange' || value === 'white' ? value : 'green';
 }
 
-function defaultPage(role: User['role']): Page {
-  return role === 'admin' && window.matchMedia('(min-width: 900px)').matches
-    ? 'rekap'
-    : 'scanner';
+function defaultPage(): Page {
+  return 'scanner';
 }
 
 function cachedUser(): User | null {
@@ -245,7 +243,7 @@ export default function App() {
       }
       if (active) {
         setUser(userCache);
-        setPage(defaultPage(userCache.role));
+        setPage(defaultPage());
         setRestoring(false);
       }
       try {
@@ -267,7 +265,7 @@ export default function App() {
         };
         if (active) {
           setUser(authenticatedUser);
-          setPage(defaultPage(authenticatedUser.role));
+          setPage(defaultPage());
           localStorage.setItem('ruang_hadir_user', JSON.stringify(authenticatedUser));
         }
       } catch (error) {
@@ -311,7 +309,7 @@ export default function App() {
 
   function onLogin(authenticatedUser: User) {
     setUser(authenticatedUser);
-    setPage(defaultPage(authenticatedUser.role));
+    setPage(defaultPage());
     void refreshMasterData().catch((error: unknown) => {
       showToast(masterDataFailureMessage(error), 'error');
     }).then(() => syncNow());
