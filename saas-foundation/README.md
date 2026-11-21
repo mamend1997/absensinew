@@ -174,6 +174,11 @@ gateway dan token Bearer disimpan secara tenant-scoped; token dienkripsi sebelum
 disimpan. Rahasia `JWT_SECRET` harus dijaga tetap stabil karena digunakan untuk
 menurunkan kunci enkripsi token tersimpan.
 
+Nomor WA peserta dapat disimpan dari form Peserta atau template impor Excel.
+Jika check-in baru tercatat terlambat dan gateway sekolah aktif, backend
+mengantrikan notifikasi ke nomor peserta; pengiriman dicoba ulang jika gateway
+sementara gagal.
+
 Master peserta mendukung impor `.xlsx` melalui menu Peserta. Unduh template
 terlebih dahulu untuk mendapatkan referensi ID kelas; impor dibatasi 500 peserta
 per file. Jadwal masuk khusus peserta dapat disimpan per hari dan ikut tersimpan

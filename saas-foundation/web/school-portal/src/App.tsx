@@ -196,6 +196,7 @@ interface Participant {
   classroom_id: string;
   classroom_name: string;
   qr_code: string;
+  participant_phone?: string | null;
   is_active?: boolean | number;
 }
 interface Classroom { id: string; name: string; unit_id: string; unit_name?: string }
@@ -241,6 +242,7 @@ interface ParticipantImportDraft {
   full_name: string;
   classroom_id: string;
   qr_code: string;
+  participant_phone: string;
   guardian_phone: string;
 }
 interface ReportRow {
@@ -617,7 +619,7 @@ export default function App() {
   const [selectedParticipantIds, setSelectedParticipantIds] = useState<Set<string>>(new Set());
   const [scanClock, setScanClock] = useState(() => new Date());
   const [participantForm, setParticipantForm] = useState({
-    full_name: '', classroom_id: '', qr_code: '',
+    full_name: '', classroom_id: '', qr_code: '', participant_phone: '',
   });
   const [editingParticipantId, setEditingParticipantId] = useState('');
   const [classroomForm, setClassroomForm] = useState({ id: '', name: '' });
@@ -1563,7 +1565,7 @@ export default function App() {
         session.token,
         { method: isEditing ? 'PUT' : 'POST', body: participantForm },
       );
-      setParticipantForm({ full_name: '', classroom_id: '', qr_code: '' });
+      setParticipantForm({ full_name: '', classroom_id: '', qr_code: '', participant_phone: '' });
       setEditingParticipantId('');
       await loadSchoolData(session);
       setMessage(isEditing ? 'Data peserta berhasil diperbarui.' : 'Peserta berhasil ditambahkan.');
@@ -1580,6 +1582,7 @@ export default function App() {
       full_name: participant.full_name,
       classroom_id: participant.classroom_id,
       qr_code: participant.qr_code,
+      participant_phone: participant.participant_phone ?? '',
     });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
@@ -1638,6 +1641,7 @@ export default function App() {
         { header: 'Nama Lengkap', key: 'full_name', width: 32 },
         { header: 'Nama Kelas', key: 'classroom_id', width: 24 },
         { header: 'QR / Barcode', key: 'qr_code', width: 28 },
+        { header: 'No WA Peserta', key: 'participant_phone', width: 20 },
         { header: 'No WA Wali', key: 'guardian_phone', width: 20 },
       ];
       participantSheet.views = [{ state: 'frozen', ySplit: 1 }];
@@ -1701,6 +1705,7 @@ export default function App() {
       const nameColumn = findColumn('nama lengkap', 'full_name');
       const classroomColumn = findColumn('id kelas', 'classroom_id', 'kelas', 'nama kelas');
       const qrColumn = findColumn('qr / barcode', 'qr_code');
+      const participantPhoneColumn = findColumn('no wa peserta', 'participant_phone');
       const phoneColumn = findColumn('no wa wali', 'guardian_phone');
       if (!nameColumn || !classroomColumn) {
         throw new Error('Kolom wajib: Nama Lengkap dan ID Kelas atau Nama Kelas.');
@@ -1737,10 +1742,12 @@ export default function App() {
           full_name: value(nameColumn),
           classroom_id: resolveClassroomId(classroomReference),
           qr_code: value(qrColumn),
+          participant_phone: value(participantPhoneColumn),
           guardian_phone: value(phoneColumn),
         };
         if (![participant.full_name, participant.classroom_id, participant.qr_code,
-          participant.guardian_phone, participant.participant_code, classroomReference].some(Boolean)) continue;
+          participant.participant_phone, participant.guardian_phone,
+          participant.participant_code, classroomReference].some(Boolean)) continue;
         rows.push(participant);
         if (rows.length > 500) throw new Error('Impor dibatasi maksimal 500 peserta per file.');
       }
@@ -2583,9 +2590,11 @@ export default function App() {
                 <label>Nama lengkap<input required value={participantForm.full_name} onChange={(event) => setParticipantForm((current) => ({ ...current, full_name: event.target.value }))} /></label>
                 <label>Kelas<select required value={participantForm.classroom_id} onChange={(event) => setParticipantForm((current) => ({ ...current, classroom_id: event.target.value }))}><option value="">Pilih kelas</option>{classrooms.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
                 <label>QR / Barcode<input required value={participantForm.qr_code} onChange={(event) => setParticipantForm((current) => ({ ...current, qr_code: event.target.value }))} /></label>
+                <label>No WA peserta<input type="tel" maxLength={32} placeholder="08xxxxxxxxxx" value={participantForm.participant_phone} onChange={(event) => setParticipantForm((current) => ({ ...current, participant_phone: event.target.value }))} /></label>
+                <p className="muted wide">Peserta akan menerima WhatsApp otomatis jika check-in tercatat terlambat. Pastikan gateway WhatsApp sekolah aktif.</p>
                 <div className="heading-actions wide">
                   <button className="button primary" disabled={busy}>{editingParticipantId ? 'Simpan perubahan' : 'Tambah peserta'}</button>
-                  {editingParticipantId && <button type="button" className="button secondary" onClick={() => { setEditingParticipantId(''); setParticipantForm({ full_name: '', classroom_id: '', qr_code: '' }); }}>Batal</button>}
+                  {editingParticipantId && <button type="button" className="button secondary" onClick={() => { setEditingParticipantId(''); setParticipantForm({ full_name: '', classroom_id: '', qr_code: '', participant_phone: '' }); }}>Batal</button>}
                 </div>
               </form>}
               {can('participants.edit') && <div className="panel classroom-manager">
@@ -2598,7 +2607,7 @@ export default function App() {
                 <div className="classroom-list">{classrooms.map((classroom) => <div className="classroom-row" key={classroom.id}><div><strong>{classroom.name}</strong><small>{classroom.unit_name ?? 'Umum'}</small></div><div className="heading-actions"><button type="button" className="button secondary small" onClick={() => setClassroomForm({ id: classroom.id, name: classroom.name })}>Edit</button>{can('participants.delete') && <button type="button" className="button danger small" onClick={() => void deleteClassroom(classroom)}>Hapus</button>}</div></div>)}</div>
               </div>}
               {can('participants.edit') && <div className="panel participant-import">
-                <div><h2>Impor dari Excel</h2><p className="muted">Gunakan Nama Kelas dari sheet Referensi Kelas; Anda juga dapat memilih ulang kelas di pratinjau. Maksimal 500 baris.</p></div>
+                <div><h2>Impor dari Excel</h2><p className="muted">Gunakan Nama Kelas dari sheet Referensi Kelas; Anda juga dapat memilih ulang kelas di pratinjau. Kolom No WA Peserta digunakan untuk notifikasi saat terlambat. Maksimal 500 baris.</p></div>
                 <div className="heading-actions">
                   <button type="button" className="button secondary" onClick={() => void downloadParticipantTemplate()}>Unduh template .xlsx</button>
                   <label className="button primary import-file-button">Pilih file Excel
@@ -2620,7 +2629,7 @@ export default function App() {
                     </div>
                   </div>
                   {invalidImportRowCount > 0 && <p className="import-preview-warning">Lengkapi nama dan pilih kelas untuk {invalidImportRowCount} baris sebelum menyimpan.</p>}
-                  <div className="table-scroll"><table className="import-preview-table"><thead><tr><th>Baris</th><th>Kode peserta</th><th>Nama peserta</th><th>Kelas</th><th>QR / Barcode</th><th>No. WA wali</th><th>Aksi</th></tr></thead><tbody>
+                  <div className="table-scroll"><table className="import-preview-table"><thead><tr><th>Baris</th><th>Kode peserta</th><th>Nama peserta</th><th>Kelas</th><th>QR / Barcode</th><th>No. WA peserta</th><th>No. WA wali</th><th>Aksi</th></tr></thead><tbody>
                     {participantImportPreview.map((row) => <tr key={row.source_row}>
                       <td>{row.source_row}</td>
                       <td><input aria-label={`Kode peserta baris ${row.source_row}`} maxLength={60} value={row.participant_code} onChange={(event) => {
@@ -2641,6 +2650,10 @@ export default function App() {
                       <td><input aria-label={`QR atau barcode baris ${row.source_row}`} maxLength={160} value={row.qr_code} onChange={(event) => {
                         setParticipantImportResult(null);
                         setParticipantImportPreview((current) => current.map((item) => item.source_row === row.source_row ? { ...item, qr_code: event.target.value } : item));
+                      }} /></td>
+                      <td><input aria-label={`Nomor WA peserta baris ${row.source_row}`} type="tel" maxLength={32} value={row.participant_phone} onChange={(event) => {
+                        setParticipantImportResult(null);
+                        setParticipantImportPreview((current) => current.map((item) => item.source_row === row.source_row ? { ...item, participant_phone: event.target.value } : item));
                       }} /></td>
                       <td><input aria-label={`Nomor wali baris ${row.source_row}`} maxLength={32} value={row.guardian_phone} onChange={(event) => {
                         setParticipantImportResult(null);
@@ -2672,9 +2685,9 @@ export default function App() {
               </div>}
               <div className="panel">
                 <div className="section-title"><div><h2>{participants.length} peserta lokal</h2><p className="muted">Data di-cache per sekolah pada perangkat ini.</p></div><div className="heading-actions">{can('participants.qr.print') && <button className="button secondary" onClick={() => void printSelectedQrs()}>Cetak QR terpilih</button>}{can('participants.delete') && selectedParticipantIds.size > 0 && <button className="button danger" disabled={busy} onClick={() => void removeSelectedParticipants()}>Hapus terpilih ({selectedParticipantIds.size})</button>}<button className="button secondary" onClick={() => session && void loadSchoolData(session)}>Sinkronkan master</button></div></div>
-                <div className="table-scroll"><table><thead><tr><th><input type="checkbox" aria-label="Pilih semua peserta" checked={participants.length > 0 && participants.every((item) => selectedParticipantIds.has(item.id))} onChange={(event) => setSelectedParticipantIds(event.target.checked ? new Set(participants.map((item) => item.id)) : new Set())} /></th><th>Nama</th><th>Kelas</th><th>QR / Barcode</th><th className="no-print">Aksi</th></tr></thead><tbody>
-                  {participants.map((participant) => <tr key={participant.id}><td><input type="checkbox" aria-label={`Pilih ${participant.full_name}`} checked={selectedParticipantIds.has(participant.id)} onChange={(event) => setSelectedParticipantIds((current) => { const next = new Set(current); if (event.target.checked) next.add(participant.id); else next.delete(participant.id); return next; })} /></td><td>{participant.full_name}</td><td>{participant.classroom_name ?? classrooms.find((item) => item.id === participant.classroom_id)?.name ?? '—'}</td><td><code>{participant.qr_code}</code></td><td className="no-print"><div className="participant-actions">{can('participants.edit') && <><button className="button secondary small" onClick={() => editParticipant(participant)}>Edit</button><button className="button secondary small" onClick={() => openParticipantSchedule(participant.id)}>Atur jam</button></>}{can('participants.delete') && <button className="button danger small" onClick={() => void removeParticipant(participant)}>Hapus</button>}</div></td></tr>)}
-                  {!participants.length && <tr><td colSpan={5} className="empty">Master peserta belum tersedia. Hubungkan jaringan untuk mengambil data sekolah.</td></tr>}
+                <div className="table-scroll"><table><thead><tr><th><input type="checkbox" aria-label="Pilih semua peserta" checked={participants.length > 0 && participants.every((item) => selectedParticipantIds.has(item.id))} onChange={(event) => setSelectedParticipantIds(event.target.checked ? new Set(participants.map((item) => item.id)) : new Set())} /></th><th>Nama</th><th>Kelas</th><th>No. WA peserta</th><th>QR / Barcode</th><th className="no-print">Aksi</th></tr></thead><tbody>
+                  {participants.map((participant) => <tr key={participant.id}><td><input type="checkbox" aria-label={`Pilih ${participant.full_name}`} checked={selectedParticipantIds.has(participant.id)} onChange={(event) => setSelectedParticipantIds((current) => { const next = new Set(current); if (event.target.checked) next.add(participant.id); else next.delete(participant.id); return next; })} /></td><td>{participant.full_name}</td><td>{participant.classroom_name ?? classrooms.find((item) => item.id === participant.classroom_id)?.name ?? '—'}</td><td>{participant.participant_phone ?? '—'}</td><td><code>{participant.qr_code}</code></td><td className="no-print"><div className="participant-actions">{can('participants.edit') && <><button className="button secondary small" onClick={() => editParticipant(participant)}>Edit</button><button className="button secondary small" onClick={() => openParticipantSchedule(participant.id)}>Atur jam</button></>}{can('participants.delete') && <button className="button danger small" onClick={() => void removeParticipant(participant)}>Hapus</button>}</div></td></tr>)}
+                  {!participants.length && <tr><td colSpan={6} className="empty">Master peserta belum tersedia. Hubungkan jaringan untuk mengambil data sekolah.</td></tr>}
                 </tbody></table></div>
               </div>
             </section>

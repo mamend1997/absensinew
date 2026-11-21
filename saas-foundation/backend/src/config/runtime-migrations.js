@@ -1,4 +1,12 @@
 export async function ensureRuntimeMigrations(pool) {
+  const [participantColumns] = await pool.execute(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'participants'`,
+  );
+  if (participantColumns.length && !participantColumns.some((column) => column.COLUMN_NAME === 'participant_phone')) {
+    await pool.execute('ALTER TABLE participants ADD COLUMN participant_phone VARCHAR(32) NULL AFTER qr_code');
+  }
+
   const [operationalColumns] = await pool.execute(
     `SELECT COLUMN_NAME FROM information_schema.COLUMNS
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'operational_settings'`,
@@ -31,6 +39,30 @@ export async function ensureRuntimeMigrations(pool) {
         FOREIGN KEY (sekolah_id, participant_id)
         REFERENCES participants (sekolah_id, id) ON DELETE CASCADE,
       CONSTRAINT chk_participant_override_weekday CHECK (weekday BETWEEN 0 AND 6)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS participant_late_notifications (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      sekolah_id BIGINT UNSIGNED NOT NULL,
+      attendance_log_id BIGINT UNSIGNED NOT NULL,
+      recipient_phone VARCHAR(32) NOT NULL,
+      message TEXT NOT NULL,
+      status ENUM('pending', 'sending', 'sent', 'failed') NOT NULL DEFAULT 'pending',
+      attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
+      next_attempt_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_error VARCHAR(500) NULL,
+      sent_at TIMESTAMP NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      UNIQUE KEY uq_late_notification_attendance (attendance_log_id),
+      KEY idx_late_notification_due (status, next_attempt_at, id),
+      CONSTRAINT fk_late_notification_school FOREIGN KEY (sekolah_id)
+        REFERENCES schools (id) ON DELETE CASCADE,
+      CONSTRAINT fk_late_notification_attendance FOREIGN KEY (attendance_log_id)
+        REFERENCES attendance_logs (id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
 

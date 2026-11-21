@@ -38,6 +38,11 @@ import { aggregateAttendanceReport } from '../core/attendance-report.js';
 import { config } from '../config.js';
 import { createDeviceApiKey, hashPassword, signToken, verifyPassword } from '../security.js';
 import { getPlatformPaymentSettings } from '../core/platform-payment-settings.js';
+import {
+  createLateAttendanceMessage,
+  enqueueLateAttendanceNotification,
+  shouldQueueLateAttendanceNotification,
+} from '../core/late-attendance-notifications.js';
 
 const router = Router();
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -48,6 +53,16 @@ function string(value, field, max = 150) {
     throw fail(400, `${field} tidak valid.`, 'VALIDATION_ERROR');
   }
   return value.trim();
+}
+
+function optionalWhatsappPhone(value) {
+  if (value == null || (typeof value === 'string' && value.trim() === '')) return null;
+  if (typeof value !== 'string' || value.length > 32) {
+    throw fail(400, 'No WA peserta tidak valid. Gunakan format nomor WhatsApp yang benar.', 'VALIDATION_ERROR');
+  }
+  const phone = normalizeWhatsappPhone(value);
+  if (!phone) throw fail(400, 'No WA peserta tidak valid. Gunakan format nomor WhatsApp yang benar.', 'VALIDATION_ERROR');
+  return phone;
 }
 
 function scopedClassroom(user, classroomId) {
@@ -713,7 +728,7 @@ router.get('/participants', requireSchoolUser,
   const scope = classroomScope(req.schoolUser);
   const [rows] = await pool.execute(
     `SELECT p.id, p.classroom_id, p.participant_code, p.full_name, p.qr_code,
-            p.guardian_phone, p.is_active, c.name AS classroom_name
+            p.participant_phone, p.guardian_phone, p.is_active, c.name AS classroom_name
        FROM participants p JOIN classrooms c ON c.id = p.classroom_id AND c.sekolah_id = p.sekolah_id
       WHERE p.sekolah_id = ?${scope.sql} ORDER BY p.full_name`,
     [req.schoolUser.sekolah_id, ...scope.params],
@@ -765,6 +780,7 @@ router.post('/participants/import', requireSchoolUser, requirePermission('partic
         const guardianPhone = record.guardian_phone == null || record.guardian_phone === ''
           ? null
           : string(record.guardian_phone, 'Nomor wali', 32);
+        const participantPhone = optionalWhatsappPhone(record.participant_phone);
         if (seenCodes.has(participantCode) || seenQrCodes.has(qrCode)) {
           results.push({ row, participant_code: participantCode, status: 'skipped', reason: 'Duplikat di file impor.' });
           continue;
@@ -780,9 +796,11 @@ router.post('/participants/import', requireSchoolUser, requirePermission('partic
         }
         await connection.execute(
           `INSERT INTO participants
-            (sekolah_id, classroom_id, participant_code, full_name, qr_code, guardian_phone)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-          [req.schoolUser.sekolah_id, classroomId, participantCode, fullName, qrCode, guardianPhone],
+            (sekolah_id, classroom_id, participant_code, full_name, qr_code,
+             participant_phone, guardian_phone)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [req.schoolUser.sekolah_id, classroomId, participantCode, fullName, qrCode,
+            participantPhone, guardianPhone],
         );
         seenCodes.add(participantCode);
         seenQrCodes.add(qrCode);
@@ -826,16 +844,20 @@ router.post('/participants', requireSchoolUser, requirePermission('participants.
     : string(req.body.participant_code, 'participant_code', 60);
   const fullName = string(req.body.full_name, 'full_name', 150);
   const qrCode = req.body.qr_code === undefined ? `SAAS-${randomUUID()}` : string(req.body.qr_code, 'qr_code', 160);
+  const participantPhone = optionalWhatsappPhone(req.body.participant_phone);
   const guardianPhone = req.body.guardian_phone == null ? null : string(req.body.guardian_phone, 'guardian_phone', 32);
   const [result] = await pool.execute(
     `INSERT INTO participants
-      (sekolah_id, classroom_id, participant_code, full_name, qr_code, guardian_phone)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [req.schoolUser.sekolah_id, req.body.classroom_id, participantCode, fullName, qrCode, guardianPhone],
+      (sekolah_id, classroom_id, participant_code, full_name, qr_code,
+       participant_phone, guardian_phone)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [req.schoolUser.sekolah_id, req.body.classroom_id, participantCode, fullName, qrCode,
+      participantPhone, guardianPhone],
   );
   res.status(201).json({ participant: {
     id: String(result.insertId), classroom_id: String(req.body.classroom_id),
-    participant_code: participantCode, full_name: fullName, qr_code: qrCode, guardian_phone: guardianPhone,
+    participant_code: participantCode, full_name: fullName, qr_code: qrCode,
+    participant_phone: participantPhone, guardian_phone: guardianPhone,
   } });
 }));
 
@@ -891,7 +913,8 @@ const updateParticipant = asyncRoute(async (req, res) => {
   if (!/^[1-9]\d*$/.test(String(participantId ?? ''))) {
     throw fail(400, 'id peserta wajib diisi.', 'VALIDATION_ERROR');
   }
-  const allowed = ['classroom_id', 'participant_code', 'full_name', 'qr_code', 'guardian_phone', 'is_active'];
+  const allowed = ['classroom_id', 'participant_code', 'full_name', 'qr_code',
+    'participant_phone', 'guardian_phone', 'is_active'];
   const entries = Object.entries(req.body ?? {}).filter(([key]) => key !== 'id');
   if (!entries.length || entries.some(([key]) => !allowed.includes(key))) {
     throw fail(400, 'Field perubahan peserta tidak valid.', 'VALIDATION_ERROR');
@@ -916,7 +939,8 @@ const updateParticipant = asyncRoute(async (req, res) => {
     } else if (key === 'is_active') {
       if (typeof value !== 'boolean') throw fail(400, 'is_active harus boolean.', 'VALIDATION_ERROR');
       values.push(value);
-    } else if (key === 'guardian_phone' && value === null) values.push(null);
+    } else if (key === 'participant_phone') values.push(optionalWhatsappPhone(value));
+    else if (key === 'guardian_phone' && value === null) values.push(null);
     else values.push(string(value, key, key === 'participant_code' ? 60 : key === 'qr_code' ? 160 : key === 'guardian_phone' ? 32 : 150));
     updates.push(`\`${key}\` = ?`);
   }
@@ -925,7 +949,8 @@ const updateParticipant = asyncRoute(async (req, res) => {
     [...values, req.schoolUser.sekolah_id, participantId],
   );
   const [[participant]] = await pool.execute(
-    `SELECT id, classroom_id, participant_code, full_name, qr_code, guardian_phone, is_active
+    `SELECT id, classroom_id, participant_code, full_name, qr_code,
+            participant_phone, guardian_phone, is_active
        FROM participants WHERE sekolah_id = ? AND id = ?`,
     [req.schoolUser.sekolah_id, participantId],
   );
@@ -1605,7 +1630,8 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
     }
     try {
       const [participants] = await pool.execute(
-        `SELECT p.id, p.participant_code, p.full_name, p.classroom_id, c.name AS classroom_name
+        `SELECT p.id, p.participant_code, p.full_name, p.classroom_id,
+                p.participant_phone, c.name AS classroom_name
            FROM participants p JOIN classrooms c
              ON c.id = p.classroom_id AND c.sekolah_id = p.sekolah_id
           WHERE p.sekolah_id = ? AND p.id = ? AND p.is_active = TRUE`,
@@ -1623,16 +1649,37 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
       const timestamp = new Date(record.client_timestamp).toISOString()
         .slice(0, 23).replace('T', ' ');
       try {
-        await pool.execute(
-          `INSERT INTO attendance_logs
-            (sekolah_id, id_unik, participant_id, device_id, recorded_by, participant_code_snapshot,
-             participant_name_snapshot, classroom_name_snapshot, attendance_date,
-             event_type, client_timestamp_utc, attendance_status, late_minutes, scan_method)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [schoolId, id, participant.id, deviceId, req.schoolUser?.id ?? null,
-            participant.participant_code, participant.full_name, participant.classroom_name,
-            calculation.date, eventType, timestamp, calculation.status, calculation.lateMinutes, scanMethod],
-        );
+        await inTransaction(async (connection) => {
+          const [result] = await connection.execute(
+            `INSERT INTO attendance_logs
+              (sekolah_id, id_unik, participant_id, device_id, recorded_by, participant_code_snapshot,
+               participant_name_snapshot, classroom_name_snapshot, attendance_date,
+               event_type, client_timestamp_utc, attendance_status, late_minutes, scan_method)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [schoolId, id, participant.id, deviceId, req.schoolUser?.id ?? null,
+              participant.participant_code, participant.full_name, participant.classroom_name,
+              calculation.date, eventType, timestamp, calculation.status, calculation.lateMinutes, scanMethod],
+          );
+          if (shouldQueueLateAttendanceNotification({
+            eventType,
+            status: calculation.status,
+            participantPhone: participant.participant_phone,
+          })) {
+            const message = createLateAttendanceMessage({
+              participantName: participant.full_name,
+              attendanceDate: calculation.date,
+              clientTimestamp: record.client_timestamp,
+              timeZone: settings.timezone,
+              lateMinutes: calculation.lateMinutes,
+            });
+            await enqueueLateAttendanceNotification(connection, {
+              schoolId,
+              attendanceLogId: result.insertId,
+              recipientPhone: participant.participant_phone,
+              message,
+            });
+          }
+        });
       } catch (error) {
         if (error.code !== 'ER_DUP_ENTRY') throw error;
         const [existing] = await pool.execute(

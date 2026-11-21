@@ -324,6 +324,7 @@ CREATE TABLE IF NOT EXISTS participants (
     participant_code VARCHAR(60) NOT NULL,
     full_name VARCHAR(150) NOT NULL,
     qr_code VARCHAR(160) NOT NULL,
+    participant_phone VARCHAR(32) NULL,
     guardian_phone VARCHAR(32) NULL,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -450,6 +451,28 @@ CREATE TABLE IF NOT EXISTS attendance_logs (
          AND ((attendance_status = 'hadir' AND late_minutes = 0)
               OR (attendance_status = 'terlambat' AND late_minutes > 0)))
     )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS participant_late_notifications (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    sekolah_id BIGINT UNSIGNED NOT NULL,
+    attendance_log_id BIGINT UNSIGNED NOT NULL,
+    recipient_phone VARCHAR(32) NOT NULL,
+    message TEXT NOT NULL,
+    status ENUM('pending', 'sending', 'sent', 'failed') NOT NULL DEFAULT 'pending',
+    attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_error VARCHAR(500) NULL,
+    sent_at TIMESTAMP NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_late_notification_attendance (attendance_log_id),
+    KEY idx_late_notification_due (status, next_attempt_at, id),
+    CONSTRAINT fk_late_notification_school FOREIGN KEY (sekolah_id) REFERENCES schools (id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_late_notification_attendance FOREIGN KEY (attendance_log_id)
+        REFERENCES attendance_logs (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS attendance_exceptions (
