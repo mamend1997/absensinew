@@ -4,13 +4,37 @@ Sinkronisasi berjalan otomatis satu arah: scan diterima backend, lalu backend
 mengirim catatan ke Apps Script. Jika scanner sedang offline, data baru masuk
 ke Sheets setelah antreannya berhasil tersinkron saat perangkat kembali online.
 
-Tab yang terlihat hanya **Rekap Bulanan**. Isinya satu baris per peserta untuk
-bulan berjalan. Kolom **No** dan **Nama** diikuti satu grup tiga kolom untuk
-setiap tanggal yang memiliki data: **Masuk**, **Terlambat** (menit), dan
-**Keluar**. Tanggal ditampilkan `dd-MM-yyyy` dan otomatis diurutkan; ketika
-data tanggal baru diterima, grup tiga kolomnya dibuat otomatis sebelum
-**Total Terlambat** dan **Total Hadir**. Total terlambat menjumlahkan menit
-keterlambatan, sedangkan total hadir menghitung tanggal dengan check-in.
+Tab **Rekap Bulanan** menampilkan satu baris per peserta untuk bulan berjalan.
+Kolom **No** dan **Nama** diikuti satu grup tiga kolom untuk setiap tanggal
+yang memiliki data: **Masuk**, **Terlambat** (menit), dan **Keluar**. Tanggal
+ditampilkan `dd-MM-yyyy` dan otomatis diurutkan; ketika data tanggal baru
+diterima, grup tiga kolomnya dibuat otomatis sebelum **Total Terlambat** dan
+**Total Hadir**. Total terlambat menjumlahkan menit keterlambatan, sedangkan
+total hadir menghitung tanggal dengan check-in.
+
+Tab **Urutan Peserta** menyimpan susunan baris rekap secara terpisah dari
+riwayat scan. Setelah peserta muncul di rekap, pindahkan seluruh barisnya di
+tab ini untuk mengatur urutannya. Baris peserta baru ditambahkan di bagian
+bawah (urut ID peserta), tanpa mengubah urutan yang sudah Anda atur. Jangan
+mengedit kolom `participant_id`; nama dan kode diperbarui dari data aplikasi.
+
+Jangan mengedit langsung waktu di **Rekap Bulanan**, karena rekap dibuat ulang
+saat data baru masuk. Untuk koreksi permanen, tambahkan satu baris di
+**Koreksi Absensi**:
+
+| Kolom | Isi |
+| --- | --- |
+| `participant_id` | ID peserta dari tab **Urutan Peserta** |
+| `Nama Peserta` | Nama untuk membantu mengenali peserta |
+| `Tanggal` | Tanggal absensi |
+| `Jenis` | `check_in` untuk Masuk atau `check_out` untuk Keluar |
+| `Aksi` | `set` untuk mengisi/mengganti waktu, atau `clear` untuk mengosongkannya |
+| `Waktu Koreksi` | Waktu `HH:mm` atau `HH:mm:ss`; wajib untuk aksi `set` |
+
+Koreksi tetap dipakai saat rekap dibangun ulang, termasuk setelah scan baru.
+Untuk membatalkan koreksi, hapus seluruh baris koreksi terkait. Jangan
+membuat lebih dari satu baris untuk peserta, tanggal, dan jenis absensi yang
+sama.
 
 Tab **Absensi** disembunyikan; tab itu menyimpan semua catatan sumber dan ID
 sinkronisasi beserta ID peserta yang stabil agar kiriman ulang dan perubahan
@@ -49,12 +73,15 @@ berjalan dan diperbarui setiap batch absensi diterima.
    sinkronisasi**, lalu klik **Simpan pengaturan**.
 7. Lakukan scan percobaan saat perangkat online. Pastikan nama peserta muncul
    satu kali dan jam masuk/keluar berada pada baris nama yang benar di tab
-   **Rekap Bulanan**.
+   **Rekap Bulanan**. Tab **Urutan Peserta** dan **Koreksi Absensi** dibuat
+   otomatis saat rekap pertama kali diperbarui.
 8. Muat ulang spreadsheet setelah deployment. Untuk menghapus riwayat secara
    permanen, pilih **Rekap Absensi → Reset semua riwayat**, masukkan `RESET_PIN`,
    lalu konfirmasi.
    Menu ini menghapus tab sumber serta rekap, dan menandai waktu penghapusan
    agar backfill lama dari backend tidak mengembalikan catatan tersebut.
+   Susunan di **Urutan Peserta** tetap disimpan; koreksi di **Koreksi Absensi**
+   dihapus bersama riwayat.
 
 ## Perubahan dan batasan
 
@@ -67,6 +94,8 @@ berjalan dan diperbarui setiap batch absensi diterima.
   sehingga rekap lama dengan kode peserta yang pernah berubah ikut tergabung.
 - Sheet menampilkan bulan berjalan saja; saat bulan berganti, tab rekap akan
   menampilkan bulan baru setelah penyegaran harian atau batch absensi berikutnya.
+- Mengubah urutan peserta dilakukan di **Urutan Peserta**, bukan di rekap;
+  urutannya tidak mengikuti abjad maupun urutan scan.
 - Jangan menambahkan atau menggeser kolom secara manual di **Absensi**. Script
   otomatis menambahkan kolom ID peserta saat memperbarui tab sumber lama.
   Menghapus isi tab **Rekap Bulanan** saja tidak menghapus sumbernya; rekap akan

@@ -1,5 +1,7 @@
 const DATA_SHEET_NAME = 'Absensi';
 const SUMMARY_SHEET_NAME = 'Rekap Bulanan';
+const ORDER_SHEET_NAME = 'Urutan Peserta';
+const CORRECTIONS_SHEET_NAME = 'Koreksi Absensi';
 const CLEAR_CUTOFF_PROPERTY = 'ATTENDANCE_CLEAR_CUTOFF_MS';
 const RESET_PIN_PROPERTY = 'RESET_PIN';
 const DATA_HEADERS = [
@@ -18,6 +20,15 @@ const DATA_HEADERS = [
 const LEGACY_DATA_HEADERS = DATA_HEADERS.slice(0, -1);
 const DATE_HEADERS = ['Masuk', 'Terlambat', 'Keluar'];
 const TOTAL_HEADERS = ['Total Terlambat', 'Total Hadir'];
+const ORDER_HEADERS = ['participant_id', 'Nama Peserta', 'Kode Peserta'];
+const CORRECTION_HEADERS = [
+  'participant_id',
+  'Nama Peserta',
+  'Tanggal',
+  'Jenis',
+  'Aksi',
+  'Waktu Koreksi',
+];
 
 function onOpen() {
   SpreadsheetApp.getUi()
@@ -58,9 +69,18 @@ function clearAllAttendanceHistory() {
     const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
     const dataSheet = getDataSheet(spreadsheet);
     const summarySheet = getSummarySheet(spreadsheet);
+    const correctionsSheet = getAttendanceCorrectionsSheet(spreadsheet);
     dataSheet.clearContents();
     dataSheet.getRange(1, 1, 1, DATA_HEADERS.length).setValues([DATA_HEADERS]);
     summarySheet.clear();
+    if (correctionsSheet.getLastRow() > 1) {
+      correctionsSheet.getRange(
+        2,
+        1,
+        correctionsSheet.getLastRow() - 1,
+        CORRECTION_HEADERS.length,
+      ).clearContent();
+    }
     PropertiesService.getScriptProperties().setProperty(
       CLEAR_CUTOFF_PROPERTY,
       String(Date.now()),
@@ -225,6 +245,47 @@ function getSummarySheet(spreadsheet) {
   return sheet;
 }
 
+function getParticipantOrderSheet(spreadsheet) {
+  return getSupportSheet(spreadsheet, ORDER_SHEET_NAME, ORDER_HEADERS);
+}
+
+function getAttendanceCorrectionsSheet(spreadsheet) {
+  return getSupportSheet(spreadsheet, CORRECTIONS_SHEET_NAME, CORRECTION_HEADERS);
+}
+
+function getSupportSheet(spreadsheet, sheetName, headers) {
+  let sheet = spreadsheet.getSheetByName(sheetName);
+  if (!sheet) sheet = spreadsheet.insertSheet(sheetName);
+  if (sheet.isSheetHidden()) sheet.showSheet();
+  if (sheet.getLastRow() === 0) {
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    sheet.setFrozenRows(1);
+    if (sheetName === CORRECTIONS_SHEET_NAME) {
+      const validationRows = Math.max(sheet.getMaxRows() - 1, 1);
+      sheet.getRange(2, 4, validationRows, 1).setDataValidation(
+        SpreadsheetApp.newDataValidation()
+          .requireValueInList(['check_in', 'check_out'], true)
+          .setAllowInvalid(false)
+          .build(),
+      );
+      sheet.getRange(2, 5, validationRows, 1).setDataValidation(
+        SpreadsheetApp.newDataValidation()
+          .requireValueInList(['set', 'clear'], true)
+          .setAllowInvalid(false)
+          .build(),
+      );
+      sheet.getRange(2, 3, validationRows, 1).setNumberFormat('yyyy-mm-dd');
+      sheet.getRange(2, 6, validationRows, 1).setNumberFormat('HH:mm:ss');
+    }
+  } else {
+    const actualHeaders = sheet.getRange(1, 1, 1, headers.length).getDisplayValues()[0];
+    if (headers.some((header, index) => actualHeaders[index] !== header)) {
+      throw new Error(`Invalid headers in ${sheetName}`);
+    }
+  }
+  return sheet;
+}
+
 function renderMonthlySummary(spreadsheet, dataSheet, summarySheet) {
   const timeZone = spreadsheet.getSpreadsheetTimeZone() || 'Asia/Jakarta';
   const rawRows = dataSheet.getLastRow() > 1
@@ -232,8 +293,16 @@ function renderMonthlySummary(spreadsheet, dataSheet, summarySheet) {
     : [];
   const records = rawRows.map((row) =>
     Object.fromEntries(DATA_HEADERS.map((header, index) => [header, row[index]])));
+  const participantOrder = updateParticipantOrderSheet(
+    getParticipantOrderSheet(spreadsheet),
+    records,
+  );
+  const corrections = readAttendanceCorrections(
+    getAttendanceCorrectionsSheet(spreadsheet),
+    timeZone,
+  );
   const monthKey = Utilities.formatDate(new Date(), timeZone, 'yyyy-MM');
-  const summary = buildMonthlySummary(records, timeZone, monthKey);
+  const summary = buildMonthlySummary(records, timeZone, monthKey, participantOrder, corrections);
   const firstTotalColumn = 3 + summary.dates.length * DATE_HEADERS.length;
   const lastColumn = firstTotalColumn + TOTAL_HEADERS.length - 1;
 
@@ -290,7 +359,112 @@ function unmergeSummaryHeaders(summarySheet) {
   headerRange.getMergedRanges().forEach((range) => range.breakApart());
 }
 
-function buildMonthlySummary(records, timeZone, monthKey) {
+function updateParticipantOrderSheet(sheet, records) {
+  const lastRow = sheet.getLastRow();
+  const oldRows = lastRow > 1
+    ? sheet.getRange(2, 1, lastRow - 1, ORDER_HEADERS.length).getValues()
+    : [];
+  const participants = new Map();
+  for (const record of records) {
+    const id = String(record.participant_id || '').trim();
+    if (!/^[1-9]\d*$/.test(id)) continue;
+    const timestamp = parseTimestamp(record.client_timestamp)?.getTime() || 0;
+    const current = participants.get(id);
+    if (!current || timestamp >= current.timestamp) {
+      participants.set(id, {
+        id,
+        name: String(record.participant_name || ''),
+        code: String(record.participant_code || ''),
+        timestamp,
+      });
+    }
+  }
+
+  const existingIds = new Set();
+  const updatedRows = oldRows.map((row) => {
+    const id = String(row[0] || '').trim();
+    if (!id) return row;
+    existingIds.add(id);
+    const participant = participants.get(id);
+    return participant
+      ? [id, participant.name || row[1], participant.code || row[2]]
+      : row;
+  });
+  if (updatedRows.length) {
+    sheet.getRange(2, 1, updatedRows.length, ORDER_HEADERS.length).setValues(updatedRows);
+  }
+
+  const newRows = Array.from(participants.values())
+    .filter((participant) => !existingIds.has(participant.id))
+    .sort((left, right) => compareParticipantIds(left.id, right.id))
+    .map((participant) => [participant.id, participant.name, participant.code]);
+  if (newRows.length) {
+    sheet.getRange(sheet.getLastRow() + 1, 1, newRows.length, ORDER_HEADERS.length)
+      .setValues(newRows);
+  }
+
+  const allRows = sheet.getLastRow() > 1
+    ? sheet.getRange(2, 1, sheet.getLastRow() - 1, ORDER_HEADERS.length).getDisplayValues()
+    : [];
+  const order = new Map();
+  allRows.forEach((row, index) => {
+    const id = String(row[0] || '').trim();
+    if (/^[1-9]\d*$/.test(id) && !order.has(id)) order.set(id, index);
+  });
+  return order;
+}
+
+function readAttendanceCorrections(sheet, timeZone) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return new Map();
+  const rows = sheet.getRange(2, 1, lastRow - 1, CORRECTION_HEADERS.length).getValues();
+  const corrections = new Map();
+  rows.forEach((row, index) => {
+    const [rawId, , rawDate, rawEventType, rawAction, rawTime] = row;
+    if (row.every((value) => value == null || String(value).trim() === '')) return;
+    const participantId = String(rawId || '').trim();
+    const date = attendanceDateKey(rawDate, timeZone);
+    const eventType = String(rawEventType || '').trim();
+    const action = String(rawAction || '').trim().toLowerCase();
+    const rowNumber = index + 2;
+    if (!/^[1-9]\d*$/.test(participantId) || !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+        !['check_in', 'check_out'].includes(eventType) || !['set', 'clear'].includes(action)) {
+      throw new Error(`Koreksi Absensi baris ${rowNumber} tidak lengkap atau tidak valid.`);
+    }
+    const time = action === 'set' ? normalizeCorrectionTime(rawTime, timeZone, rowNumber) : '';
+    const key = `${participantId}\u0000${date}\u0000${eventType}`;
+    if (corrections.has(key)) {
+      throw new Error(`Koreksi Absensi ganda untuk peserta ${participantId}, tanggal ${date}, ${eventType}.`);
+    }
+    corrections.set(key, { participantId, date, eventType, action, time });
+  });
+  return corrections;
+}
+
+function normalizeCorrectionTime(value, timeZone, rowNumber) {
+  const text = value instanceof Date
+    ? Utilities.formatDate(value, timeZone, 'HH:mm:ss')
+    : String(value || '').trim();
+  const match = /^(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(text);
+  if (!match) {
+    throw new Error(`Waktu Koreksi pada baris ${rowNumber} harus berformat HH:mm atau HH:mm:ss.`);
+  }
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  const second = Number(match[3] || 0);
+  if (hour > 23 || minute > 59 || second > 59) {
+    throw new Error(`Waktu Koreksi pada baris ${rowNumber} bukan waktu yang valid.`);
+  }
+  return `${match[1]}:${match[2]}:${String(second).padStart(2, '0')}`;
+}
+
+function compareParticipantIds(left, right) {
+  const leftId = String(left).replace(/^0+(?=\d)/, '');
+  const rightId = String(right).replace(/^0+(?=\d)/, '');
+  return leftId.length - rightId.length || leftId.localeCompare(rightId);
+}
+
+function buildMonthlySummary(records, timeZone, monthKey, participantOrder = new Map(), corrections = new Map()) {
   const dates = new Set();
   const participants = new Map();
 
@@ -313,10 +487,14 @@ function buildMonthlySummary(records, timeZone, monthKey) {
     let participant = participants.get(participantKey);
     if (!participant) {
       participant = { name, days: new Map() };
+      participant.id = participantId;
+      participant.code = participantCode;
       participants.set(participantKey, participant);
     } else if (!participant.name && name) {
       participant.name = name;
     }
+    if (!participant.id && participantId) participant.id = participantId;
+    if (!participant.code && participantCode) participant.code = participantCode;
 
     let day = participant.days.get(date);
     if (!day) {
@@ -346,9 +524,29 @@ function buildMonthlySummary(records, timeZone, monthKey) {
     dates.add(date);
   }
 
+  for (const correction of corrections.values()) {
+    if (correction.date.slice(0, 7) !== monthKey) continue;
+    const participant = participants.get(`id:${correction.participantId}`);
+    const day = participant?.days.get(correction.date);
+    if (!day) continue;
+    const value = correction.action === 'clear' ? '' : correction.time;
+    if (correction.eventType === 'check_in') day.checkIn = value;
+    else day.checkOut = value;
+  }
+
   const sortedDates = Array.from(dates).sort();
   const sortedParticipants = Array.from(participants.values())
-    .sort((left, right) => left.name.localeCompare(right.name));
+    .sort((left, right) => {
+      const leftOrder = participantOrder.get(String(left.id || ''));
+      const rightOrder = participantOrder.get(String(right.id || ''));
+      if (leftOrder !== undefined || rightOrder !== undefined) {
+        if (leftOrder === undefined) return 1;
+        if (rightOrder === undefined) return -1;
+        return leftOrder - rightOrder;
+      }
+      if (left.id && right.id) return compareParticipantIds(left.id, right.id);
+      return String(left.code || left.name).localeCompare(String(right.code || right.name));
+    });
   const rows = sortedParticipants.map((participant, index) => {
     let totalLateMinutes = 0;
     let totalAttendance = 0;
