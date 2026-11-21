@@ -1625,19 +1625,61 @@ export default function App() {
     }
   }
 
+  function updateWeeklySchedule(weekday: number, updates: Partial<WeeklySchedule>) {
+    setOperationalForm((current) => {
+      const schedules = weekDays.map((_name, day) => {
+        const existing = current.weekly_schedules.find((item) => Number(item.weekday) === day);
+        return existing ? {
+          ...existing,
+          weekday: day,
+          is_working_day: Boolean(Number(existing.is_working_day)),
+        } : {
+          weekday: day,
+          is_working_day: day >= 1 && day <= 5,
+          check_in_deadline: current.check_in_deadline,
+          lateness_tolerance_minutes: current.lateness_tolerance_minutes,
+          check_out_start: current.check_out_start,
+        };
+      });
+      return {
+        ...current,
+        weekly_schedules: schedules.map((schedule) => schedule.weekday === weekday
+          ? { ...schedule, ...updates }
+          : schedule),
+      };
+    });
+  }
+
   async function saveSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!session) return;
     try {
+      const weeklySchedules = weekDays.map((_name, weekday) => {
+        const schedule = operationalForm.weekly_schedules.find(
+          (item) => Number(item.weekday) === weekday,
+        );
+        return {
+          weekday,
+          is_working_day: schedule
+            ? Boolean(Number(schedule.is_working_day))
+            : weekday >= 1 && weekday <= 5,
+          check_in_deadline: schedule?.check_in_deadline ?? operationalForm.check_in_deadline,
+          lateness_tolerance_minutes: Number(schedule?.lateness_tolerance_minutes ??
+            operationalForm.lateness_tolerance_minutes),
+          check_out_start: schedule?.check_out_start ?? operationalForm.check_out_start,
+        };
+      });
       const result = await request<unknown>('/school/settings', session.token, {
         method: 'PUT',
         body: {
           ...operationalForm,
+          weekly_schedules: weeklySchedules,
           ...(scannerPinForm ? { scanner_pin: scannerPinForm } : {}),
         },
       });
       const nextSettings = {
         ...operationalForm,
+        weekly_schedules: weeklySchedules,
         ...((result as { settings?: Partial<OperationalSettings> }).settings ?? {}),
         participant_overrides: settings.participant_overrides,
       };
@@ -2185,20 +2227,76 @@ export default function App() {
               {can('settings.operational.edit') && <form className="panel settings-form" onSubmit={(event) => void saveSettings(event)}>
                 <div className="form-grid">
                   <label>Zona waktu<input value={operationalForm.timezone} onChange={(event) => setOperationalForm((current) => ({ ...current, timezone: event.target.value }))} /></label>
-                  <label>Batas masuk<input type="time" required value={operationalForm.check_in_deadline.slice(0, 5)} onChange={(event) => setOperationalForm((current) => ({ ...current, check_in_deadline: `${event.target.value}:00` }))} /></label>
-                  <label>Toleransi telat (menit)<input type="number" min={0} max={180} value={operationalForm.lateness_tolerance_minutes} onChange={(event) => setOperationalForm((current) => ({ ...current, lateness_tolerance_minutes: Number(event.target.value) }))} /></label>
-                  <label>Mulai pulang<input type="time" required value={operationalForm.check_out_start.slice(0, 5)} onChange={(event) => setOperationalForm((current) => ({ ...current, check_out_start: `${event.target.value}:00` }))} /></label>
+                  <label>Batas masuk default<input type="time" required value={operationalForm.check_in_deadline.slice(0, 5)} onChange={(event) => setOperationalForm((current) => ({ ...current, check_in_deadline: `${event.target.value}:00` }))} /></label>
+                  <label>Toleransi telat default (menit)<input type="number" min={0} max={180} value={operationalForm.lateness_tolerance_minutes} onChange={(event) => setOperationalForm((current) => ({ ...current, lateness_tolerance_minutes: Number(event.target.value) }))} /></label>
+                  <label>Mulai pulang default<input type="time" required value={operationalForm.check_out_start.slice(0, 5)} onChange={(event) => setOperationalForm((current) => ({ ...current, check_out_start: `${event.target.value}:00` }))} /></label>
                   <label>PIN scanner (4–6 angka)
                     <input type="password" inputMode="numeric" pattern="\d{4,6}" minLength={4} maxLength={6} value={scannerPinForm} onChange={(event) => setScannerPinForm(event.target.value.replace(/\D/g, '').slice(0, 6))} placeholder={operationalForm.scanner_pin_configured ? 'PIN tersimpan — kosongkan untuk tidak mengubah' : 'Belum ada PIN khusus; awal 1234'} />
                   </label>
                 </div>
-                <h2>Jadwal mingguan</h2>
+                <div>
+                  <h2>Jadwal mingguan</h2>
+                  <p className="muted">Centang hari kerja lalu atur batas masuk, toleransi, dan mulai pulang masing-masing hari.</p>
+                </div>
                 <div className="schedule-list">{weekDays.map((name, weekday) => {
-                  const schedule = operationalForm.weekly_schedules.find((item) => Number(item.weekday) === weekday);
-                  return <label className="schedule-row" key={weekday}><span>{name}</span><input type="checkbox" checked={schedule ? Boolean(Number(schedule.is_working_day)) : weekday > 0 && weekday < 6} onChange={(event) => setOperationalForm((current) => {
-                    const existing = current.weekly_schedules.filter((item) => Number(item.weekday) !== weekday);
-                    return { ...current, weekly_schedules: [...existing, { weekday, is_working_day: event.target.checked, check_in_deadline: current.check_in_deadline, lateness_tolerance_minutes: current.lateness_tolerance_minutes, check_out_start: current.check_out_start }].sort((a, b) => a.weekday - b.weekday) };
-                  })} /><span>Hari kerja</span></label>;
+                  const schedule = operationalForm.weekly_schedules.find(
+                    (item) => Number(item.weekday) === weekday,
+                  ) ?? {
+                    weekday,
+                    is_working_day: weekday >= 1 && weekday <= 5,
+                    check_in_deadline: operationalForm.check_in_deadline,
+                    lateness_tolerance_minutes: operationalForm.lateness_tolerance_minutes,
+                    check_out_start: operationalForm.check_out_start,
+                  };
+                  const workingDay = Boolean(Number(schedule.is_working_day));
+                  return <div className="schedule-row" key={weekday}>
+                    <strong>{name}</strong>
+                    <label className="schedule-working-toggle">
+                      <input
+                        type="checkbox"
+                        checked={workingDay}
+                        onChange={(event) => updateWeeklySchedule(weekday, {
+                          is_working_day: event.target.checked,
+                        })}
+                      />
+                      Hari kerja
+                    </label>
+                    <label>Batas masuk
+                      <input
+                        type="time"
+                        required={workingDay}
+                        disabled={!workingDay}
+                        value={schedule.check_in_deadline.slice(0, 5)}
+                        onChange={(event) => updateWeeklySchedule(weekday, {
+                          check_in_deadline: `${event.target.value}:00`,
+                        })}
+                      />
+                    </label>
+                    <label>Toleransi (menit)
+                      <input
+                        type="number"
+                        min={0}
+                        max={180}
+                        required={workingDay}
+                        disabled={!workingDay}
+                        value={schedule.lateness_tolerance_minutes}
+                        onChange={(event) => updateWeeklySchedule(weekday, {
+                          lateness_tolerance_minutes: Number(event.target.value),
+                        })}
+                      />
+                    </label>
+                    <label>Mulai pulang
+                      <input
+                        type="time"
+                        required={workingDay}
+                        disabled={!workingDay}
+                        value={schedule.check_out_start.slice(0, 5)}
+                        onChange={(event) => updateWeeklySchedule(weekday, {
+                          check_out_start: `${event.target.value}:00`,
+                        })}
+                      />
+                    </label>
+                  </div>;
                 })}</div>
                 <section className="attendance-speech-settings">
                   <div>

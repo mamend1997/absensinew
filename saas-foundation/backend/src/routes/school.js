@@ -1019,7 +1019,7 @@ router.put('/settings', requireSchoolUser, requirePermission('settings.operation
   const holidays = body.holidays ?? [];
   if (!Array.isArray(schedules) || schedules.some((item) =>
     !Number.isInteger(item.weekday) || item.weekday < 0 || item.weekday > 6 ||
-    typeof item.is_working_day !== 'boolean' ||
+    ![true, false, 0, 1].includes(item.is_working_day) ||
     (item.lateness_tolerance_minutes !== undefined &&
       (!Number.isInteger(item.lateness_tolerance_minutes) || item.lateness_tolerance_minutes < 0 || item.lateness_tolerance_minutes > 180)) ||
     (item.check_in_deadline !== undefined && !timePattern.test(item.check_in_deadline)) ||

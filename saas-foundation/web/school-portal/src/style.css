@@ -265,10 +265,14 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
 .scanner-preference-panel .muted { margin: 0; }
 .scanner-usb-toggle { display: flex !important; align-items: center; gap: 9px; cursor: pointer; }
 .scanner-usb-toggle input { width: 18px; min-height: 18px; accent-color: #176f4c; }
-.schedule-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 12px; }
-.schedule-row { display: flex; min-height: 35px; align-items: center; gap: 8px; border-bottom: 1px solid #eff3ef; font-size: 10px; }
-.schedule-row span:first-child { width: 70px; color: #334b40; }
-.schedule-row span:last-child { color: #66776f; font-weight: 500; }
+.schedule-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 560px), 1fr)); gap: 9px; }
+.schedule-row { display: grid; grid-template-columns: minmax(60px, .55fr) minmax(92px, .75fr) repeat(3, minmax(95px, 1fr)); align-items: end; gap: 8px; border: 1px solid #e7eee8; border-radius: 10px; padding: 10px; }
+.schedule-row > strong { align-self: center; color: #334b40; font-size: 10px; }
+.schedule-row label { gap: 5px; font-size: 9px; }
+.schedule-row input { min-height: 36px; padding: 6px 7px; }
+.schedule-row input:disabled { opacity: .55; }
+.schedule-working-toggle { display: flex; align-items: center; align-self: center; gap: 7px; white-space: nowrap; }
+.schedule-working-toggle input { width: 16px; min-height: 16px; accent-color: #176f4c; }
 .holiday-form { display: grid; gap: 13px; }
 .holiday-form .form-grid { grid-template-columns: 1fr 1.4fr auto; }
 .holiday-form .muted { margin: 4px 0 0; }
@@ -340,6 +344,7 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
   .form-grid, .holiday-form .form-grid { grid-template-columns: 1fr; }
   .form-grid .wide { grid-column: auto; }
   .schedule-list { grid-template-columns: 1fr; }
+  .schedule-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .participant-import .heading-actions { align-items: stretch; flex-direction: column; }
   .participant-import .heading-actions > * { width: 100%; }
   .section-title { align-items: flex-start; flex-direction: column; }
