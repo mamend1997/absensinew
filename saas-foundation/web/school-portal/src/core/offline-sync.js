@@ -1,5 +1,10 @@
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+export function isNetworkUnavailableError(error) {
+  return error instanceof TypeError &&
+    /failed to fetch|network error|network request failed|load failed/i.test(error.message);
+}
+
 function assertQueuedScan(scan, schoolId) {
   if (!scan || String(scan.sekolah_id) !== String(schoolId)) {
     throw new Error('Scan tidak termasuk sekolah pada antrean perangkat ini.');

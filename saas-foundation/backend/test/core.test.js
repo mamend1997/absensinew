@@ -16,6 +16,7 @@ import {
   hasTenantPermission,
 } from '../src/core/permissions.js';
 import { createOfflineSyncManager } from '../src/core/offline-sync.js';
+import { isNetworkUnavailableError } from '../../web/school-portal/src/core/offline-sync.js';
 
 test('school codes keep leading zeroes, validate manual changes, and retry collisions', async () => {
   assert.equal(isValidSchoolCode('0042'), true);
@@ -305,4 +306,11 @@ test('offline queue rejects scans from another tenant', async () => {
     manager.enqueue(scan('5a2c6ec7-33cb-4a2d-b205-7a2be89146e2', '11')),
     /tidak termasuk sekolah/,
   );
+});
+
+test('offline scanner recognizes browser fetch failures without hiding API errors', () => {
+  assert.equal(isNetworkUnavailableError(new TypeError('Failed to fetch')), true);
+  assert.equal(isNetworkUnavailableError(new TypeError('Load failed')), true);
+  assert.equal(isNetworkUnavailableError(new Error('Unauthorized')), false);
+  assert.equal(isNetworkUnavailableError(new TypeError('Invalid URL')), false);
 });

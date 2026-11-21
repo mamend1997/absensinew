@@ -8,7 +8,7 @@ import {
   calculateAttendance,
   createQueuedScan,
 } from './core/attendance.js';
-import { createOfflineSyncManager } from './core/offline-sync.js';
+import { createOfflineSyncManager, isNetworkUnavailableError } from './core/offline-sync.js';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '');
 const DEFAULT_WHATSAPP_GATEWAY_URL = 'https://gateway-production-a1168195.up.railway.app/api/send-message';
@@ -1138,6 +1138,11 @@ export default function App() {
   useEffect(() => {
     if (!session || page !== 'scanner' || !online) return;
     void syncPending().catch((reason: unknown) => {
+      if (isNetworkUnavailableError(reason)) {
+        setOfflineMode(true);
+        if (!navigator.onLine) setOnline(false);
+        return;
+      }
       setError(reason instanceof Error ? reason.message : 'Sinkronisasi otomatis gagal.');
     });
   }, [online, page, session?.school.id]);
@@ -1151,6 +1156,11 @@ export default function App() {
     if (!session || page !== 'scanner' || !online) return;
     const timer = window.setInterval(() => {
       void syncPending().catch((reason: unknown) => {
+        if (isNetworkUnavailableError(reason)) {
+          setOfflineMode(true);
+          if (!navigator.onLine) setOnline(false);
+          return;
+        }
         setError(reason instanceof Error ? reason.message : 'Sinkronisasi otomatis gagal.');
       });
     }, 10000);
@@ -1533,22 +1543,34 @@ export default function App() {
     lastScanAtRef.current.set(value, now);
     let participant: Participant | undefined;
     try {
-      participant = findParticipantByScanCode(participants, value);
-      if (!participant && online) {
-        const result = await request<unknown>('/school/participants', session.token);
-        const refreshedParticipants = unwrapArray<Participant>(result, 'participants')
-          .map((item) => ({ ...item, id: String(item.id) }));
-        setParticipants(refreshedParticipants);
-        const db = await database(session.school.id);
-        const transaction = db.transaction('participants', 'readwrite');
-        await transaction.store.clear();
-        for (const item of refreshedParticipants) await transaction.store.put(item);
-        await transaction.done;
-        participant = findParticipantByScanCode(refreshedParticipants, value);
-      }
-      if (!participant) throw new Error('QR/barcode tidak ditemukan di master peserta lokal.');
-      const matchedParticipant = participant;
       const db = await database(session.school.id);
+      participant = findParticipantByScanCode(participants, value);
+      if (!participant) {
+        const cachedParticipants = await db.getAll('participants');
+        participant = findParticipantByScanCode(cachedParticipants, value);
+        if (cachedParticipants.length) setParticipants(cachedParticipants);
+      }
+      if (!participant && online && navigator.onLine) {
+        try {
+          const result = await request<unknown>('/school/participants', session.token);
+          const refreshedParticipants = unwrapArray<Participant>(result, 'participants')
+            .map((item) => ({ ...item, id: String(item.id) }));
+          setParticipants(refreshedParticipants);
+          const transaction = db.transaction('participants', 'readwrite');
+          await transaction.store.clear();
+          for (const item of refreshedParticipants) await transaction.store.put(item);
+          await transaction.done;
+          participant = findParticipantByScanCode(refreshedParticipants, value);
+        } catch (reason) {
+          if (!isNetworkUnavailableError(reason)) throw reason;
+          setOfflineMode(true);
+          if (!navigator.onLine) setOnline(false);
+        }
+      }
+      if (!participant) {
+        throw new Error('QR/barcode tidak ditemukan di master peserta lokal. Hubungkan internet dan sinkronkan master peserta terlebih dahulu.');
+      }
+      const matchedParticipant = participant;
       const allScans = await db.getAll('queue');
       let initialCalculation = calculateAttendance({
         eventType: 'check_in',
@@ -1556,18 +1578,24 @@ export default function App() {
         participantId: matchedParticipant.id,
         settings: scanSettings,
       }) as ScanResult;
-      if (initialCalculation.reason === 'non_working_day' && online) {
-        scanSettings = operationalSettingsFromResponse(
-          await request<unknown>('/school/settings', session.token),
-        );
-        setSettings(scanSettings);
-        await db.put('settings', scanSettings, 'operational');
-        initialCalculation = calculateAttendance({
-          eventType: 'check_in',
-          clientTimestamp: new Date().toISOString(),
-          participantId: matchedParticipant.id,
-          settings: scanSettings,
-        }) as ScanResult;
+      if (initialCalculation.reason === 'non_working_day' && online && navigator.onLine) {
+        try {
+          scanSettings = operationalSettingsFromResponse(
+            await request<unknown>('/school/settings', session.token),
+          );
+          setSettings(scanSettings);
+          await db.put('settings', scanSettings, 'operational');
+          initialCalculation = calculateAttendance({
+            eventType: 'check_in',
+            clientTimestamp: new Date().toISOString(),
+            participantId: matchedParticipant.id,
+            settings: scanSettings,
+          }) as ScanResult;
+        } catch (reason) {
+          if (!isNetworkUnavailableError(reason)) throw reason;
+          setOfflineMode(true);
+          if (!navigator.onLine) setOnline(false);
+        }
       }
       const dailyState = await db.get(
         'attendanceState',
@@ -1635,6 +1663,7 @@ export default function App() {
             }
             return false;
           }
+          if (isNetworkUnavailableError(reason)) setOfflineMode(true);
           console.warn('Scan tetap tersimpan lokal; sinkronisasi akan dicoba ulang.', reason);
         }
       }
