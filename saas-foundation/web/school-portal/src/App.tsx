@@ -8,6 +8,8 @@ import {
   calculateAttendance,
   createQueuedScan,
 } from './core/attendance.js';
+import { extractSchoolAccessToken } from './core/auth-session.js';
+import { getDefaultPage } from './core/navigation.js';
 import { createOfflineSyncManager, isNetworkUnavailableError } from './core/offline-sync.js';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '');
@@ -282,7 +284,7 @@ interface SchoolWhatsappGatewaySettings {
   is_configured: boolean;
   token_hint: string;
   last_test_at: string | null;
-  last_test_status: 'success' | 'failed' | null;
+  last_test_status: 'success' | 'failed' | 'accepted' | null;
   last_test_message: string | null;
 }
 interface QueuedScan {
@@ -379,13 +381,11 @@ function readSession(): SchoolSession | null {
 }
 
 function initialPage(currentSession: SchoolSession): Page {
-  if (currentSession.school.subscription_expired ||
-      new URLSearchParams(window.location.search).get('billing') === 'return') return 'billing';
-  const permissions = currentSession.user.permissions;
-  return hasPermission(permissions, 'scanner.use') &&
-    (!hasPermission(permissions, 'dashboard.view') || window.matchMedia('(max-width: 900px)').matches)
-    ? 'scanner'
-    : 'dashboard';
+  return getDefaultPage({
+    subscriptionExpired: currentSession.school.subscription_expired,
+    billingReturn: new URLSearchParams(window.location.search).get('billing') === 'return',
+    canScan: hasPermission(currentSession.user.permissions, 'scanner.use'),
+  });
 }
 
 function playAttendanceTone(success: boolean) {
@@ -717,8 +717,12 @@ export default function App() {
   const [schoolBackupBusy, setSchoolBackupBusy] = useState(false);
   const [schoolRestoreFile, setSchoolRestoreFile] = useState<File | null>(null);
   const [schoolRestoreConfirmation, setSchoolRestoreConfirmation] = useState('');
-  const [page, setPage] = useState<Page>(() =>
-    new URLSearchParams(window.location.search).get('billing') === 'return' ? 'billing' : 'dashboard');
+  const [page, setPage] = useState<Page>(() => {
+    if (session) return initialPage(session);
+    return new URLSearchParams(window.location.search).get('billing') === 'return'
+      ? 'billing'
+      : 'dashboard';
+  });
   const [loginView, setLoginView] = useState<LoginView>('login');
   const [loginForm, setLoginForm] = useState({ school_code: '', username: '', password: '' });
   const [registrationForm, setRegistrationForm] = useState(initialRegistrationForm);
@@ -921,6 +925,7 @@ export default function App() {
     if (!session) return;
     let active = true;
     let firstCheck = true;
+    let offlineBootstrapDone = false;
     const refreshSchoolSession = async () => {
       try {
         const result = await request<{ session?: SchoolSession; school?: SchoolInfo; user?: UserInfo }>(
@@ -948,6 +953,15 @@ export default function App() {
       } catch (reason) {
         if (!active) return;
         setOfflineMode(true);
+        if (isNetworkUnavailableError(reason)) {
+          if (!navigator.onLine) setOnline(false);
+          if (firstCheck && !offlineBootstrapDone) {
+            offlineBootstrapDone = true;
+            setPage(initialPage(session));
+            if (!session.school.subscription_expired) void loadSchoolData(session);
+          }
+          return;
+        }
         setError(reason instanceof Error ? reason.message : 'Sesi sekolah gagal diperbarui.');
       }
     };
@@ -1183,6 +1197,14 @@ export default function App() {
       setSettings(normalizedCachedSettings);
       setOperationalForm(normalizedCachedSettings);
     }
+    if (!navigator.onLine) {
+      setOfflineMode(true);
+      if (canReadMaster && !cached.length) {
+        setError('Master peserta lokal belum tersedia. Hubungkan internet untuk menyinkronkannya sebelum scan.');
+      }
+      await refreshPendingCount(currentSession.school.id);
+      return;
+    }
     try {
       const [participantResult, classroomResult, settingResult] = await Promise.all([
         canReadMaster ? request<unknown>('/school/participants', currentSession.token) : Promise.resolve(null),
@@ -1212,7 +1234,11 @@ export default function App() {
     } catch (reason) {
       setOfflineMode(true);
       if (canReadMaster && !cached.length) {
-        setError(reason instanceof Error ? `${reason.message} Master peserta lokal belum tersedia.` : 'Tidak dapat memuat master peserta lokal.');
+        setError(isNetworkUnavailableError(reason)
+          ? 'Master peserta lokal belum tersedia. Hubungkan internet untuk menyinkronkannya sebelum scan.'
+          : reason instanceof Error
+            ? `${reason.message} Master peserta lokal belum tersedia.`
+            : 'Tidak dapat memuat master peserta lokal.');
       }
     }
     await refreshPendingCount(currentSession.school.id);
@@ -1280,22 +1306,23 @@ export default function App() {
     setBusy(true);
     setError('');
     try {
-      const result = await request<{ access_token?: string }>('/school/auth/login', undefined, {
+      const result = await request<unknown>('/school/auth/login', undefined, {
         method: 'POST',
         body: loginForm,
       });
-      if (typeof result?.access_token !== 'string' || !result.access_token.trim()) {
+      const accessToken = extractSchoolAccessToken(result);
+      if (!accessToken) {
         throw new Error('Respons login tidak memuat token sesi sekolah yang valid.');
       }
       const current = await request<{ user?: UserInfo; school?: SchoolInfo }>(
         '/school/auth/me',
-        result.access_token,
+        accessToken,
       );
       if (!current.user || !current.school || !Array.isArray(current.user.permissions)) {
         throw new Error('Backend tidak mengembalikan profil sesi sekolah yang valid.');
       }
       const nextSession: SchoolSession = {
-        token: result.access_token,
+        token: accessToken,
         school: current.school,
         user: current.user,
       };
@@ -2725,7 +2752,8 @@ export default function App() {
         { method: 'POST', body: { phone: `+62${whatsappTestPhone}` } },
       );
       setWhatsappSettings((current) => ({ ...current, ...result.log }));
-      if (result.log.last_test_status === 'success') setNotice('Tes WA gateway sekolah berhasil dikirim.');
+      if (result.log.last_test_status === 'success') setNotice('Gateway mengonfirmasi pesan tes terkirim.');
+      else if (result.log.last_test_status === 'accepted') setNotice(result.log.last_test_message ?? 'Gateway menerima permintaan, tetapi pengiriman belum terkonfirmasi.');
       else setError(result.log.last_test_message ?? 'Tes WA gateway sekolah gagal.');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Tes WA gateway sekolah gagal.');
@@ -3403,7 +3431,7 @@ export default function App() {
                     <button className="button secondary" type="button" disabled={whatsappBusy || whatsappTestBusy || !whatsappSettings.is_configured} onClick={() => void clearSchoolWhatsappSettings()}>Hapus konfigurasi</button>
                   </div>
                   {whatsappSettings.last_test_status && <div className={`gateway-test-log ${whatsappSettings.last_test_status}`}>
-                    <strong>Log tes terakhir · {whatsappSettings.last_test_status === 'success' ? 'Berhasil' : 'Gagal'}</strong>
+                    <strong>Log tes terakhir · {whatsappSettings.last_test_status === 'success' ? 'Terkirim' : whatsappSettings.last_test_status === 'accepted' ? 'Diterima, belum terkonfirmasi' : 'Gagal'}</strong>
                     {whatsappSettings.last_test_at && <time>{whatsappSettings.last_test_at} UTC</time>}
                     <p>{whatsappSettings.last_test_message}</p>
                   </div>}

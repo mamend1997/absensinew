@@ -36,7 +36,7 @@ interface WhatsappGatewaySettings {
   is_configured: boolean;
   token_hint: string;
   last_test_at: string | null;
-  last_test_status: 'success' | 'failed' | null;
+  last_test_status: 'success' | 'failed' | 'accepted' | null;
   last_test_message: string | null;
 }
 
@@ -1232,7 +1232,8 @@ export default function App() {
         { method: 'POST', body: { phone: `+62${gatewayTestPhone}` } },
       );
       setGatewaySettings((current) => ({ ...current, ...result.log }));
-      if (result.log.last_test_status === 'success') setNotice('Tes WA gateway berhasil dikirim.');
+      if (result.log.last_test_status === 'success') setNotice('Gateway mengonfirmasi pesan tes terkirim.');
+      else if (result.log.last_test_status === 'accepted') setNotice(result.log.last_test_message ?? 'Gateway menerima permintaan, tetapi pengiriman belum terkonfirmasi.');
       else setError(result.log.last_test_message ?? 'Tes WA gateway gagal.');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Tes WA gateway gagal.');
@@ -1635,7 +1636,7 @@ export default function App() {
               <button className="button secondary" type="button" disabled={gatewayBusy || gatewayTestBusy || !gatewaySettings.is_configured} onClick={() => void clearWhatsappGateway()}>Hapus konfigurasi</button>
             </div>
             {gatewaySettings.last_test_status && <div className={`gateway-test-log ${gatewaySettings.last_test_status}`}>
-              <strong>Log tes terakhir · {gatewaySettings.last_test_status === 'success' ? 'Berhasil' : 'Gagal'}</strong>
+              <strong>Log tes terakhir · {gatewaySettings.last_test_status === 'success' ? 'Terkirim' : gatewaySettings.last_test_status === 'accepted' ? 'Diterima, belum terkonfirmasi' : 'Gagal'}</strong>
               {gatewaySettings.last_test_at && <time>{gatewaySettings.last_test_at} UTC</time>}
               <p>{gatewaySettings.last_test_message}</p>
             </div>}

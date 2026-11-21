@@ -107,6 +107,17 @@ export function extractGatewayResponseFailure(body, token, phone) {
     : 'Gateway melaporkan pengiriman gagal.';
 }
 
+export function isGatewayDeliveryConfirmed(body) {
+  let payload;
+  try { payload = JSON.parse(body); } catch { return false; }
+  if (!payload || typeof payload !== 'object') return false;
+  const status = typeof payload.status === 'string' ? payload.status.toLowerCase() : '';
+  const deliveryStatus = typeof payload.delivery_status === 'string'
+    ? payload.delivery_status.toLowerCase()
+    : '';
+  return payload.delivered === true || status === 'delivered' || deliveryStatus === 'delivered';
+}
+
 export async function sendWhatsappMessage(urlValue, token, phone, message) {
   const url = validateGatewayUrl(urlValue);
   let addresses;
@@ -148,24 +159,21 @@ export async function sendWhatsappMessage(urlValue, token, phone, message) {
         responseBytes += boundedData.length;
       });
       response.on('end', () => {
+        const responseBody = Buffer.concat(responseChunks).toString('utf8');
         if (response.statusCode >= 200 && response.statusCode < 300) {
-          const deliveryFailure = extractGatewayResponseFailure(
-            Buffer.concat(responseChunks).toString('utf8'),
-            token,
-            phone,
-          );
+          const deliveryFailure = extractGatewayResponseFailure(responseBody, token, phone);
           if (deliveryFailure) {
             reject(fail(502, deliveryFailure, 'GATEWAY_DELIVERY_FAILED'));
           } else {
-            resolve();
+            resolve({
+              statusCode: response.statusCode,
+              deliveryConfirmed: isGatewayDeliveryConfirmed(responseBody),
+              detail: extractGatewayResponseDetail(responseBody, token, phone),
+            });
           }
         } else {
           const status = response.statusCode ?? 0;
-          const detail = extractGatewayResponseDetail(
-            Buffer.concat(responseChunks).toString('utf8'),
-            token,
-            phone,
-          );
+          const detail = extractGatewayResponseDetail(responseBody, token, phone);
           const diagnostic = detail ? ` Detail: ${detail}` : '';
           const hint = status === 401 || status === 403
             ? ' Periksa Bearer token gateway.'

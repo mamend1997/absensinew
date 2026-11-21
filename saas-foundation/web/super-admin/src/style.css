@@ -76,6 +76,7 @@ input:focus, select:focus { border-color: #39845d; box-shadow: 0 0 0 3px #39845d
 .gateway-status.ready { color: #217848; }
 .gateway-test-log { display: grid; gap: 4px; border: 1px solid #e0e8e2; border-radius: 9px; background: #f7faf7; padding: 10px; font-size: 10px; }
 .gateway-test-log.success { border-color: #cce7d4; background: #effaf2; color: #21633d; }
+.gateway-test-log.accepted { border-color: #ead9a9; background: #fff9e8; color: #755c16; }
 .gateway-test-log.failed { border-color: #f3ceca; background: #fff1ef; color: #8d322a; }
 .gateway-test-log time { color: #697973; font-size: 9px; }
 .gateway-test-log p { margin: 0; line-height: 1.5; }

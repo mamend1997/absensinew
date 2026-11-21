@@ -20,6 +20,7 @@ const {
   encryptGatewayToken,
   extractGatewayResponseFailure,
   extractGatewayResponseDetail,
+  isGatewayDeliveryConfirmed,
   validateGatewayUrl,
 } = await import('../src/core/whatsapp-gateway.js');
 
@@ -127,6 +128,15 @@ test('WhatsApp gateway rejects explicit delivery failures in successful HTTP res
     '',
   );
   assert.equal(extractGatewayResponseFailure('Accepted', 'token', 'phone'), '');
+});
+
+test('WhatsApp gateway only confirms delivery when the response explicitly says delivered', () => {
+  assert.equal(isGatewayDeliveryConfirmed(JSON.stringify({ status: 'delivered' })), true);
+  assert.equal(isGatewayDeliveryConfirmed(JSON.stringify({ delivered: true })), true);
+  assert.equal(isGatewayDeliveryConfirmed(JSON.stringify({ delivery_status: 'delivered' })), true);
+  assert.equal(isGatewayDeliveryConfirmed(JSON.stringify({ success: true, status: 'queued' })), false);
+  assert.equal(isGatewayDeliveryConfirmed('Accepted'), false);
+  assert.equal(isGatewayDeliveryConfirmed(''), false);
 });
 
 test('WhatsApp pinned DNS lookup honors Node requests for all resolved addresses', () => {

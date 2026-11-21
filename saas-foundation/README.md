@@ -102,7 +102,9 @@ Super Admin juga dapat mengatur endpoint WhatsApp gateway HTTPS yang menerima
 `POST` JSON `{ "phone": "...", "message": "..." }` dengan header Bearer. Token
 gateway dienkripsi dengan AES-GCM sebelum disimpan; OTP pendaftaran berlaku
 5 menit, dibatasi 5 percobaan verifikasi, dan permintaannya dibatasi per nomor
-serta IP. Pendaftaran mandiri membuat sekolah trial 30 hari setelah OTP benar.
+serta IP. Tes gateway membedakan permintaan yang hanya diterima dari konfirmasi
+`delivered`; HTTP 2xx saja tidak membuktikan pesan sampai ke ponsel. Pendaftaran
+mandiri membuat sekolah trial 30 hari setelah OTP benar.
 Username Admin sekolah baru adalah nomor WhatsApp yang telah dinormalisasi.
 Kata sandi harus memiliki minimal 8 karakter, huruf besar, angka, dan simbol.
 

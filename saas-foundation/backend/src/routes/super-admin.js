@@ -330,14 +330,16 @@ router.post('/settings/whatsapp-gateway/test', requireSuperAdmin, asyncRoute(asy
   let message = 'Gateway WhatsApp belum dikonfigurasi.';
   if (gateway?.endpoint_url && gateway.token_ciphertext) {
     try {
-      await sendWhatsappMessage(
+      const delivery = await sendWhatsappMessage(
         gateway.endpoint_url,
         decryptGatewayToken(gateway),
         phone,
         'Uji koneksi gateway WhatsApp Ruang Hadir. Jika pesan ini diterima, gateway siap digunakan.',
       );
-      status = 'success';
-      message = 'Gateway menerima permintaan (HTTP 2xx). Periksa WhatsApp penerima untuk memastikan pesan diterima.';
+      status = delivery.deliveryConfirmed ? 'success' : 'accepted';
+      message = delivery.deliveryConfirmed
+        ? `Gateway mengonfirmasi pesan delivered (HTTP ${delivery.statusCode}).`
+        : `Gateway menerima permintaan (HTTP ${delivery.statusCode}), tetapi belum mengonfirmasi pesan delivered.${delivery.detail ? ` Respons: ${delivery.detail}` : ''}`;
     } catch (error) {
       message = error instanceof Error ? error.message.slice(0, 500) : 'Pengiriman pesan uji gagal.';
     }

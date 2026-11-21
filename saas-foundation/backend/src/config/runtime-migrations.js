@@ -163,7 +163,7 @@ export async function ensureRuntimeMigrations(pool) {
   `);
   await pool.execute('INSERT IGNORE INTO whatsapp_gateway_config (id) VALUES (1)');
   const [platformGatewayColumns] = await pool.execute(
-    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+    `SELECT COLUMN_NAME, COLUMN_TYPE FROM information_schema.COLUMNS
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'whatsapp_gateway_config'`,
   );
   const platformGatewayColumnNames = new Set(platformGatewayColumns.map((column) => column.COLUMN_NAME));
@@ -171,7 +171,12 @@ export async function ensureRuntimeMigrations(pool) {
     await pool.execute('ALTER TABLE whatsapp_gateway_config ADD COLUMN last_test_at DATETIME NULL');
   }
   if (!platformGatewayColumnNames.has('last_test_status')) {
-    await pool.execute("ALTER TABLE whatsapp_gateway_config ADD COLUMN last_test_status ENUM('success', 'failed') NULL");
+    await pool.execute("ALTER TABLE whatsapp_gateway_config ADD COLUMN last_test_status ENUM('success', 'failed', 'accepted') NULL");
+  } else {
+    const statusColumn = platformGatewayColumns.find((column) => column.COLUMN_NAME === 'last_test_status');
+    if (!statusColumn.COLUMN_TYPE.includes("'accepted'")) {
+      await pool.execute("ALTER TABLE whatsapp_gateway_config MODIFY COLUMN last_test_status ENUM('success', 'failed', 'accepted') NULL");
+    }
   }
   if (!platformGatewayColumnNames.has('last_test_message')) {
     await pool.execute('ALTER TABLE whatsapp_gateway_config ADD COLUMN last_test_message VARCHAR(500) NULL');
@@ -192,7 +197,7 @@ export async function ensureRuntimeMigrations(pool) {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
   const [schoolGatewayColumns] = await pool.execute(
-    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+    `SELECT COLUMN_NAME, COLUMN_TYPE FROM information_schema.COLUMNS
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'school_whatsapp_gateway_config'`,
   );
   const schoolGatewayColumnNames = new Set(schoolGatewayColumns.map((column) => column.COLUMN_NAME));
@@ -200,7 +205,12 @@ export async function ensureRuntimeMigrations(pool) {
     await pool.execute('ALTER TABLE school_whatsapp_gateway_config ADD COLUMN last_test_at DATETIME NULL');
   }
   if (!schoolGatewayColumnNames.has('last_test_status')) {
-    await pool.execute("ALTER TABLE school_whatsapp_gateway_config ADD COLUMN last_test_status ENUM('success', 'failed') NULL");
+    await pool.execute("ALTER TABLE school_whatsapp_gateway_config ADD COLUMN last_test_status ENUM('success', 'failed', 'accepted') NULL");
+  } else {
+    const statusColumn = schoolGatewayColumns.find((column) => column.COLUMN_NAME === 'last_test_status');
+    if (!statusColumn.COLUMN_TYPE.includes("'accepted'")) {
+      await pool.execute("ALTER TABLE school_whatsapp_gateway_config MODIFY COLUMN last_test_status ENUM('success', 'failed', 'accepted') NULL");
+    }
   }
   if (!schoolGatewayColumnNames.has('last_test_message')) {
     await pool.execute('ALTER TABLE school_whatsapp_gateway_config ADD COLUMN last_test_message VARCHAR(500) NULL');

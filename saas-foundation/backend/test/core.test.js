@@ -17,6 +17,8 @@ import {
 } from '../src/core/permissions.js';
 import { createOfflineSyncManager } from '../src/core/offline-sync.js';
 import { isNetworkUnavailableError } from '../../web/school-portal/src/core/offline-sync.js';
+import { extractSchoolAccessToken } from '../../web/school-portal/src/core/auth-session.js';
+import { getDefaultPage } from '../../web/school-portal/src/core/navigation.js';
 
 test('school codes keep leading zeroes, validate manual changes, and retry collisions', async () => {
   assert.equal(isValidSchoolCode('0042'), true);
@@ -313,4 +315,30 @@ test('offline scanner recognizes browser fetch failures without hiding API error
   assert.equal(isNetworkUnavailableError(new TypeError('Load failed')), true);
   assert.equal(isNetworkUnavailableError(new Error('Unauthorized')), false);
   assert.equal(isNetworkUnavailableError(new TypeError('Invalid URL')), false);
+});
+
+test('default route opens scanner for scanner users, including offline-capable sessions', () => {
+  assert.equal(getDefaultPage({
+    subscriptionExpired: false,
+    billingReturn: false,
+    canScan: true,
+  }), 'scanner');
+  assert.equal(getDefaultPage({
+    subscriptionExpired: false,
+    billingReturn: false,
+    canScan: false,
+  }), 'dashboard');
+  assert.equal(getDefaultPage({
+    subscriptionExpired: true,
+    billingReturn: false,
+    canScan: true,
+  }), 'billing');
+});
+
+test('school login accepts supported token response keys and rejects malformed tokens', () => {
+  assert.equal(extractSchoolAccessToken({ access_token: ' bearer-token ' }), 'bearer-token');
+  assert.equal(extractSchoolAccessToken({ token: 'legacy-token' }), 'legacy-token');
+  assert.equal(extractSchoolAccessToken({ access_token: '' }), '');
+  assert.equal(extractSchoolAccessToken({ token: 123 }), '');
+  assert.equal(extractSchoolAccessToken(null), '');
 });

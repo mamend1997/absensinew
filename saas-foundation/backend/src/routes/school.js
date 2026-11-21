@@ -195,8 +195,9 @@ router.post('/auth/register/start', asyncRoute(async (req, res) => {
       hashRegistrationOtp(challengeId, otp, config.jwtSecret), ipHash],
   );
 
+  let delivery;
   try {
-    await sendWhatsappMessage(
+    delivery = await sendWhatsappMessage(
       gateway.endpoint_url,
       decryptGatewayToken(gateway),
       phone,
@@ -212,7 +213,10 @@ router.post('/auth/register/start', asyncRoute(async (req, res) => {
   res.status(202).json({
     challenge_id: challengeId,
     expires_in_seconds: 300,
-    message: 'Kode OTP telah dikirim ke WhatsApp admin.',
+    delivery_status: delivery.deliveryConfirmed ? 'delivered' : 'accepted',
+    message: delivery.deliveryConfirmed
+      ? 'Gateway mengonfirmasi OTP telah terkirim ke WhatsApp admin.'
+      : 'Gateway menerima permintaan OTP, tetapi belum mengonfirmasi pengiriman pesan. Periksa koneksi dan log gateway WhatsApp.',
   });
 }));
 
@@ -1301,8 +1305,10 @@ router.post('/settings/whatsapp-gateway/test', requireSchoolUser, requirePermiss
         phone,
         'Uji koneksi gateway WhatsApp sekolah. Jika pesan ini diterima, gateway siap digunakan.',
       );
-      status = 'success';
-      message = 'Gateway menerima permintaan (HTTP 2xx). Periksa WhatsApp penerima untuk memastikan pesan diterima.';
+      status = delivery.deliveryConfirmed ? 'success' : 'accepted';
+      message = delivery.deliveryConfirmed
+        ? `Gateway mengonfirmasi pesan delivered (HTTP ${delivery.statusCode}).`
+        : `Gateway menerima permintaan (HTTP ${delivery.statusCode}), tetapi belum mengonfirmasi pesan delivered.${delivery.detail ? ` Respons: ${delivery.detail}` : ''}`;
     } catch (error) {
       message = error instanceof Error ? error.message.slice(0, 500) : 'Pengiriman pesan uji gagal.';
     }
