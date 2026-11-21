@@ -116,6 +116,50 @@ export async function ensureRuntimeMigrations(database) {
 
   if (database.dialect === 'mysql') {
     await database.query(`
+      CREATE TABLE IF NOT EXISTS whatsapp_gateway_settings (
+        id TINYINT UNSIGNED NOT NULL,
+        endpoint_url VARCHAR(500) NULL,
+        token_ciphertext VARBINARY(1024) NULL,
+        token_iv BINARY(12) NULL,
+        token_auth_tag BINARY(16) NULL,
+        is_managed BOOLEAN NOT NULL DEFAULT FALSE,
+        is_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        CONSTRAINT chk_whatsapp_gateway_settings_singleton CHECK (id = 1)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await database.query('INSERT IGNORE INTO whatsapp_gateway_settings (id) VALUES (1)');
+    if (!(await database.hasColumn('whatsapp_gateway_settings', 'is_managed'))) {
+      await database.addColumn(
+        'whatsapp_gateway_settings',
+        'is_managed BOOLEAN NOT NULL DEFAULT FALSE',
+      );
+    }
+  } else {
+    await database.query(`
+      CREATE TABLE IF NOT EXISTS whatsapp_gateway_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        endpoint_url TEXT,
+        token_ciphertext BLOB,
+        token_iv BLOB,
+        token_auth_tag BLOB,
+        is_managed INTEGER NOT NULL DEFAULT 0 CHECK (is_managed IN (0, 1)),
+        is_enabled INTEGER NOT NULL DEFAULT 0 CHECK (is_enabled IN (0, 1)),
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await database.query('INSERT OR IGNORE INTO whatsapp_gateway_settings (id) VALUES (1)');
+    if (!(await database.hasColumn('whatsapp_gateway_settings', 'is_managed'))) {
+      await database.addColumn(
+        'whatsapp_gateway_settings',
+        'is_managed INTEGER NOT NULL DEFAULT 0 CHECK (is_managed IN (0, 1))',
+      );
+    }
+  }
+
+  if (database.dialect === 'mysql') {
+    await database.query(`
       CREATE TABLE IF NOT EXISTS scheduled_backup_settings (
         id TINYINT UNSIGNED NOT NULL,
         enabled BOOLEAN NOT NULL DEFAULT FALSE,

@@ -93,6 +93,33 @@ test('auth, role permissions, idempotent batch sync, and monthly report', async 
   });
   assert.equal(login.response.status, 200);
   const adminToken = login.data.token;
+  const whatsappUpdate = await request('/pengaturan/whatsapp-gateway', {
+    method: 'PUT',
+    token: adminToken,
+    body: {
+      endpoint_url: 'https://gateway.example/api/send',
+      token: 'school-secret-token',
+      is_enabled: false,
+    },
+  });
+  assert.equal(whatsappUpdate.response.status, 200);
+  const unsafeWhatsappUpdate = await request('/pengaturan/whatsapp-gateway', {
+    method: 'PUT',
+    token: adminToken,
+    body: {
+      endpoint_url: 'http://127.0.0.1:8080/send',
+      token: 'school-secret-token',
+      is_enabled: false,
+    },
+  });
+  assert.equal(unsafeWhatsappUpdate.response.status, 400);
+  const whatsappSettings = await request('/pengaturan/whatsapp-gateway', { token: adminToken });
+  assert.equal(whatsappSettings.data.settings.is_configured, true);
+  assert.equal(JSON.stringify(whatsappSettings.data).includes('school-secret-token'), false);
+  const storedWhatsappToken = (await db.query(
+    'SELECT token_ciphertext FROM whatsapp_gateway_settings WHERE id = 1',
+  ))[0].token_ciphertext;
+  assert.equal(String(storedWhatsappToken).includes('school-secret-token'), false);
   const backupScheduleUpdate = await request('/admin-tools/backup/schedule', {
     method: 'PUT',
     token: adminToken,
@@ -116,6 +143,10 @@ test('auth, role permissions, idempotent batch sync, and monthly report', async 
     body: { username: 'operator-test', password: 'test-password-2026' },
   });
   const operatorToken = operatorLogin.data.token;
+  assert.equal(
+    (await request('/pengaturan/whatsapp-gateway', { token: operatorToken })).response.status,
+    403,
+  );
   assert.equal(
     (await request('/admin-tools/backup/schedule', { token: operatorToken })).response.status,
     403,

@@ -67,6 +67,18 @@ CREATE TABLE IF NOT EXISTS operational_settings (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS whatsapp_gateway_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    endpoint_url TEXT,
+    token_ciphertext BLOB,
+    token_iv BLOB,
+    token_auth_tag BLOB,
+    is_managed INTEGER NOT NULL DEFAULT 0 CHECK (is_managed IN (0, 1)),
+    is_enabled INTEGER NOT NULL DEFAULT 0 CHECK (is_enabled IN (0, 1)),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT OR IGNORE INTO whatsapp_gateway_settings (id) VALUES (1);
+
 CREATE TABLE IF NOT EXISTS weekly_operational_schedules (
     weekday INTEGER PRIMARY KEY CHECK (weekday BETWEEN 0 AND 6),
     is_working_day INTEGER NOT NULL DEFAULT 1 CHECK (is_working_day IN (0, 1)),

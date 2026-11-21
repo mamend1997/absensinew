@@ -1075,7 +1075,6 @@ export default function App() {
           <div className="brand-mark">RH</div>
           <p className="eyebrow">PORTAL SEKOLAH</p>
           <h1>Masuk ke {applicationName}</h1>
-          <p className="muted">Gunakan kode sekolah 4 digit dan akun sekolah Anda.</p>
           {error && <div className="alert error">{error}</div>}
           {notice && <div className="alert success">{notice}</div>}
           <label>Kode sekolah
@@ -1089,8 +1088,7 @@ export default function App() {
             </span>
           </label>
           <button className="button primary" disabled={busy}>{busy ? 'Memeriksa…' : 'Masuk ke sekolah'}</button>
-          <button className="button secondary register-school-button" type="button" onClick={() => { setLoginView('register'); setError(''); setNotice(''); }}>Belum punya akun sekolah? Daftarkan sekolah</button>
-          <small className="muted">Login Super Admin tersedia di portal platform yang terpisah.</small>
+          <button className="button secondary register-school-button" type="button" onClick={() => { setLoginView('register'); setError(''); setNotice(''); }}>Daftarkan sekolah Anda</button>
         </form>}
         {loginView === 'register' && <form className="login-card registration-card" onSubmit={(event) => void startRegistration(event)}>
           <button className="text-button back-link" type="button" onClick={() => { setLoginView('login'); setError(''); setNotice(''); }}>← Kembali ke login</button>

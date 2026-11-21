@@ -6,6 +6,11 @@ import { asyncHandler } from '../utils/async-handler.js';
 import { HttpError } from '../utils/http-error.js';
 import { getSyncCursor } from '../utils/sync-cursor.js';
 import { auditRequestContext, writeAuditLog } from '../services/audit-service.js';
+import {
+  decryptWhatsappGatewayToken,
+  encryptWhatsappGatewayToken,
+  validateWhatsappGatewayUrl,
+} from '../services/whatsapp-gateway.js';
 
 const router = Router();
 router.use(authenticate);
@@ -23,6 +28,92 @@ const participantOverrideSchema = z.object({
   weekday: z.coerce.number().int().min(0).max(6),
   check_in_deadline: clockSchema,
 });
+
+router.get('/whatsapp-gateway', allowRoles('admin'), asyncHandler(async (_request, response) => {
+  const rows = await db.query(
+    `SELECT endpoint_url, token_ciphertext, token_iv, token_auth_tag, is_enabled
+       FROM whatsapp_gateway_settings WHERE id = 1`,
+  );
+  const settings = rows[0];
+  response.json({
+    settings: {
+      endpoint_url: settings?.endpoint_url ?? '',
+      is_enabled: Boolean(Number(settings?.is_enabled ?? 0)),
+      is_configured: Boolean(settings?.token_ciphertext),
+      token_hint: settings?.token_ciphertext
+        ? `Bearer token tersimpan terenkripsi (${decryptWhatsappGatewayToken(settings).slice(-4)})`
+        : '',
+    },
+  });
+}));
+
+router.put('/whatsapp-gateway', allowRoles('admin'), asyncHandler(async (request, response) => {
+  const input = z.object({
+    endpoint_url: z.string().trim().max(500),
+    token: z.string().max(1024).optional(),
+    is_enabled: z.boolean(),
+  }).parse(request.body);
+  const endpointUrl = input.endpoint_url ? validateWhatsappGatewayUrl(input.endpoint_url).toString() : '';
+  const rows = await db.query(
+    `SELECT token_ciphertext, token_iv, token_auth_tag
+       FROM whatsapp_gateway_settings WHERE id = 1`,
+  );
+  const current = rows[0];
+  let credentials = current?.token_ciphertext
+    ? {
+      ciphertext: current.token_ciphertext,
+      iv: current.token_iv,
+      authTag: current.token_auth_tag,
+    }
+    : null;
+  const token = input.token?.trim() ?? '';
+  if (token) credentials = encryptWhatsappGatewayToken(token);
+  if (input.is_enabled && (!endpointUrl || !credentials)) {
+    throw new HttpError(400, 'URL gateway dan Bearer token harus diisi sebelum gateway diaktifkan.');
+  }
+  await db.query(
+    `UPDATE whatsapp_gateway_settings
+        SET endpoint_url = ?, token_ciphertext = ?, token_iv = ?, token_auth_tag = ?,
+            is_managed = TRUE, is_enabled = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = 1`,
+    [
+      endpointUrl || null,
+      credentials?.ciphertext ?? null,
+      credentials?.iv ?? null,
+      credentials?.authTag ?? null,
+      input.is_enabled ? 1 : 0,
+    ],
+  );
+  await writeAuditLog({
+    ...auditRequestContext(request),
+    action: 'settings.whatsapp_gateway.updated',
+    entityType: 'whatsapp_gateway',
+    entityId: 1,
+    after: {
+      endpoint_url: endpointUrl,
+      is_enabled: input.is_enabled,
+      token_updated: Boolean(token),
+    },
+  });
+  response.json({ message: 'Pengaturan WhatsApp berhasil disimpan.' });
+}));
+
+router.delete('/whatsapp-gateway', allowRoles('admin'), asyncHandler(async (request, response) => {
+  await db.query(
+    `UPDATE whatsapp_gateway_settings
+        SET endpoint_url = NULL, token_ciphertext = NULL, token_iv = NULL,
+            token_auth_tag = NULL, is_managed = TRUE, is_enabled = FALSE,
+            updated_at = CURRENT_TIMESTAMP
+      WHERE id = 1`,
+  );
+  await writeAuditLog({
+    ...auditRequestContext(request),
+    action: 'settings.whatsapp_gateway.deleted',
+    entityType: 'whatsapp_gateway',
+    entityId: 1,
+  });
+  response.json({ message: 'Pengaturan WhatsApp berhasil dihapus.' });
+}));
 
 function uniqueBy(items, keyOf) {
   return new Set(items.map(keyOf)).size === items.length;

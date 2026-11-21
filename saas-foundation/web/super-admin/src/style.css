@@ -90,6 +90,11 @@ td small { margin-top: 3px; color: #7d8b84; font-size: 9px; }
 .code-actions { display: flex; min-width: 265px; align-items: center; gap: 5px; }
 .code-actions input { width: 54px; min-height: 32px; padding: 4px; text-align: center; letter-spacing: .12em; }
 .school-actions { display: flex; min-width: 260px; flex-wrap: wrap; gap: 5px; }
+.school-actions .button { white-space: nowrap; }
+.tenant-table th:last-child, .tenant-table td:last-child { position: sticky; right: 0; z-index: 1; background: #fff; box-shadow: -7px 0 10px rgba(20, 45, 32, .06); }
+.tenant-table th:last-child { z-index: 2; background: #f1f6f2; }
+.edit-school-password { display: grid; gap: 7px; border-top: 1px solid #e8eee9; padding-top: 14px; }
+.edit-school-password .muted { margin: 0; font-size: 10px; }
 .danger { background: #b83232; color: #fff; }
 .danger:hover:not(:disabled) { background: #982626; }
 .name-panel { display: grid; grid-template-columns: minmax(0, .85fr) minmax(320px, 1.15fr); align-items: center; gap: 22px; }
@@ -102,6 +107,15 @@ td small { margin-top: 3px; color: #7d8b84; font-size: 9px; }
 .billing-prices-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) auto; align-items: end; gap: 10px; }
 .billing-prices-form label { font-size: 10px; }
 .billing-prices-form input { min-height: 38px; font-size: 11px; }
+.platform-backup-panel { display: grid; grid-template-columns: minmax(0, .85fr) minmax(320px, 1.15fr); gap: 22px; }
+.platform-backup-panel h2 { margin: 0 0 7px; font-size: 15px; }
+.platform-backup-panel .muted { margin: 6px 0 10px; font-size: 11px; }
+.platform-backup-form { display: grid; gap: 11px; }
+.platform-backup-form label { display: grid; gap: 6px; font-size: 10px; }
+.platform-backup-form input:not([type="checkbox"]) { min-height: 38px; font-size: 11px; }
+.platform-backup-form .backup-toggle { display: flex; align-items: center; gap: 8px; }
+.platform-backup-form .backup-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.platform-backup-panel .backup-run-status { overflow-wrap: anywhere; }
 .modal-backdrop { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; overflow-y: auto; background: #10251fc2; padding: 20px; }
 .modal-card { display: grid; width: min(460px, 100%); gap: 14px; border: 1px solid #e0e8e2; border-radius: 16px; background: #fff; padding: 22px; box-shadow: 0 24px 80px #06120f55; }
 .modal-card h2 { margin: 0; }
@@ -113,7 +127,7 @@ td small { margin-top: 3px; color: #7d8b84; font-size: 9px; }
 .alert.error { border: 1px solid #f3ceca; background: #fff1ef; color: #8d322a; }
 .alert.success { border: 1px solid #cce7d4; background: #effaf2; color: #21633d; }
 .empty { padding: 24px; color: #78867f; text-align: center; }
-@media (max-width: 900px) { .create-form { grid-template-columns: repeat(2, minmax(0, 1fr)); } .create-form .button { align-self: end; } .branding-panel, .name-panel, .billing-prices-panel, .gateway-panel, .apk-panel { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .create-form { grid-template-columns: repeat(2, minmax(0, 1fr)); } .create-form .button { align-self: end; } .branding-panel, .name-panel, .billing-prices-panel, .platform-backup-panel, .gateway-panel, .apk-panel { grid-template-columns: 1fr; } }
 @media (max-width: 600px) {
   .topbar { height: 60px; padding: 0 14px; }
   .content { gap: 14px; padding: 22px 13px 40px; }

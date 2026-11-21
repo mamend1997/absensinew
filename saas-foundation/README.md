@@ -132,6 +132,16 @@ Konfigurasi `.env` hanya dibaca backend; jangan commit file tersebut. Endpoint
 pengelolaan memakai permissions yang telah diseed schema; tidak ada perubahan
 pada skema inti.
 
+Super Admin dapat menjadwalkan backup harian database platform pada panel
+Super Admin. Atur `BACKUP_DIRECTORY` ke persistent volume privat Railway dan
+`BACKUP_TIMEZONE` ke zona waktu yang diinginkan sebelum mengaktifkan jadwal.
+File tersimpan dengan AES-256-GCM; Telegram hanya menerima status dan tidak
+menerima data tenant atau file backup. Backup terakhir dapat diunduh terenkripsi
+dari panel. Untuk membuka file, gunakan
+`node scripts/decrypt-platform-backup.js <file.enc> <backup.json>` dari folder
+`backend` dengan `JWT_SECRET` yang sama. JSON hasil dekripsi berisi data seluruh
+sekolah dan hash kredensial, sehingga harus disimpan serta diproses dengan aman.
+
 ## Skema dan seed
 
 `database/schema.sql` menyiapkan tabel Super Admin global; sekolah dan status

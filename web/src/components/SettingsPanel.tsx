@@ -29,6 +29,13 @@ interface ParticipantOverrideDraft {
   check_in_deadline: string;
 }
 
+interface WhatsappGatewaySettings {
+  endpoint_url: string;
+  is_enabled: boolean;
+  is_configured: boolean;
+  token_hint: string;
+}
+
 export default function SettingsPanel({
   participants,
   settings,
@@ -50,6 +57,21 @@ export default function SettingsPanel({
   const [busy, setBusy] = useState(false);
   const [pinForm, setPinForm] = useState({ current_pin: '', new_pin: '' });
   const [pinBusy, setPinBusy] = useState(false);
+  const [whatsappSettings, setWhatsappSettings] = useState<WhatsappGatewaySettings>({
+    endpoint_url: '',
+    is_enabled: false,
+    is_configured: false,
+    token_hint: '',
+  });
+  const [whatsappToken, setWhatsappToken] = useState('');
+  const [whatsappBusy, setWhatsappBusy] = useState(false);
+
+  useEffect(() => {
+    void api<{ settings: WhatsappGatewaySettings }>('/pengaturan/whatsapp-gateway')
+      .then((result) => setWhatsappSettings(result.settings))
+      .catch((error: unknown) =>
+        showToast(error instanceof Error ? error.message : 'Pengaturan WhatsApp gagal dimuat.', 'error'));
+  }, [showToast]);
 
   useEffect(() => {
     if (!settings) return;
@@ -129,6 +151,48 @@ export default function SettingsPanel({
       showToast(error instanceof Error ? error.message : 'PIN menu gagal diganti.', 'error');
     } finally {
       setPinBusy(false);
+    }
+  }
+
+  async function saveWhatsappGateway(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setWhatsappBusy(true);
+    try {
+      await api('/pengaturan/whatsapp-gateway', {
+        method: 'PUT',
+        body: JSON.stringify({
+          endpoint_url: whatsappSettings.endpoint_url,
+          is_enabled: whatsappSettings.is_enabled,
+          token: whatsappToken,
+        }),
+      });
+      setWhatsappToken('');
+      const result = await api<{ settings: WhatsappGatewaySettings }>('/pengaturan/whatsapp-gateway');
+      setWhatsappSettings(result.settings);
+      showToast('Pengaturan WhatsApp berhasil disimpan.');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Pengaturan WhatsApp gagal disimpan.', 'error');
+    } finally {
+      setWhatsappBusy(false);
+    }
+  }
+
+  async function removeWhatsappGateway() {
+    setWhatsappBusy(true);
+    try {
+      await api('/pengaturan/whatsapp-gateway', { method: 'DELETE' });
+      setWhatsappSettings({
+        endpoint_url: '',
+        is_enabled: false,
+        is_configured: false,
+        token_hint: '',
+      });
+      setWhatsappToken('');
+      showToast('Konfigurasi WhatsApp berhasil dihapus.');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Konfigurasi WhatsApp gagal dihapus.', 'error');
+    } finally {
+      setWhatsappBusy(false);
     }
   }
 
@@ -371,6 +435,49 @@ export default function SettingsPanel({
           sebelum melakukan scan; sinkronisasi akan memvalidasi waktu pada server.
         </div>
         <button className="button primary" disabled={busy}>{busy ? 'Menyimpan…' : 'Simpan pengaturan'}</button>
+      </form>
+      <form className="panel-card settings-form whatsapp-gateway-settings" onSubmit={(event) => void saveWhatsappGateway(event)}>
+        <div>
+          <p className="eyebrow">NOTIFIKASI SEKOLAH</p>
+          <h2>Gateway WhatsApp</h2>
+          <p className="muted">Konfigurasi ini khusus untuk server sekolah. Bearer token dienkripsi dan tidak ditampilkan kembali.</p>
+          <p className={`gateway-status ${whatsappSettings.is_enabled && whatsappSettings.is_configured ? 'ready' : ''}`}>
+            {whatsappSettings.is_enabled && whatsappSettings.is_configured ? 'Aktif' : 'Belum aktif'}
+          </p>
+        </div>
+        <div className="whatsapp-gateway-fields">
+          <label>URL HTTPS gateway
+            <input
+              type="url"
+              required={whatsappSettings.is_enabled}
+              placeholder="https://gateway.example/api/send"
+              value={whatsappSettings.endpoint_url}
+              onChange={(event) => setWhatsappSettings((current) => ({ ...current, endpoint_url: event.target.value }))}
+            />
+          </label>
+          <label>Bearer token
+            <input
+              type="password"
+              autoComplete="new-password"
+              placeholder={whatsappSettings.is_configured ? 'Tersimpan — kosongkan untuk mempertahankan' : 'Masukkan token gateway'}
+              value={whatsappToken}
+              onChange={(event) => setWhatsappToken(event.target.value)}
+            />
+          </label>
+          {whatsappSettings.is_configured && <small className="muted">{whatsappSettings.token_hint}</small>}
+          <label className="whatsapp-gateway-toggle">
+            <input
+              type="checkbox"
+              checked={whatsappSettings.is_enabled}
+              onChange={(event) => setWhatsappSettings((current) => ({ ...current, is_enabled: event.target.checked }))}
+            />
+            Aktifkan gateway
+          </label>
+          <div className="heading-actions">
+            <button className="button primary" disabled={whatsappBusy}>{whatsappBusy ? 'Menyimpan…' : 'Simpan gateway'}</button>
+            <button className="button secondary" type="button" disabled={whatsappBusy || !whatsappSettings.is_configured} onClick={() => void removeWhatsappGateway()}>Hapus konfigurasi</button>
+          </div>
+        </div>
       </form>
       <form className="panel-card settings-form form-stack menu-pin-settings" onSubmit={(event) => void changeMenuPin(event)}>
         <div>

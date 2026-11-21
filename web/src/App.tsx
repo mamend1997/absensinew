@@ -307,14 +307,6 @@ export default function App() {
     };
   }, [refreshMasterData, showToast, syncNow, user]);
 
-  function onLogin(authenticatedUser: User) {
-    setUser(authenticatedUser);
-    setPage(defaultPage());
-    void refreshMasterData().catch((error: unknown) => {
-      showToast(masterDataFailureMessage(error), 'error');
-    }).then(() => syncNow());
-  }
-
   function logout() {
     setMenuOpen(false);
     saveToken(null);
@@ -348,7 +340,7 @@ export default function App() {
   if (restoring) {
     return <main className="restore-screen"><div className="brand-mark">RH</div><span>Memulihkan data perangkat…</span></main>;
   }
-  if (!user || !getToken()) return <LoginView onLogin={onLogin} />;
+  if (!user || !getToken()) return <LoginView />;
 
   const navItems: Array<{ id: string; label: string; adminOnly?: boolean }> = [
     { id: 'scanner', label: 'Scanner' },

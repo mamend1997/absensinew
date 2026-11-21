@@ -54,6 +54,16 @@ interface BillingPrices {
   providers?: { xendit: boolean; duitku: boolean };
 }
 
+interface PlatformBackupSettings {
+  enabled: boolean;
+  backup_time: string;
+  bot_configured: boolean;
+  chat_id_hint: string;
+  last_status: 'never' | 'running' | 'success' | 'failed' | 'notification_failed';
+  last_run_at: string | null;
+  last_error: string | null;
+}
+
 const emptyForm: SchoolForm = {
   name: '',
   slug: '',
@@ -138,6 +148,18 @@ export default function App() {
     providers: { xendit: false, duitku: false },
   });
   const [billingBusy, setBillingBusy] = useState(false);
+  const [backupSettings, setBackupSettings] = useState<PlatformBackupSettings>({
+    enabled: false,
+    backup_time: '02:00',
+    bot_configured: false,
+    chat_id_hint: '',
+    last_status: 'never',
+    last_run_at: null,
+    last_error: null,
+  });
+  const [backupBotToken, setBackupBotToken] = useState('');
+  const [backupChatId, setBackupChatId] = useState('');
+  const [backupBusy, setBackupBusy] = useState(false);
   const [applicationName, setApplicationName] = useState('Ruang Hadir');
   const [applicationNameBusy, setApplicationNameBusy] = useState(false);
   const [editingSchool, setEditingSchool] = useState<School | null>(null);
@@ -242,6 +264,13 @@ export default function App() {
     request<BillingPrices>('/super-admin/settings/billing-prices', token)
       .then(setBillingPrices)
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Harga langganan gagal dimuat.'));
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+    request<PlatformBackupSettings>('/super-admin/settings/backup', token)
+      .then(setBackupSettings)
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Pengaturan backup platform gagal dimuat.'));
   }, [token]);
 
   async function login(event: FormEvent<HTMLFormElement>) {
@@ -426,6 +455,62 @@ export default function App() {
       setError(reason instanceof Error ? reason.message : 'Harga paket gagal disimpan.');
     } finally {
       setBillingBusy(false);
+    }
+  }
+
+  async function savePlatformBackup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBackupBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await request<PlatformBackupSettings>('/super-admin/settings/backup', token, {
+        method: 'PUT',
+        body: {
+          enabled: backupSettings.enabled,
+          backup_time: backupSettings.backup_time,
+          bot_token: backupBotToken,
+          chat_id: backupChatId,
+        },
+      });
+      setBackupSettings(result);
+      setBackupBotToken('');
+      setBackupChatId('');
+      setNotice('Jadwal backup platform berhasil disimpan.');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Pengaturan backup platform gagal disimpan.');
+    } finally {
+      setBackupBusy(false);
+    }
+  }
+
+  async function downloadPlatformBackup() {
+    setBackupBusy(true);
+    setError('');
+    try {
+      const response = await fetch(`${API_BASE}/super-admin/settings/backup/latest`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as {
+          error?: string | { message?: string };
+        };
+        const message = typeof payload.error === 'string'
+          ? payload.error
+          : payload.error?.message;
+        throw new Error(message || `Unduhan gagal (${response.status}).`);
+      }
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'ruang-hadir-saas-backup-encrypted.json.enc';
+      link.click();
+      URL.revokeObjectURL(url);
+      setNotice('Backup platform terenkripsi berhasil diunduh.');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Backup platform gagal diunduh.');
+    } finally {
+      setBackupBusy(false);
     }
   }
 
@@ -663,6 +748,34 @@ export default function App() {
             <button className="button primary" disabled={billingBusy}>{billingBusy ? 'Menyimpan…' : 'Simpan harga'}</button>
           </form>
         </section>
+        <section className="panel platform-backup-panel">
+          <div>
+            <h2>Backup otomatis platform</h2>
+            <p className="muted">Backup mencakup database seluruh sekolah. File terenkripsi disimpan pada volume privat; Telegram hanya menerima notifikasi status.</p>
+            <span className={`gateway-status ${backupSettings.enabled && backupSettings.bot_configured ? 'ready' : ''}`}>
+              {backupSettings.enabled && backupSettings.bot_configured ? '● Backup aktif' : '○ Backup belum aktif'}
+            </span>
+            <p className="muted backup-run-status">
+              Status terakhir: <strong>{backupSettings.last_status}</strong>
+              {backupSettings.last_run_at ? ` · ${new Date(backupSettings.last_run_at).toLocaleString('id-ID')}` : ''}
+              {backupSettings.last_error ? ` · ${backupSettings.last_error}` : ''}
+            </p>
+          </div>
+          <form className="platform-backup-form" onSubmit={(event) => void savePlatformBackup(event)}>
+            <label className="backup-toggle">
+              <input type="checkbox" checked={backupSettings.enabled} onChange={(event) => setBackupSettings((current) => ({ ...current, enabled: event.target.checked }))} />
+              Aktifkan backup harian
+            </label>
+            <label>Waktu backup<input type="time" required value={backupSettings.backup_time} onChange={(event) => setBackupSettings((current) => ({ ...current, backup_time: event.target.value }))} /></label>
+            <label>Token Telegram Bot<input type="password" autoComplete="new-password" value={backupBotToken} onChange={(event) => setBackupBotToken(event.target.value)} placeholder={backupSettings.bot_configured ? 'Tersimpan terenkripsi; kosongkan untuk mempertahankan' : 'Token dari BotFather'} /></label>
+            <label>Chat ID / channel<input value={backupChatId} onChange={(event) => setBackupChatId(event.target.value)} placeholder={backupSettings.chat_id_hint || 'Chat ID tujuan notifikasi'} /></label>
+            <p className="muted">Waktu mengikuti zona waktu BACKUP_TIMEZONE yang ditetapkan pada environment backend.</p>
+            <div className="backup-actions">
+              <button className="button primary" disabled={backupBusy}>{backupBusy ? 'Menyimpan…' : 'Simpan jadwal backup'}</button>
+              {['success', 'notification_failed'].includes(backupSettings.last_status) && <button className="button secondary" type="button" disabled={backupBusy} onClick={() => void downloadPlatformBackup()}>Unduh backup terenkripsi</button>}
+            </div>
+          </form>
+        </section>
         <section className="panel gateway-panel">
           <div>
             <h2>Gateway WhatsApp untuk OTP</h2>
@@ -721,7 +834,7 @@ export default function App() {
         <section className="panel">
           <div className="section-title"><div><h2>Daftar tenant</h2><p className="muted">{schools.length} sekolah</p></div><button className="button secondary" onClick={() => void loadSchools()}>Muat ulang</button></div>
           <div className="table-scroll">
-            <table>
+            <table className="tenant-table">
               <thead><tr><th>Sekolah</th><th>Kode 4 digit</th><th>Status langganan</th><th>Kuota</th><th>Masa berlaku</th><th>Aksi kode</th><th>Aksi sekolah</th></tr></thead>
               <tbody>
                 {schools.map((school) => (
@@ -758,9 +871,9 @@ export default function App() {
                     </td>
                     <td>
                       <div className="school-actions">
-                        <button className="button secondary small" disabled={busy} onClick={() => openSchoolEditor(school)}>Edit</button>
-                        <button className="button secondary small" disabled={busy} onClick={() => void resetSchoolPassword(school)}>Reset password</button>
-                        <button className="button danger small" disabled={busy} onClick={() => { setDeleteTarget(school); setDeleteConfirmation(''); }}>Hapus</button>
+                        <button className="button secondary small" disabled={busy} onClick={() => openSchoolEditor(school)}>Edit sekolah</button>
+                        <button className="button secondary small" disabled={busy} onClick={() => void resetSchoolPassword(school)}>Reset login</button>
+                        <button className="button danger small" disabled={busy} onClick={() => { setDeleteTarget(school); setDeleteConfirmation(''); }}>Hapus sekolah</button>
                       </div>
                     </td>
                   </tr>
@@ -784,6 +897,13 @@ export default function App() {
               </select>
             </label>
             <label>Kuota peserta<input type="number" min={1} max={1000000} required value={schoolEditForm.participant_quota} onChange={(event) => setSchoolEditForm((current) => ({ ...current, participant_quota: Number(event.target.value) }))} /></label>
+            <div className="edit-school-password">
+              <strong>Akun Admin sekolah</strong>
+              <p className="muted">Jika Admin lupa kata sandi, buat kata sandi sementara yang baru. Kata sandi lama langsung dinonaktifkan.</p>
+              <button className="button secondary" type="button" disabled={busy} onClick={() => void resetSchoolPassword(editingSchool)}>
+                Reset kata sandi login Admin
+              </button>
+            </div>
             <div className="modal-actions">
               <button className="button secondary" type="button" disabled={busy} onClick={() => setEditingSchool(null)}>Batal</button>
               <button className="button primary" disabled={busy}>{busy ? 'Menyimpan…' : 'Simpan perubahan'}</button>

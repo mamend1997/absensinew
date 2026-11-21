@@ -1,5 +1,9 @@
 import { config } from '../config/env.js';
 import { db } from '../config/database.js';
+import {
+  decryptWhatsappGatewayToken,
+  sendWhatsappGatewayMessage,
+} from './whatsapp-gateway.js';
 
 const MAX_ATTEMPTS = 8;
 const BATCH_SIZE = 20;
@@ -67,9 +71,24 @@ export async function enqueueAttendanceNotifications({
 }
 
 export async function processPendingNotifications() {
-  if (processing || !config.whatsappGatewayUrl || !config.whatsappGatewayToken) return;
+  if (processing) return;
   processing = true;
   try {
+    const [gatewayRows] = await db.query(
+      `SELECT endpoint_url, token_ciphertext, token_iv, token_auth_tag, is_managed, is_enabled
+         FROM whatsapp_gateway_settings WHERE id = 1`,
+    );
+    const configuredGateway = gatewayRows?.[0];
+    let gatewayUrl = config.whatsappGatewayUrl;
+    let gatewayToken = config.whatsappGatewayToken;
+    if (Number(configuredGateway?.is_managed)) {
+      if (!Number(configuredGateway.is_enabled)) return;
+      if (!configuredGateway.token_ciphertext || !configuredGateway.endpoint_url) return;
+      gatewayUrl = configuredGateway.endpoint_url;
+      gatewayToken = decryptWhatsappGatewayToken(configuredGateway);
+    }
+    if (!gatewayUrl || !gatewayToken) return;
+
     const pending = await db.query(
       `SELECT id, id_unik, recipient_phone, event_type, message, attempt_count
        FROM attendance_notifications
@@ -86,22 +105,13 @@ export async function processPendingNotifications() {
       );
       if (!Number(claimed.affectedRows ?? claimed.changes)) continue;
       try {
-        const response = await fetch(config.whatsappGatewayUrl, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${config.whatsappGatewayToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            to: item.recipient_phone,
-            message: item.message,
-            event: item.event_type,
-          }),
-          signal: AbortSignal.timeout(10000),
-        });
-        if (!response.ok) {
-          throw new Error(`Gateway returned HTTP ${response.status}`);
-        }
+        await sendWhatsappGatewayMessage(
+          gatewayUrl,
+          gatewayToken,
+          item.recipient_phone,
+          item.message,
+          item.event_type,
+        );
         await db.query(
           `UPDATE attendance_notifications
            SET status = 'sent', sent_at = CURRENT_TIMESTAMP, last_error = NULL

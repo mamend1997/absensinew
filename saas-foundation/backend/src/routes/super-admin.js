@@ -1,4 +1,12 @@
 import { randomBytes } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import { config } from '../config.js';
+import {
+  decryptPlatformBackupCredentials,
+  encryptPlatformBackupCredentials,
+  latestPlatformBackupPath,
+} from '../core/platform-backup.js';
 import { Router } from 'express';
 import { generateUniqueSchoolCode, isValidSchoolCode } from '../core/school-code.js';
 import { parseLogoDataUrl } from '../core/branding.js';
@@ -214,6 +222,105 @@ router.put('/settings/billing-prices', asyncRoute(async (req, res) => {
     [monthlyPrice, lifetimePrice],
   );
   res.json({ monthly_price: monthlyPrice, lifetime_price: lifetimePrice });
+}));
+
+router.get('/settings/backup', asyncRoute(async (req, res) => {
+  const [[settings]] = await pool.execute(
+    `SELECT enabled, backup_time, encrypted_credentials, last_status,
+            last_run_at, last_error
+       FROM platform_backup_settings WHERE id = 1`,
+  );
+  const credentials = settings?.encrypted_credentials
+    ? decryptPlatformBackupCredentials(settings.encrypted_credentials)
+    : null;
+  const chatId = credentials?.chat_id ?? '';
+  res.json({
+    enabled: Boolean(Number(settings?.enabled)),
+    backup_time: settings?.backup_time ?? '02:00',
+    bot_configured: Boolean(credentials?.bot_token && chatId),
+    chat_id_hint: chatId.length > 4 ? `***${chatId.slice(-4)}` : chatId,
+    last_status: settings?.last_status ?? 'never',
+    last_run_at: settings?.last_run_at ?? null,
+    last_error: settings?.last_error ?? null,
+  });
+}));
+
+router.put('/settings/backup', asyncRoute(async (req, res) => {
+  const { enabled, backup_time: backupTime, bot_token: botTokenValue, chat_id: chatIdValue } = req.body ?? {};
+  if (typeof enabled !== 'boolean' || typeof backupTime !== 'string' ||
+      !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(backupTime) ||
+      botTokenValue !== undefined && (typeof botTokenValue !== 'string' || botTokenValue.length > 512) ||
+      chatIdValue !== undefined && (typeof chatIdValue !== 'string' || chatIdValue.length > 100)) {
+    throw fail(400, 'Pengaturan backup tidak valid.', 'VALIDATION_ERROR');
+  }
+  const [[current]] = await pool.execute(
+    'SELECT encrypted_credentials FROM platform_backup_settings WHERE id = 1',
+  );
+  let encryptedCredentials = current?.encrypted_credentials ?? null;
+  const botToken = botTokenValue?.trim() ?? '';
+  const chatId = chatIdValue?.trim() ?? '';
+  if (botToken || chatId) {
+    if (!botToken || !chatId) {
+      throw fail(400, 'Token Bot dan Chat ID harus diisi bersama.', 'VALIDATION_ERROR');
+    }
+    encryptedCredentials = encryptPlatformBackupCredentials({
+      bot_token: botToken,
+      chat_id: chatId,
+    });
+  }
+  if (enabled && (!encryptedCredentials || !config.backupDirectory)) {
+    throw fail(
+      400,
+      !encryptedCredentials
+        ? 'Isi kredensial Telegram terlebih dahulu.'
+        : 'BACKUP_DIRECTORY harus diarahkan ke volume privat yang persisten.',
+      'BACKUP_CONFIGURATION_REQUIRED',
+    );
+  }
+  await pool.execute(
+    `UPDATE platform_backup_settings
+        SET enabled = ?, backup_time = ?, encrypted_credentials = ?
+      WHERE id = 1`,
+    [enabled, backupTime, encryptedCredentials],
+  );
+  const [[updated]] = await pool.execute(
+    `SELECT enabled, backup_time, encrypted_credentials, last_status,
+            last_run_at, last_error
+       FROM platform_backup_settings WHERE id = 1`,
+  );
+  const credentials = updated.encrypted_credentials
+    ? decryptPlatformBackupCredentials(updated.encrypted_credentials)
+    : null;
+  const chatIdHint = credentials?.chat_id ?? '';
+  res.json({
+    enabled: Boolean(Number(updated.enabled)),
+    backup_time: updated.backup_time,
+    bot_configured: Boolean(credentials?.bot_token && chatIdHint),
+    chat_id_hint: chatIdHint.length > 4 ? `***${chatIdHint.slice(-4)}` : chatIdHint,
+    last_status: updated.last_status,
+    last_run_at: updated.last_run_at,
+    last_error: updated.last_error,
+  });
+}));
+
+router.get('/settings/backup/latest', asyncRoute(async (req, res, next) => {
+  const path = await latestPlatformBackupPath();
+  if (!path) throw fail(404, 'Backup otomatis belum tersedia.', 'NOT_FOUND');
+  try {
+    const file = await stat(path);
+    if (!file.isFile()) throw fail(404, 'File backup tidak ditemukan.', 'NOT_FOUND');
+  } catch (error) {
+    if (error.code === 'ENOENT') throw fail(404, 'File backup tidak ditemukan.', 'NOT_FOUND');
+    throw error;
+  }
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Disposition', 'attachment; filename="ruang-hadir-saas-backup.json.enc"');
+  const stream = createReadStream(path);
+  stream.on('error', (error) => {
+    if (res.headersSent) res.destroy(error);
+    else next(error);
+  });
+  stream.pipe(res);
 }));
 
 router.get('/schools', asyncRoute(async (req, res) => {

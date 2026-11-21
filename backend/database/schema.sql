@@ -75,6 +75,20 @@ CREATE TABLE IF NOT EXISTS operational_settings (
     CONSTRAINT fk_settings_updated_by FOREIGN KEY (updated_by) REFERENCES users (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS whatsapp_gateway_settings (
+    id TINYINT UNSIGNED NOT NULL,
+    endpoint_url VARCHAR(500) NULL,
+    token_ciphertext VARBINARY(1024) NULL,
+    token_iv BINARY(12) NULL,
+    token_auth_tag BINARY(16) NULL,
+    is_managed BOOLEAN NOT NULL DEFAULT FALSE,
+    is_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    CONSTRAINT chk_whatsapp_gateway_settings_singleton CHECK (id = 1)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+INSERT IGNORE INTO whatsapp_gateway_settings (id) VALUES (1);
+
 CREATE TABLE IF NOT EXISTS weekly_operational_schedules (
     weekday TINYINT UNSIGNED NOT NULL,
     is_working_day BOOLEAN NOT NULL DEFAULT TRUE,

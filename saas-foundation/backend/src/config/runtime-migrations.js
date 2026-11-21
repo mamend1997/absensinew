@@ -94,6 +94,22 @@ export async function ensureRuntimeMigrations(pool) {
   await pool.execute('INSERT IGNORE INTO platform_billing_settings (id) VALUES (1)');
 
   await pool.execute(`
+    CREATE TABLE IF NOT EXISTS platform_backup_settings (
+      id TINYINT UNSIGNED NOT NULL,
+      enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      backup_time CHAR(5) NOT NULL DEFAULT '02:00',
+      encrypted_credentials TEXT NULL,
+      last_run_date CHAR(10) NULL,
+      last_status VARCHAR(24) NOT NULL DEFAULT 'never',
+      last_run_at TIMESTAMP NULL,
+      last_error VARCHAR(500) NULL,
+      PRIMARY KEY (id),
+      CONSTRAINT chk_platform_backup_settings_singleton CHECK (id = 1)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+  await pool.execute('INSERT IGNORE INTO platform_backup_settings (id) VALUES (1)');
+
+  await pool.execute(`
     CREATE TABLE IF NOT EXISTS subscription_payment_orders (
       id CHAR(36) NOT NULL,
       sekolah_id BIGINT UNSIGNED NOT NULL,

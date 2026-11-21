@@ -6,6 +6,13 @@ if (Buffer.byteLength(jwtSecret, 'utf8') < 32 ||
   throw new Error('JWT_SECRET wajib diisi dengan secret acak minimal 32 byte.');
 }
 
+const backupTimezone = process.env.BACKUP_TIMEZONE ?? 'Asia/Jakarta';
+try {
+  new Intl.DateTimeFormat('en', { timeZone: backupTimezone });
+} catch {
+  throw new Error('BACKUP_TIMEZONE harus berupa zona waktu IANA yang valid.');
+}
+
 export const config = Object.freeze({
   host: process.env.HOST ?? '127.0.0.1',
   port: Number(process.env.PORT ?? 4100),
@@ -13,6 +20,8 @@ export const config = Object.freeze({
   jwtTtl: process.env.JWT_TTL ?? '8h',
   publicWebUrl: process.env.PUBLIC_WEB_URL?.trim() ?? '',
   publicApiUrl: process.env.PUBLIC_API_URL?.trim() ?? '',
+  backupDirectory: process.env.BACKUP_DIRECTORY?.trim() ?? '',
+  backupTimezone,
   xenditSecretKey: process.env.XENDIT_SECRET_KEY?.trim() ?? '',
   xenditCallbackToken: process.env.XENDIT_CALLBACK_TOKEN?.trim() ?? '',
   duitkuMerchantCode: process.env.DUITKU_MERCHANT_CODE?.trim() ?? '',

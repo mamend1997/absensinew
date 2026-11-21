@@ -176,12 +176,15 @@ manual tetap berisi hash kredensial dan harus disimpan dengan aman.
 
 Notifikasi hanya dibuat untuk absensi baru setelah record tersimpan dalam
 transaksi. Nomor wali diatur melalui `guardian_phone` pada master peserta; nomor
-Admin diatur melalui `NOTIFICATION_ADMIN_PHONE`. Untuk mengaktifkan gateway,
-atur `WHATSAPP_GATEWAY_URL` dan rahasia `WHATSAPP_GATEWAY_TOKEN` bersama-sama
-pada environment backend. Backend mengirim `POST` ber-header
+Admin diatur melalui `NOTIFICATION_ADMIN_PHONE`. Admin sekolah dapat mengatur
+URL HTTPS gateway dan Bearer token melalui **Pengaturan → Gateway WhatsApp**.
+Token disimpan terenkripsi dan tidak ditampilkan kembali; konfigurasi URL hanya
+menerima host HTTPS publik. Backend mengirim `POST` ber-header
 `Authorization: Bearer <token>` dan body `{ "to", "message", "event" }` melalui
-outbox dengan retry. `NOTIFICATION_LATE_MINUTES=0` mengirim notifikasi untuk
-setiap status terlambat. Jangan simpan token gateway di repository.
+outbox dengan retry. Environment lama `WHATSAPP_GATEWAY_URL` dan
+`WHATSAPP_GATEWAY_TOKEN` masih menjadi fallback sampai Admin menyimpan atau
+menghapus konfigurasi akun sekolah. `NOTIFICATION_LATE_MINUTES=0` mengirim
+notifikasi untuk setiap status terlambat. Jangan simpan token gateway di repository.
 
 ## Tahap 3: menjalankan web dan scanner
 
