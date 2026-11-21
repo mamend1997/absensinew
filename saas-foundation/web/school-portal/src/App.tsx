@@ -54,6 +54,10 @@ interface GoogleSheetsSettings {
   last_sync_at: string | null;
   sync_error: string | null;
 }
+interface SchoolBranding {
+  application_name: string;
+  logo_data_url: string | null;
+}
 const ROLE_PERMISSION_GROUPS: RolePermissionGroup[] = [
   { key: 'dashboard', label: 'Ringkasan', view: 'dashboard.view' },
   { key: 'attendance', label: 'Rekap absensi', view: 'attendance.view', edit: 'attendance.edit' },
@@ -212,6 +216,14 @@ interface ParticipantImportResult {
     status: 'imported' | 'skipped';
     reason?: string;
   }>;
+}
+interface ParticipantImportDraft {
+  source_row: string;
+  participant_code: string;
+  full_name: string;
+  classroom_id: string;
+  qr_code: string;
+  guardian_phone: string;
 }
 interface ReportRow {
   attendance_date: string;
@@ -512,6 +524,10 @@ function downloadReport(rows: ReportRow[]) {
 export default function App() {
   const [session, setSession] = useState<SchoolSession | null>(readSession);
   const [applicationName, setApplicationName] = useState('Ruang Hadir');
+  const [schoolBranding, setSchoolBranding] = useState<SchoolBranding | null>(null);
+  const [schoolBrandingName, setSchoolBrandingName] = useState('');
+  const [schoolLogoUpload, setSchoolLogoUpload] = useState('');
+  const [schoolBrandingBusy, setSchoolBrandingBusy] = useState(false);
   const [page, setPage] = useState<Page>(() =>
     new URLSearchParams(window.location.search).get('billing') === 'return' ? 'billing' : 'dashboard');
   const [loginView, setLoginView] = useState<LoginView>('login');
@@ -530,6 +546,7 @@ export default function App() {
   const [scheduleParticipantId, setScheduleParticipantId] = useState('');
   const [scheduleOverrides, setScheduleOverrides] = useState<Record<number, string>>({});
   const [participantImportResult, setParticipantImportResult] = useState<ParticipantImportResult | null>(null);
+  const [participantImportPreview, setParticipantImportPreview] = useState<ParticipantImportDraft[]>([]);
   const [roles, setRoles] = useState<Record<string, unknown>[]>([]);
   const [users, setUsers] = useState<Record<string, unknown>[]>([]);
   const [roleSavingId, setRoleSavingId] = useState('');
@@ -573,6 +590,7 @@ export default function App() {
   const [pendingCount, setPendingCount] = useState(0);
   const [online, setOnline] = useState(navigator.onLine);
   const [lastScan, setLastScan] = useState('');
+  const [historyResetVersion, setHistoryResetVersion] = useState(0);
   const [manualCode, setManualCode] = useState('');
   const [manualAttendanceOpen, setManualAttendanceOpen] = useState(false);
   const [manualAttendanceQuery, setManualAttendanceQuery] = useState('');
@@ -639,6 +657,15 @@ export default function App() {
   useEffect(() => {
     let active = true;
     let objectUrl = '';
+    const link = document.querySelector<HTMLLinkElement>('link[rel="icon"]') ??
+      document.head.appendChild(Object.assign(document.createElement('link'), { rel: 'icon' }));
+    if (schoolBranding?.logo_data_url) {
+      link.href = schoolBranding.logo_data_url;
+      return () => {
+        active = false;
+        link.href = '/favicon.svg';
+      };
+    }
     fetch(`${API_BASE}/branding/logo`, { cache: 'no-store' })
       .then(async (response) => {
         if (response.status === 404) return null;
@@ -648,8 +675,6 @@ export default function App() {
       .then((blob) => {
         if (!active || !blob) return;
         objectUrl = URL.createObjectURL(blob);
-        const link = document.querySelector<HTMLLinkElement>('link[rel="icon"]') ??
-          document.head.appendChild(Object.assign(document.createElement('link'), { rel: 'icon' }));
         link.href = objectUrl;
       })
       .catch((reason: unknown) => console.error('Favicon platform gagal dimuat.', reason));
@@ -659,7 +684,7 @@ export default function App() {
       const link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
       if (link) link.href = '/favicon.svg';
     };
-  }, []);
+  }, [schoolBranding?.logo_data_url]);
 
   useEffect(() => {
     let active = true;
@@ -676,11 +701,16 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    document.title = `${applicationName} · Portal Sekolah`;
-  }, [applicationName]);
+    document.title = `${session ? schoolBranding?.application_name || session.school.name : applicationName} · Portal Sekolah`;
+  }, [applicationName, schoolBranding?.application_name, session?.school.name]);
 
   const permissions = session?.user.permissions ?? [];
   const can = (permission: Permission) => hasPermission(permissions, permission);
+  const displayApplicationName = session
+    ? schoolBranding?.application_name || session.school.name
+    : applicationName;
+  const invalidImportRowCount = participantImportPreview.filter((row) =>
+    !row.full_name.trim() || !classrooms.some((classroom) => classroom.id === row.classroom_id)).length;
   const connected = online && !offlineMode;
   useEffect(() => {
     if (!session) return;
@@ -743,6 +773,29 @@ export default function App() {
       }))
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Pengaturan WhatsApp sekolah gagal dimuat.'));
   }, [session?.token]);
+
+  useEffect(() => {
+    if (!session) {
+      setSchoolBranding(null);
+      setSchoolBrandingName('');
+      setSchoolLogoUpload('');
+      return;
+    }
+    let active = true;
+    setSchoolBranding(null);
+    setSchoolBrandingName(session.school.name);
+    setSchoolLogoUpload('');
+    request<{ branding: SchoolBranding }>('/school/branding', session.token)
+      .then(({ branding }) => {
+        if (!active) return;
+        setSchoolBranding(branding);
+        setSchoolBrandingName(branding.application_name);
+      })
+      .catch((reason: unknown) => {
+        if (active) setError(reason instanceof Error ? reason.message : 'Identitas sekolah gagal dimuat.');
+      });
+    return () => { active = false; };
+  }, [session?.token, session?.school.id]);
 
   useEffect(() => {
     if (!session || !hasPermission(session.user.permissions, 'settings.operational.view')) return;
@@ -932,6 +985,25 @@ export default function App() {
     if (schoolId == null) return;
     const db = await database(schoolId);
     setPendingCount(await db.countFromIndex('queue', 'by-status', 'pending'));
+  }
+
+  async function resetLocalHistory() {
+    if (!session || !await requestConfirmation({
+      title: 'Reset riwayat scanner',
+      message: 'Hapus semua riwayat scan yang tersimpan di perangkat ini? Riwayat yang belum tersinkron juga akan dihapus dan tidak dapat dipulihkan.',
+      confirmLabel: 'Hapus semua riwayat',
+    })) return;
+    try {
+      const db = await database(session.school.id);
+      const transaction = db.transaction('queue', 'readwrite');
+      await transaction.store.clear();
+      await transaction.done;
+      setPendingCount(0);
+      setHistoryResetVersion((current) => current + 1);
+      setMessage('Semua riwayat scanner di perangkat ini berhasil dihapus.');
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Riwayat scanner gagal dihapus.', true);
+    }
   }
 
   async function login(event: FormEvent<HTMLFormElement>) {
@@ -1546,7 +1618,7 @@ export default function App() {
       const participantSheet = workbook.addWorksheet('Peserta');
       participantSheet.columns = [
         { header: 'Nama Lengkap', key: 'full_name', width: 32 },
-        { header: 'ID Kelas', key: 'classroom_id', width: 16 },
+        { header: 'Nama Kelas', key: 'classroom_id', width: 24 },
         { header: 'QR / Barcode', key: 'qr_code', width: 28 },
         { header: 'No WA Wali', key: 'guardian_phone', width: 20 },
       ];
@@ -1585,12 +1657,15 @@ export default function App() {
   }
 
   async function importParticipants(file: File) {
-    if (!session) return;
     setBusy(true);
     setParticipantImportResult(null);
+    setParticipantImportPreview([]);
     try {
       if (!file.name.toLowerCase().endsWith('.xlsx') || file.size > 5 * 1024 * 1024) {
         throw new Error('Pilih file .xlsx dengan ukuran maksimal 5 MB.');
+      }
+      if (!classrooms.length) {
+        throw new Error('Daftar kelas belum tersedia. Sinkronkan master peserta lalu coba lagi.');
       }
       const { default: ExcelJS } = await import('exceljs');
       const workbook = new ExcelJS.Workbook();
@@ -1606,40 +1681,86 @@ export default function App() {
         names.map((name) => headerColumns.get(name)).find((column) => column !== undefined);
       const codeColumn = findColumn('kode peserta', 'participant_code');
       const nameColumn = findColumn('nama lengkap', 'full_name');
-      const classroomColumn = findColumn('id kelas', 'classroom_id');
+      const classroomColumn = findColumn('id kelas', 'classroom_id', 'kelas', 'nama kelas');
       const qrColumn = findColumn('qr / barcode', 'qr_code');
       const phoneColumn = findColumn('no wa wali', 'guardian_phone');
       if (!nameColumn || !classroomColumn) {
-        throw new Error('Kolom wajib: Nama Lengkap dan ID Kelas.');
+        throw new Error('Kolom wajib: Nama Lengkap dan ID Kelas atau Nama Kelas.');
       }
-      const rows: Array<Record<string, string>> = [];
+      const rows: ParticipantImportDraft[] = [];
+      const resolveClassroomId = (reference: string) => {
+        const normalizedReference = reference.trim();
+        const exactMatch = classrooms.find((classroom) => classroom.id === normalizedReference);
+        if (exactMatch) return exactMatch.id;
+        const numericReference = normalizedReference
+          .replace(/\.0+$/, '')
+          .replace(/^0+(?=\d)/, '');
+        const numericMatch = classrooms.find((classroom) => classroom.id === numericReference);
+        if (numericMatch) return numericMatch.id;
+        const nameMatches = classrooms.filter((classroom) =>
+          classroom.name.trim().toLocaleLowerCase() === normalizedReference.toLocaleLowerCase());
+        return nameMatches.length === 1 ? nameMatches[0].id : '';
+      };
       for (let rowNumber = 2; rowNumber <= sheet.rowCount; rowNumber += 1) {
         const row = sheet.getRow(rowNumber);
-        const value = (column?: number) => column ? row.getCell(column).text.trim() : '';
+        const value = (column?: number) => {
+          if (!column) return '';
+          const cell = row.getCell(column);
+          if (typeof cell.value === 'number' && Number.isFinite(cell.value)) {
+            return String(cell.value);
+          }
+          if (typeof cell.value === 'string') return cell.value.trim();
+          return cell.text.trim();
+        };
+        const classroomReference = value(classroomColumn);
         const participant = {
+          source_row: String(rowNumber),
           participant_code: value(codeColumn),
           full_name: value(nameColumn),
-          classroom_id: value(classroomColumn),
+          classroom_id: resolveClassroomId(classroomReference),
           qr_code: value(qrColumn),
           guardian_phone: value(phoneColumn),
-          source_row: String(rowNumber),
         };
         if (![participant.full_name, participant.classroom_id, participant.qr_code,
-          participant.guardian_phone].some(Boolean)) continue;
+          participant.guardian_phone, participant.participant_code, classroomReference].some(Boolean)) continue;
         rows.push(participant);
         if (rows.length > 500) throw new Error('Impor dibatasi maksimal 500 peserta per file.');
       }
       if (!rows.length) throw new Error('File tidak berisi baris peserta.');
 
+      setParticipantImportPreview(rows);
+      setMessage(`${rows.length} baris siap diperiksa. Pastikan nama dan kelas sudah benar sebelum menyimpan.`);
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Pratinjau impor gagal dibuat.', true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitParticipantImport() {
+    if (!session || !participantImportPreview.length) return;
+    const invalidRows = participantImportPreview.filter((row) =>
+      !row.full_name.trim() || !classrooms.some((classroom) => classroom.id === row.classroom_id));
+    if (invalidRows.length) {
+      setMessage('Lengkapi nama peserta dan pilih kelas yang tersedia pada setiap baris.', true);
+      return;
+    }
+    setBusy(true);
+    try {
       const result = await request<ParticipantImportResult>('/school/participants/import', session.token, {
         method: 'POST',
-        body: { participants: rows },
+        body: { participants: participantImportPreview },
       });
       setParticipantImportResult(result);
+      const importedRows = new Set(
+        result.results.filter((item) => item.status === 'imported').map((item) => String(item.row)),
+      );
+      setParticipantImportPreview((current) =>
+        current.filter((row) => !importedRows.has(row.source_row)));
       await loadSchoolData(session);
       setMessage(`Impor selesai: ${result.imported} berhasil, ${result.skipped} dilewati.`);
     } catch (reason) {
-      setMessage(reason instanceof Error ? reason.message : 'Impor peserta gagal.', true);
+      setMessage(reason instanceof Error ? reason.message : 'Impor peserta gagal disimpan.', true);
     } finally {
       setBusy(false);
     }
@@ -1718,22 +1839,29 @@ export default function App() {
   async function printSelectedQrs() {
     const selected = participants.filter((participant) => selectedParticipantIds.has(participant.id));
     if (!selected.length) return;
+    let printWindow: Window | null = null;
     try {
+      printWindow = window.open('', '_blank');
+      if (!printWindow) throw new Error('Browser memblokir jendela cetak. Izinkan pop-up untuk portal ini lalu coba lagi.');
+      printWindow.opener = null;
+      printWindow.document.write('<!doctype html><html lang="id"><head><meta charset="utf-8"><title>Menyiapkan kartu QR</title></head><body>Menyiapkan kartu QR…</body></html>');
+      printWindow.document.close();
       const images = await Promise.all(selected.map(async (participant) => ({
         ...participant,
         image: await QRCode.toDataURL(participant.qr_code, { width: 280, margin: 2 }),
       })));
-      const printWindow = window.open('', '_blank', 'noopener,noreferrer');
-      if (!printWindow) throw new Error('Izinkan pop-up browser untuk mencetak kartu QR.');
+      printWindow.document.open();
       printWindow.document.write(`<!doctype html><html lang="id"><head><meta charset="utf-8"><title>Kartu QR Sekolah</title><style>
         @page{size:A4 portrait;margin:8mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;margin:0;color:#111}
         main{display:grid;grid-template-columns:repeat(4,1fr);gap:5mm}.item{display:grid;justify-items:center;gap:2mm;text-align:center;break-inside:avoid;padding:1mm}
         img{width:32mm;height:32mm}.name{font-size:9pt;font-weight:bold;overflow-wrap:anywhere}
       </style></head><body><main>${images.map((item) => `<article class="item"><img src="${item.image}" alt=""><div class="name">${item.full_name.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char] ?? char)}</div></article>`).join('')}</main></body></html>`);
       printWindow.document.close();
+      await Promise.all(Array.from(printWindow.document.images, (image) => image.decode()));
       printWindow.focus();
       printWindow.print();
     } catch (reason) {
+      printWindow?.close();
       setMessage(reason instanceof Error ? reason.message : 'QR gagal disiapkan untuk cetak.', true);
     }
   }
@@ -1948,6 +2076,85 @@ export default function App() {
       }
     } finally {
       setManualAttendanceBusy(false);
+    }
+  }
+
+  async function selectSchoolLogo(file: File) {
+    if (file.size > 1024 * 1024) {
+      setMessage('Ukuran logo maksimal 1 MB.', true);
+      return;
+    }
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    const mimeType = ['image/png', 'image/jpeg', 'image/webp'].includes(file.type)
+      ? file.type
+      : extension === 'png'
+        ? 'image/png'
+        : extension === 'jpg' || extension === 'jpeg'
+          ? 'image/jpeg'
+          : extension === 'webp'
+            ? 'image/webp'
+            : '';
+    if (!mimeType) {
+      setMessage('Pilih logo PNG, JPG, atau WebP.', true);
+      return;
+    }
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => typeof reader.result === 'string'
+          ? resolve(reader.result)
+          : reject(new Error('File logo tidak dapat dibaca.'));
+        reader.onerror = () => reject(reader.error ?? new Error('File logo tidak dapat dibaca.'));
+        reader.readAsDataURL(file);
+      });
+      const separator = dataUrl.indexOf(',');
+      if (separator < 0) throw new Error('Format file logo tidak valid.');
+      setSchoolLogoUpload(`data:${mimeType};base64,${dataUrl.slice(separator + 1)}`);
+      setMessage('Pratinjau logo siap. Simpan identitas sekolah untuk menerapkan perubahan.');
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'File logo gagal dibaca.', true);
+    }
+  }
+
+  async function saveSchoolBranding(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session) return;
+    setSchoolBrandingBusy(true);
+    try {
+      const result = await request<{ branding: SchoolBranding }>('/school/branding', session.token, {
+        method: 'PUT',
+        body: {
+          application_name: schoolBrandingName.trim(),
+          ...(schoolLogoUpload ? { logo_data_url: schoolLogoUpload } : {}),
+        },
+      });
+      setSchoolBranding(result.branding);
+      setSchoolBrandingName(result.branding.application_name);
+      setSchoolLogoUpload('');
+      setMessage('Nama aplikasi dan logo sekolah berhasil disimpan.');
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Identitas sekolah gagal disimpan.', true);
+    } finally {
+      setSchoolBrandingBusy(false);
+    }
+  }
+
+  async function deleteSchoolLogo() {
+    if (!session || !await requestConfirmation({
+      title: 'Hapus logo sekolah',
+      message: 'Hapus logo sekolah dan kembali ke logo bawaan aplikasi?',
+      confirmLabel: 'Hapus logo',
+    })) return;
+    setSchoolBrandingBusy(true);
+    try {
+      await request('/school/branding/logo', session.token, { method: 'DELETE' });
+      setSchoolBranding((current) => current ? { ...current, logo_data_url: null } : current);
+      setSchoolLogoUpload('');
+      setMessage('Logo sekolah berhasil dihapus.');
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Logo sekolah gagal dihapus.', true);
+    } finally {
+      setSchoolBrandingBusy(false);
     }
   }
 
@@ -2243,7 +2450,7 @@ export default function App() {
   return (
     <div className={page === 'scanner' ? 'portal-shell scanner-active' : 'portal-shell'}>
       <header className="topbar">
-        <div className="brand"><div className="brand-mark">RH</div><div><strong>{session.school.name}</strong><small>Kode sekolah · {session.school.school_code}</small></div></div>
+        <div className="brand"><div className="brand-mark">{schoolBranding?.logo_data_url ? <img src={schoolBranding.logo_data_url} alt="" /> : 'RH'}</div><div><strong>{session.school.name}</strong><small>Kode sekolah · {session.school.school_code}</small></div></div>
         <div className="top-actions">
           <span className={`connection ${connected ? 'online' : 'offline'}`}><i />{connected ? 'Online' : 'Offline'}</span>
           <span className="pending-pill">{pendingCount} pending</span>
@@ -2280,9 +2487,9 @@ export default function App() {
               <header className="scan-screen-header">
                 <div className="scan-header-top">
                   <div className="scan-brand">
-                    <div className="brand-mark">RH</div>
+                    <div className="brand-mark">{schoolBranding?.logo_data_url ? <img src={schoolBranding.logo_data_url} alt="" /> : 'RH'}</div>
                     <div className="scan-brand-copy">
-                      <strong>{applicationName}</strong>
+                      <strong>{displayApplicationName}</strong>
                       <div className="scan-date-time">
                         <span className="scan-date">{scanClock.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</span>
                         <span className="scan-clock">{scanClock.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
@@ -2317,8 +2524,14 @@ export default function App() {
               </form>}
 
               <section className="scan-history-card">
-                <div className="scan-history-heading"><div><h2>Log kehadiran terbaru</h2><p>Riwayat scan yang tersimpan di perangkat ini</p></div>{pendingCount > 0 && <span className="history-pending">{pendingCount} pending</span>}</div>
-                <LocalQueueList schoolId={session.school.id} refreshKey={lastScan} />
+                <div className="scan-history-heading">
+                  <div><h2>Log kehadiran terbaru</h2><p>Riwayat scan yang tersimpan di perangkat ini</p></div>
+                  <div className="scan-history-actions">
+                    {pendingCount > 0 && <span className="history-pending">{pendingCount} pending</span>}
+                    <button type="button" className="button secondary small history-reset-button" onClick={() => void resetLocalHistory()}>Reset riwayat</button>
+                  </div>
+                </div>
+                <LocalQueueList schoolId={session.school.id} refreshKey={`${lastScan}:${historyResetVersion}`} />
               </section>
 
             </section>
@@ -2367,7 +2580,7 @@ export default function App() {
                 <div className="classroom-list">{classrooms.map((classroom) => <div className="classroom-row" key={classroom.id}><div><strong>{classroom.name}</strong><small>{classroom.unit_name ?? 'Umum'}</small></div><div className="heading-actions"><button type="button" className="button secondary small" onClick={() => setClassroomForm({ id: classroom.id, name: classroom.name })}>Edit</button>{can('participants.delete') && <button type="button" className="button danger small" onClick={() => void deleteClassroom(classroom)}>Hapus</button>}</div></div>)}</div>
               </div>}
               {can('participants.edit') && <div className="panel participant-import">
-                <div><h2>Impor dari Excel</h2><p className="muted">Gunakan template agar kolom dan ID kelas sesuai. Maksimal 500 baris per impor.</p></div>
+                <div><h2>Impor dari Excel</h2><p className="muted">Gunakan Nama Kelas dari sheet Referensi Kelas; Anda juga dapat memilih ulang kelas di pratinjau. Maksimal 500 baris.</p></div>
                 <div className="heading-actions">
                   <button type="button" className="button secondary" onClick={() => void downloadParticipantTemplate()}>Unduh template .xlsx</button>
                   <label className="button primary import-file-button">Pilih file Excel
@@ -2378,6 +2591,50 @@ export default function App() {
                     }} />
                   </label>
                 </div>
+                {participantImportPreview.length > 0 && <div className="import-preview">
+                  <div className="section-title">
+                    <div><h3>Pratinjau {participantImportPreview.length} baris</h3><p className="muted">Kelas yang dipilih akan memakai ID kelas sekolah yang valid. Baris yang tidak ingin diimpor dapat dihapus dari pratinjau.</p></div>
+                    <div className="heading-actions">
+                      <button type="button" className="button primary" disabled={busy || invalidImportRowCount > 0} onClick={() => void submitParticipantImport()}>
+                        {busy ? 'Menyimpan…' : `Simpan ${participantImportPreview.length} peserta`}
+                      </button>
+                      <button type="button" className="button secondary" disabled={busy} onClick={() => { setParticipantImportPreview([]); setParticipantImportResult(null); }}>Batal</button>
+                    </div>
+                  </div>
+                  {invalidImportRowCount > 0 && <p className="import-preview-warning">Lengkapi nama dan pilih kelas untuk {invalidImportRowCount} baris sebelum menyimpan.</p>}
+                  <div className="table-scroll"><table className="import-preview-table"><thead><tr><th>Baris</th><th>Kode peserta</th><th>Nama peserta</th><th>Kelas</th><th>QR / Barcode</th><th>No. WA wali</th><th>Aksi</th></tr></thead><tbody>
+                    {participantImportPreview.map((row) => <tr key={row.source_row}>
+                      <td>{row.source_row}</td>
+                      <td><input aria-label={`Kode peserta baris ${row.source_row}`} maxLength={60} value={row.participant_code} onChange={(event) => {
+                        setParticipantImportResult(null);
+                        setParticipantImportPreview((current) => current.map((item) => item.source_row === row.source_row ? { ...item, participant_code: event.target.value } : item));
+                      }} /></td>
+                      <td><input aria-label={`Nama peserta baris ${row.source_row}`} maxLength={150} value={row.full_name} onChange={(event) => {
+                        setParticipantImportResult(null);
+                        setParticipantImportPreview((current) => current.map((item) => item.source_row === row.source_row ? { ...item, full_name: event.target.value } : item));
+                      }} /></td>
+                      <td><select aria-label={`Kelas baris ${row.source_row}`} required value={row.classroom_id} onChange={(event) => {
+                        setParticipantImportResult(null);
+                        setParticipantImportPreview((current) => current.map((item) => item.source_row === row.source_row ? { ...item, classroom_id: event.target.value } : item));
+                      }}>
+                        <option value="">Pilih kelas</option>
+                        {classrooms.map((classroom) => <option key={classroom.id} value={classroom.id}>{classroom.name}{classroom.unit_name ? ` · ${classroom.unit_name}` : ''} (ID {classroom.id})</option>)}
+                      </select></td>
+                      <td><input aria-label={`QR atau barcode baris ${row.source_row}`} maxLength={160} value={row.qr_code} onChange={(event) => {
+                        setParticipantImportResult(null);
+                        setParticipantImportPreview((current) => current.map((item) => item.source_row === row.source_row ? { ...item, qr_code: event.target.value } : item));
+                      }} /></td>
+                      <td><input aria-label={`Nomor wali baris ${row.source_row}`} maxLength={32} value={row.guardian_phone} onChange={(event) => {
+                        setParticipantImportResult(null);
+                        setParticipantImportPreview((current) => current.map((item) => item.source_row === row.source_row ? { ...item, guardian_phone: event.target.value } : item));
+                      }} /></td>
+                      <td><button type="button" className="button danger small" disabled={busy} onClick={() => {
+                        setParticipantImportResult(null);
+                        setParticipantImportPreview((current) => current.filter((item) => item.source_row !== row.source_row));
+                      }}>Hapus baris</button></td>
+                    </tr>)}
+                  </tbody></table></div>
+                </div>}
                 {participantImportResult && <div className="import-result" role="status">
                   <strong>{participantImportResult.imported} peserta berhasil ditambahkan; {participantImportResult.skipped} baris dilewati.</strong>
                   {participantImportResult.results.some((item) => item.status === 'skipped') && <ul>
@@ -2429,6 +2686,42 @@ export default function App() {
                   <span>Aktifkan field scanner barcode USB / Bluetooth</span>
                 </label>
                 <p className="muted">Mode cepat mengurangi jeda decode menjadi 100 ms (250 ms setelah berhasil); mode seimbang memakai 350 ms (500 ms setelah berhasil). Pemindaian aktual tetap bergantung pada kamera, fokus, pencahayaan, dan kualitas kode.</p>
+              </section>}
+              {can('settings.operational.view') && <section className="panel school-branding-panel">
+                <div>
+                  <h2>Identitas aplikasi sekolah</h2>
+                  <p className="muted">Atur nama dan logo yang tampil pada scanner serta portal sekolah ini. Nama awal mengikuti nama sekolah dan dapat disesuaikan.</p>
+                </div>
+                {can('settings.operational.edit') ? <form className="school-branding-form" onSubmit={(event) => void saveSchoolBranding(event)}>
+                  <label>Nama aplikasi sekolah
+                    <input required maxLength={120} value={schoolBrandingName} onChange={(event) => setSchoolBrandingName(event.target.value)} />
+                  </label>
+                  <div className="school-branding-logo-row">
+                    <div className="school-branding-preview">
+                      {(schoolLogoUpload || schoolBranding?.logo_data_url)
+                        ? <img src={schoolLogoUpload || schoolBranding?.logo_data_url || ''} alt="Pratinjau logo sekolah" />
+                        : <span>RH</span>}
+                    </div>
+                    <div className="school-branding-logo-controls">
+                      <label>Logo sekolah (PNG, JPG, WebP; maks. 1 MB)
+                        <input type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" disabled={schoolBrandingBusy} onChange={(event) => {
+                          const file = event.currentTarget.files?.[0];
+                          event.currentTarget.value = '';
+                          if (file) void selectSchoolLogo(file);
+                        }} />
+                      </label>
+                      {schoolLogoUpload && <button type="button" className="button secondary small" disabled={schoolBrandingBusy} onClick={() => setSchoolLogoUpload('')}>Batalkan logo baru</button>}
+                      {!schoolLogoUpload && schoolBranding?.logo_data_url && <button type="button" className="button danger small" disabled={schoolBrandingBusy} onClick={() => void deleteSchoolLogo()}>Hapus logo</button>}
+                    </div>
+                  </div>
+                  <div className="heading-actions">
+                    <button className="button primary" disabled={schoolBrandingBusy}>{schoolBrandingBusy ? 'Menyimpan…' : 'Simpan identitas'}</button>
+                    <button type="button" className="button secondary" disabled={schoolBrandingBusy || !session} onClick={() => setSchoolBrandingName(session.school.name)}>Gunakan nama sekolah</button>
+                  </div>
+                </form> : <div className="school-branding-readonly">
+                  <strong>{schoolBranding?.application_name || session.school.name}</strong>
+                  {schoolBranding?.logo_data_url && <img src={schoolBranding.logo_data_url} alt="Logo sekolah" />}
+                </div>}
               </section>}
               {can('settings.operational.edit') && <form className="panel settings-form" onSubmit={(event) => void saveSettings(event)}>
                 <div className="form-grid">

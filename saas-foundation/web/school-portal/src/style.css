@@ -8,6 +8,7 @@ button { cursor: pointer; }
 .login-shell { display: grid; min-height: 100vh; place-items: center; padding: 22px; background: radial-gradient(circle at 16% 10%, #284c3c, #172b27 48%, #101e1c); }
 .login-card { display: grid; width: min(420px, 100%); gap: 15px; border: 1px solid #dfe7df; border-radius: 22px; background: #fff; padding: 34px; box-shadow: 0 24px 80px #06120f55; }
 .brand-mark { display: grid; width: 42px; height: 42px; place-items: center; border-radius: 13px; background: #d7f0dc; color: #1c6b46; font: 800 14px Manrope, sans-serif; }
+.brand-mark img { width: 100%; height: 100%; border-radius: inherit; object-fit: contain; }
 .eyebrow { margin: 0 0 8px; color: #36795b; font-size: 10px; font-weight: 800; letter-spacing: .13em; }
 h1, h2, h3, strong { font-family: Manrope, sans-serif; }
 h1 { margin: 0 0 6px; font-size: clamp(24px, 3vw, 34px); letter-spacing: -.04em; }
@@ -214,6 +215,8 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
 .scan-history-heading { display: flex; min-height: 58px; align-items: center; justify-content: space-between; gap: 10px; padding: 15px 3px 12px; }
 .scan-history-heading h2 { color: var(--scan-content); font-size: 17px; }
 .scan-history-heading p { margin: 4px 0 0; color: var(--scan-muted); font-size: 9px; }
+.scan-history-actions { display: flex; align-items: center; gap: 7px; }
+.history-reset-button { min-height: 26px; border-color: rgba(226,232,240,.25); background: rgba(255,255,255,.08); color: #e2e8f0; font-size: 9px; }
 .history-pending { border-radius: 12px; background: rgba(251,191,36,.12); padding: 5px 8px; color: #fcd34d; font-size: 8px; font-weight: 700; }
 .scan-history-card .table-scroll { height: 150px; overflow-y: auto; border-radius: 14px; background: rgba(7,15,28,.62); }
 .scan-history-card table { border-collapse: collapse; }
@@ -222,11 +225,23 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
 .scan-history-card td code { background: transparent; }
 .scan-resume-button { height: 42px; margin-top: 10px; border: 0; background: #157b63; color: #fff; }
 .participant-import, .participant-schedule-editor { display: grid; gap: 12px; }
+.school-branding-panel, .school-branding-form { display: grid; gap: 12px; }
+.school-branding-logo-row { display: flex; align-items: center; gap: 14px; }
+.school-branding-preview { display: grid; width: 76px; height: 76px; flex: 0 0 auto; place-items: center; overflow: hidden; border: 1px solid #d8e1da; border-radius: 14px; background: #d7f0dc; color: #1c6b46; font: 800 20px Manrope, sans-serif; }
+.school-branding-preview img { width: 100%; height: 100%; object-fit: contain; }
+.school-branding-logo-controls { display: grid; justify-items: start; gap: 8px; }
+.school-branding-readonly { display: flex; align-items: center; gap: 12px; }
+.school-branding-readonly img { width: 52px; height: 52px; object-fit: contain; }
 .participant-import .muted { margin: 4px 0 0; }
 .import-file-button { position: relative; overflow: hidden; }
 .import-file-button input[type=file] { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 100%; opacity: 0; cursor: pointer; }
 .import-result { border: 1px solid #d5e8d9; border-radius: 9px; background: #f3faf4; padding: 10px; color: #285d3b; font-size: 10px; }
 .import-result ul { display: grid; gap: 4px; margin: 7px 0 0; padding-left: 18px; color: #67512d; }
+.import-preview { display: grid; gap: 10px; }
+.import-preview-table { min-width: 1100px; }
+.import-preview-table input { min-width: 150px; }
+.import-preview-table select { min-width: 190px; }
+.import-preview-warning { margin: 0; color: #a64b18; font-size: 11px; }
 .participant-schedule-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .participant-actions { display: flex; flex-wrap: wrap; gap: 5px; }
 .classroom-manager, .participant-schedule-settings { display: grid; gap: 12px; }

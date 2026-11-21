@@ -25,6 +25,7 @@ import {
   validateRegistrationUsername,
 } from '../core/school-registration.js';
 import { generateUniqueSchoolCode } from '../core/school-code.js';
+import { parseLogoDataUrl } from '../core/branding.js';
 import { provisionSchool } from '../core/school-provision.js';
 import { enforceOtpRequestLimit } from '../core/otp-rate-limit.js';
 import {
@@ -963,6 +964,71 @@ const deleteParticipant = asyncRoute(async (req, res) => {
 });
 router.delete('/participants/:id', requireSchoolUser, requirePermission('participants.delete'), deleteParticipant);
 router.delete('/participants', requireSchoolUser, requirePermission('participants.delete'), deleteParticipant);
+
+router.get('/branding', requireSchoolUser, asyncRoute(async (req, res) => {
+  const [[branding]] = await pool.execute(
+    `SELECT application_name, logo_mime_type, logo_data
+       FROM school_branding_config WHERE sekolah_id = ?`,
+    [req.schoolUser.sekolah_id],
+  );
+  res.json({
+    branding: {
+      application_name: branding?.application_name ?? req.schoolUser.school_name,
+      logo_data_url: branding?.logo_data && branding.logo_mime_type
+        ? `data:${branding.logo_mime_type};base64,${Buffer.from(branding.logo_data).toString('base64')}`
+        : null,
+    },
+  });
+}));
+
+router.put('/branding', requireSchoolUser, requirePermission('settings.operational.edit'), asyncRoute(async (req, res) => {
+  const applicationName = string(req.body?.application_name, 'Nama aplikasi', 120);
+  const logoDataUrl = req.body?.logo_data_url;
+  if (logoDataUrl !== undefined && logoDataUrl !== null && logoDataUrl !== '') {
+    const { mimeType, data } = parseLogoDataUrl(logoDataUrl);
+    await pool.execute(
+      `INSERT INTO school_branding_config
+         (sekolah_id, application_name, logo_mime_type, logo_data)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE application_name = VALUES(application_name),
+                               logo_mime_type = VALUES(logo_mime_type),
+                               logo_data = VALUES(logo_data)`,
+      [req.schoolUser.sekolah_id, applicationName, mimeType, data],
+    );
+  } else {
+    await pool.execute(
+      `INSERT INTO school_branding_config (sekolah_id, application_name)
+       VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE application_name = VALUES(application_name)`,
+      [req.schoolUser.sekolah_id, applicationName],
+    );
+  }
+  const [[branding]] = await pool.execute(
+    `SELECT application_name, logo_mime_type, logo_data
+       FROM school_branding_config WHERE sekolah_id = ?`,
+    [req.schoolUser.sekolah_id],
+  );
+  res.json({
+    branding: {
+      application_name: branding.application_name,
+      logo_data_url: branding.logo_data && branding.logo_mime_type
+        ? `data:${branding.logo_mime_type};base64,${Buffer.from(branding.logo_data).toString('base64')}`
+        : null,
+    },
+    message: 'Identitas aplikasi sekolah berhasil disimpan.',
+  });
+}));
+
+router.delete('/branding/logo', requireSchoolUser,
+  requirePermission('settings.operational.edit'), asyncRoute(async (req, res) => {
+    await pool.execute(
+      `UPDATE school_branding_config
+          SET logo_mime_type = NULL, logo_data = NULL
+        WHERE sekolah_id = ?`,
+      [req.schoolUser.sekolah_id],
+    );
+    res.json({ message: 'Logo sekolah dihapus.' });
+  }));
 
 router.get('/settings', requireSchoolUser,
   requireAnyPermission('settings.operational.view', 'participants.view', 'participants.read', 'participants.manage', 'scanner.use'), asyncRoute(async (req, res) => {
