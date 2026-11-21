@@ -12,6 +12,11 @@ import { generateUniqueSchoolCode, isValidSchoolCode } from '../core/school-code
 import { parseLogoDataUrl } from '../core/branding.js';
 import { provisionSchool } from '../core/school-provision.js';
 import {
+  enforceOtpRequestLimit,
+  getOtpRateLimitSettings,
+  validateOtpRateLimitSettings,
+} from '../core/otp-rate-limit.js';
+import {
   decryptGatewayToken, encryptGatewayToken, validateGatewayUrl,
 } from '../core/whatsapp-gateway.js';
 import { inTransaction, pool } from '../db.js';
@@ -25,6 +30,7 @@ import {
   hashRegistrationOtp,
   normalizeWhatsappPhone,
   validateRegistrationPassword,
+  validateRegistrationUsername,
 } from '../core/school-registration.js';
 
 const router = Router();
@@ -110,17 +116,13 @@ router.post('/auth/password-reset/start', asyncRoute(async (req, res) => {
   await pool.execute(
     'DELETE FROM super_admin_password_reset_challenges WHERE created_at < UTC_TIMESTAMP() - INTERVAL 1 DAY',
   );
-  const [[limits]] = await pool.execute(
-    `SELECT
-       SUM(whatsapp_phone = ? AND created_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR) AS phone_requests,
-       SUM(request_ip_hash = ? AND created_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR) AS ip_requests
-     FROM super_admin_password_reset_challenges
-     WHERE created_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR`,
-    [phone, ipHash],
-  );
-  if (Number(limits.phone_requests ?? 0) >= 3 || Number(limits.ip_requests ?? 0) >= 20) {
-    throw fail(429, 'Batas permintaan reset tercapai. Coba kembali beberapa saat lagi.', 'RESET_RATE_LIMITED');
-  }
+  await enforceOtpRequestLimit({
+    challengeTable: 'super_admin_password_reset_challenges',
+    phone,
+    ipHash,
+    message: 'Batas permintaan reset tercapai.',
+    errorCode: 'RESET_RATE_LIMITED',
+  });
 
   const [admins] = await pool.execute(
     `SELECT id FROM super_admins
@@ -330,6 +332,21 @@ router.put('/settings/apk-download', requireSuperAdmin, asyncRoute(async (req, r
 
 router.use(requireSuperAdmin);
 
+router.get('/settings/otp-rate-limit', asyncRoute(async (req, res) => {
+  res.json({ settings: await getOtpRateLimitSettings() });
+}));
+
+router.put('/settings/otp-rate-limit', asyncRoute(async (req, res) => {
+  const settings = validateOtpRateLimitSettings(req.body ?? {});
+  await pool.execute(
+    `UPDATE platform_otp_rate_limit_settings
+        SET max_requests_per_phone = ?, window_minutes = ?
+      WHERE id = 1`,
+    [settings.max_requests_per_phone, settings.window_minutes],
+  );
+  res.json({ settings, message: 'Batas permintaan OTP diperbarui.' });
+}));
+
 router.get('/settings/recovery-phone', asyncRoute(async (req, res) => {
   const [[admin]] = await pool.execute(
     'SELECT whatsapp_phone FROM super_admins WHERE id = ?',
@@ -495,8 +512,12 @@ router.get('/schools', asyncRoute(async (req, res) => {
             subscription_expires_at, participant_quota, timezone, is_active, created_at, updated_at,
             (SELECT u.username
                FROM users u JOIN roles r ON r.sekolah_id = u.sekolah_id AND r.id = u.role_id
-              WHERE u.sekolah_id = schools.id AND r.role_key = 'admin-sekolah'
-              ORDER BY u.id LIMIT 1) AS admin_username
+              WHERE u.sekolah_id = schools.id AND r.role_key = 'admin-sekolah' AND u.is_active = TRUE
+              ORDER BY u.id LIMIT 1) AS admin_username,
+            (SELECT u.whatsapp_phone
+                FROM users u JOIN roles r ON r.sekolah_id = u.sekolah_id AND r.id = u.role_id
+               WHERE u.sekolah_id = schools.id AND r.role_key = 'admin-sekolah' AND u.is_active = TRUE
+               ORDER BY u.id LIMIT 1) AS admin_whatsapp_phone
        FROM schools ORDER BY id DESC`,
   );
   res.json({ schools: rows });
@@ -561,12 +582,25 @@ router.patch('/schools/:id', asyncRoute(async (req, res) => {
   const allowed = ['name', 'subscription_status', 'trial_ends_at',
     'subscription_expires_at', 'participant_quota', 'timezone', 'is_active'];
   const changes = { ...(req.body ?? {}) };
+  const hasAdminUsername = Object.hasOwn(changes, 'admin_username');
+  const hasAdminPhone = Object.hasOwn(changes, 'admin_whatsapp_phone');
+  const adminUsername = hasAdminUsername ? changes.admin_username : null;
+  const adminPhone = hasAdminPhone ? normalizeWhatsappPhone(changes.admin_whatsapp_phone) : null;
+  delete changes.admin_username;
+  delete changes.admin_whatsapp_phone;
+  if (hasAdminUsername && !validateRegistrationUsername(adminUsername)) {
+    throw fail(400, 'Username Admin harus terdiri dari 3-80 huruf, angka, titik, garis bawah, atau tanda hubung.', 'VALIDATION_ERROR');
+  }
+  if (hasAdminPhone && !adminPhone) {
+    throw fail(400, 'Nomor WhatsApp Admin tidak valid.', 'VALIDATION_ERROR');
+  }
   if (changes.subscription_status === 'lifetime') {
     changes.trial_ends_at = null;
     changes.subscription_expires_at = null;
   }
   const entries = Object.entries(changes).filter(([key]) => allowed.includes(key));
-  if (!entries.length || entries.length !== Object.keys(changes).length) {
+  if ((!entries.length && !hasAdminUsername && !hasAdminPhone) ||
+      entries.length !== Object.keys(changes).length) {
     throw fail(400, 'Field perubahan tidak valid atau kosong.', 'VALIDATION_ERROR');
   }
   const values = [];
@@ -593,12 +627,51 @@ router.patch('/schools/:id', asyncRoute(async (req, res) => {
     }
   }
   const assignments = entries.map(([key]) => `\`${key}\` = ?`).join(', ');
-  const [existing] = await pool.execute('SELECT id FROM schools WHERE id = ?', [req.params.id]);
-  if (!existing.length) throw fail(404, 'Sekolah tidak ditemukan.', 'NOT_FOUND');
-  const [result] = await pool.execute(
-    `UPDATE schools SET ${assignments} WHERE id = ?`,
-    [...values, req.params.id],
-  );
+  try {
+    await inTransaction(async (connection) => {
+      const [existing] = await connection.execute(
+        'SELECT id FROM schools WHERE id = ? FOR UPDATE',
+        [req.params.id],
+      );
+      if (!existing.length) throw fail(404, 'Sekolah tidak ditemukan.', 'NOT_FOUND');
+      if (entries.length) {
+        await connection.execute(
+          `UPDATE schools SET ${assignments} WHERE id = ?`,
+          [...values, req.params.id],
+        );
+      }
+      if (hasAdminUsername || hasAdminPhone) {
+        const [[admin]] = await connection.execute(
+          `SELECT u.id
+             FROM users u JOIN roles r ON r.sekolah_id = u.sekolah_id AND r.id = u.role_id
+            WHERE u.sekolah_id = ? AND r.role_key = 'admin-sekolah' AND u.is_active = TRUE
+            ORDER BY u.id LIMIT 1 FOR UPDATE`,
+          [req.params.id],
+        );
+        if (!admin) throw fail(404, 'Akun Admin sekolah aktif tidak ditemukan.', 'NOT_FOUND');
+        const adminAssignments = [];
+        const adminValues = [];
+        if (hasAdminUsername) {
+          adminAssignments.push('username = ?');
+          adminValues.push(adminUsername.trim());
+        }
+        if (hasAdminPhone) {
+          adminAssignments.push('whatsapp_phone = ?');
+          adminValues.push(adminPhone);
+        }
+        adminAssignments.push('auth_version = auth_version + 1');
+        await connection.execute(
+          `UPDATE users SET ${adminAssignments.join(', ')} WHERE id = ?`,
+          [...adminValues, admin.id],
+        );
+      }
+    });
+  } catch (error) {
+    if (error?.code === 'ER_DUP_ENTRY') {
+      throw fail(409, 'Username atau nomor WhatsApp sudah digunakan akun lain di sekolah ini.', 'DUPLICATE_ADMIN_LOGIN');
+    }
+    throw error;
+  }
   const [[school]] = await pool.execute(
     `SELECT id, slug, school_code, name, subscription_status, trial_ends_at,
             subscription_expires_at, participant_quota, timezone, is_active

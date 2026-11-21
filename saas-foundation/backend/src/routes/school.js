@@ -23,6 +23,7 @@ import {
 } from '../core/school-registration.js';
 import { generateUniqueSchoolCode } from '../core/school-code.js';
 import { provisionSchool } from '../core/school-provision.js';
+import { enforceOtpRequestLimit } from '../core/otp-rate-limit.js';
 import {
   decryptGatewayToken, encryptGatewayToken, sendWhatsappMessage, validateGatewayUrl,
 } from '../core/whatsapp-gateway.js';
@@ -133,17 +134,13 @@ router.post('/auth/register/start', asyncRoute(async (req, res) => {
   await pool.execute(
     'DELETE FROM school_registration_challenges WHERE created_at < UTC_TIMESTAMP() - INTERVAL 1 DAY',
   );
-  const [[limits]] = await pool.execute(
-    `SELECT
-       SUM(whatsapp_phone = ? AND created_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR) AS phone_requests,
-       SUM(request_ip_hash = ? AND created_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR) AS ip_requests
-     FROM school_registration_challenges
-     WHERE created_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR`,
-    [phone, ipHash],
-  );
-  if (Number(limits.phone_requests ?? 0) >= 3 || Number(limits.ip_requests ?? 0) >= 20) {
-    throw fail(429, 'Batas permintaan OTP tercapai. Coba kembali beberapa saat lagi.', 'OTP_RATE_LIMITED');
-  }
+  await enforceOtpRequestLimit({
+    challengeTable: 'school_registration_challenges',
+    phone,
+    ipHash,
+    message: 'Batas permintaan OTP tercapai.',
+    errorCode: 'OTP_RATE_LIMITED',
+  });
 
   const challengeId = randomUUID();
   const otp = createRegistrationOtp();
@@ -262,17 +259,13 @@ router.post('/auth/password-reset/start', asyncRoute(async (req, res) => {
   await pool.execute(
     'DELETE FROM school_password_reset_challenges WHERE created_at < UTC_TIMESTAMP() - INTERVAL 1 DAY',
   );
-  const [[limits]] = await pool.execute(
-    `SELECT
-       SUM(whatsapp_phone = ? AND created_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR) AS phone_requests,
-       SUM(request_ip_hash = ? AND created_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR) AS ip_requests
-     FROM school_password_reset_challenges
-     WHERE created_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR`,
-    [phone, ipHash],
-  );
-  if (Number(limits.phone_requests ?? 0) >= 3 || Number(limits.ip_requests ?? 0) >= 20) {
-    throw fail(429, 'Batas permintaan reset tercapai. Coba kembali beberapa saat lagi.', 'RESET_RATE_LIMITED');
-  }
+  await enforceOtpRequestLimit({
+    challengeTable: 'school_password_reset_challenges',
+    phone,
+    ipHash,
+    message: 'Batas permintaan reset tercapai.',
+    errorCode: 'RESET_RATE_LIMITED',
+  });
 
   const [accounts] = await pool.execute(
     `SELECT u.id, u.sekolah_id

@@ -126,6 +126,18 @@ CREATE TABLE IF NOT EXISTS platform_backup_settings (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 INSERT IGNORE INTO platform_backup_settings (id) VALUES (1);
 
+CREATE TABLE IF NOT EXISTS platform_otp_rate_limit_settings (
+    id TINYINT UNSIGNED NOT NULL,
+    max_requests_per_phone TINYINT UNSIGNED NOT NULL DEFAULT 10,
+    window_minutes SMALLINT UNSIGNED NOT NULL DEFAULT 30,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    CONSTRAINT chk_platform_otp_rate_limit_singleton CHECK (id = 1),
+    CONSTRAINT chk_platform_otp_rate_limit_count CHECK (max_requests_per_phone BETWEEN 1 AND 50),
+    CONSTRAINT chk_platform_otp_rate_limit_window CHECK (window_minutes BETWEEN 1 AND 1440)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+INSERT IGNORE INTO platform_otp_rate_limit_settings (id) VALUES (1);
+
 CREATE TABLE IF NOT EXISTS subscription_payment_orders (
     id CHAR(36) NOT NULL,
     sekolah_id BIGINT UNSIGNED NOT NULL,

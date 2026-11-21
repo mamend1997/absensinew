@@ -15,6 +15,7 @@ interface School {
   participant_quota: number;
   is_active: boolean | number;
   admin_username: string | null;
+  admin_whatsapp_phone: string | null;
 }
 
 interface WhatsappGatewaySettings {
@@ -40,6 +41,8 @@ interface SchoolEditForm {
   name: string;
   subscription_status: SubscriptionStatus;
   participant_quota: number;
+  admin_username: string;
+  admin_whatsapp_phone: string;
 }
 
 interface ResetCredentials {
@@ -62,6 +65,11 @@ interface PlatformBackupSettings {
   last_status: 'never' | 'running' | 'success' | 'failed' | 'notification_failed';
   last_run_at: string | null;
   last_error: string | null;
+}
+
+interface OtpRateLimitSettings {
+  max_requests_per_phone: number;
+  window_minutes: number;
 }
 
 type LoginView = 'login' | 'forgot-password' | 'reset-password';
@@ -190,6 +198,12 @@ export default function App() {
   const [backupBotToken, setBackupBotToken] = useState('');
   const [backupChatId, setBackupChatId] = useState('');
   const [backupBusy, setBackupBusy] = useState(false);
+  const [otpRateLimit, setOtpRateLimit] = useState<OtpRateLimitSettings>({
+    max_requests_per_phone: 10,
+    window_minutes: 30,
+  });
+  const [otpRateLimitLoaded, setOtpRateLimitLoaded] = useState(false);
+  const [otpRateLimitBusy, setOtpRateLimitBusy] = useState(false);
   const [applicationName, setApplicationName] = useState('Ruang Hadir');
   const [applicationNameBusy, setApplicationNameBusy] = useState(false);
   const [editingSchool, setEditingSchool] = useState<School | null>(null);
@@ -197,6 +211,8 @@ export default function App() {
     name: '',
     subscription_status: 'trial',
     participant_quota: 500,
+    admin_username: '',
+    admin_whatsapp_phone: '',
   });
   const [deleteTarget, setDeleteTarget] = useState<School | null>(null);
   const [deleteConfirmation, setDeleteConfirmation] = useState('');
@@ -301,6 +317,20 @@ export default function App() {
     request<PlatformBackupSettings>('/super-admin/settings/backup', token)
       .then(setBackupSettings)
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Pengaturan backup platform gagal dimuat.'));
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) {
+      setOtpRateLimitLoaded(false);
+      return;
+    }
+    setOtpRateLimitLoaded(false);
+    request<{ settings: OtpRateLimitSettings }>('/super-admin/settings/otp-rate-limit', token)
+      .then((result) => {
+        setOtpRateLimit(result.settings);
+        setOtpRateLimitLoaded(true);
+      })
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Batas OTP gagal dimuat.'));
   }, [token]);
 
   useEffect(() => {
@@ -469,6 +499,8 @@ export default function App() {
       name: school.name,
       subscription_status: school.subscription_status,
       participant_quota: Number(school.participant_quota),
+      admin_username: school.admin_username ?? '',
+      admin_whatsapp_phone: phoneNationalDigits(school.admin_whatsapp_phone ?? ''),
     });
   }
 
@@ -479,13 +511,22 @@ export default function App() {
     setError('');
     setNotice('');
     try {
+      const body: Record<string, unknown> = {
+        name: schoolEditForm.name,
+        subscription_status: schoolEditForm.subscription_status,
+        participant_quota: Number(schoolEditForm.participant_quota),
+      };
+      const adminUsername = schoolEditForm.admin_username.trim();
+      if (adminUsername !== (editingSchool.admin_username ?? '')) {
+        body.admin_username = adminUsername;
+      }
+      const adminPhone = schoolEditForm.admin_whatsapp_phone;
+      if (adminPhone && adminPhone !== phoneNationalDigits(editingSchool.admin_whatsapp_phone ?? '')) {
+        body.admin_whatsapp_phone = `+62${adminPhone}`;
+      }
       await request(`/super-admin/schools/${editingSchool.id}`, token, {
         method: 'PATCH',
-        body: {
-          name: schoolEditForm.name,
-          subscription_status: schoolEditForm.subscription_status,
-          participant_quota: Number(schoolEditForm.participant_quota),
-        },
+        body,
       });
       setNotice(`Perubahan ${schoolEditForm.name} disimpan.`);
       setEditingSchool(null);
@@ -610,6 +651,28 @@ export default function App() {
       setError(reason instanceof Error ? reason.message : 'Pengaturan backup platform gagal disimpan.');
     } finally {
       setBackupBusy(false);
+    }
+  }
+
+  async function saveOtpRateLimit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setOtpRateLimitBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await request<{ settings: OtpRateLimitSettings }>('/super-admin/settings/otp-rate-limit', token, {
+        method: 'PUT',
+        body: {
+          max_requests_per_phone: Number(otpRateLimit.max_requests_per_phone),
+          window_minutes: Number(otpRateLimit.window_minutes),
+        },
+      });
+      setOtpRateLimit(result.settings);
+      setNotice('Batas permintaan OTP berhasil disimpan.');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Batas OTP gagal disimpan.');
+    } finally {
+      setOtpRateLimitBusy(false);
     }
   }
 
@@ -872,6 +935,7 @@ export default function App() {
         <nav className="section-menu" aria-label="Menu Super Admin">
           <a href="#account-recovery">Nomor pemulihan</a>
           <a href="#automatic-backup">Backup otomatis</a>
+          <a href="#otp-rate-limit">Batas OTP</a>
           <a href="#school-tenants">Akun sekolah</a>
         </nav>
         {error && <div className="alert error">{error}</div>}
@@ -991,6 +1055,21 @@ export default function App() {
             </div>
           </form>
         </section>
+        <section id="otp-rate-limit" className="panel otp-rate-limit-panel">
+          <div>
+            <h2>Batas permintaan OTP</h2>
+            <p className="muted">Berlaku untuk OTP pendaftaran sekolah dan reset kata sandi. Perlindungan tambahan tetap membatasi 20 permintaan per alamat jaringan per jam.</p>
+          </div>
+          <form className="otp-rate-limit-form" onSubmit={(event) => void saveOtpRateLimit(event)}>
+            <label>Maksimal permintaan per nomor telepon
+              <input type="number" min={1} max={50} required value={otpRateLimit.max_requests_per_phone} onChange={(event) => setOtpRateLimit((current) => ({ ...current, max_requests_per_phone: Number(event.target.value) }))} />
+            </label>
+            <label>Dalam jangka waktu (menit)
+              <input type="number" min={1} max={1440} required value={otpRateLimit.window_minutes} onChange={(event) => setOtpRateLimit((current) => ({ ...current, window_minutes: Number(event.target.value) }))} />
+            </label>
+            <button className="button primary" disabled={otpRateLimitBusy || !otpRateLimitLoaded}>{otpRateLimitBusy ? 'Menyimpan…' : 'Simpan batas OTP'}</button>
+          </form>
+        </section>
         <section className="panel apk-panel">
           <div>
             <h2>Distribusi aplikasi Android</h2>
@@ -1083,8 +1162,15 @@ export default function App() {
         <div className="modal-backdrop" role="presentation">
           <form className="modal-card" onSubmit={(event) => void saveSchoolEdit(event)}>
             <h2>Edit sekolah</h2>
-            <p className="muted">Perbarui nama, status langganan, dan kuota untuk {editingSchool.name}.</p>
+            <p className="muted">Perbarui informasi sekolah dan akun Admin untuk {editingSchool.name}. Perubahan akun akan mengeluarkan sesi login yang aktif.</p>
             <label>Nama sekolah<input required maxLength={180} value={schoolEditForm.name} onChange={(event) => setSchoolEditForm((current) => ({ ...current, name: event.target.value }))} /></label>
+            <label>Username Admin<input required={Boolean(editingSchool.admin_username)} maxLength={80} pattern="[A-Za-z0-9._-]{3,80}" value={schoolEditForm.admin_username} onChange={(event) => setSchoolEditForm((current) => ({ ...current, admin_username: event.target.value }))} /></label>
+            <label>Nomor WhatsApp Admin
+              <span className="phone-input-wrap">
+                <span className="phone-prefix">+62</span>
+                <input type="text" inputMode="numeric" autoComplete="off" maxLength={13} pattern="8[0-9]{6,12}" required={Boolean(editingSchool.admin_whatsapp_phone)} value={schoolEditForm.admin_whatsapp_phone} onChange={(event) => setSchoolEditForm((current) => ({ ...current, admin_whatsapp_phone: phoneNationalDigits(event.target.value) }))} />
+              </span>
+            </label>
             <label>Status langganan
               <select value={schoolEditForm.subscription_status} onChange={(event) => setSchoolEditForm((current) => ({ ...current, subscription_status: event.target.value as SubscriptionStatus }))}>
                 <option value="trial">Uji coba</option><option value="aktif">Aktif</option><option value="lifetime">Lifetime</option><option value="suspend">Ditangguhkan</option>
