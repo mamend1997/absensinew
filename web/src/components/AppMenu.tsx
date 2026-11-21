@@ -41,6 +41,7 @@ export default function AppMenu({
   const [confirmation, setConfirmation] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [busy, setBusy] = useState(false);
+  const [confirmLogout, setConfirmLogout] = useState(false);
 
   useEffect(() => {
     if (!open) {
@@ -48,6 +49,7 @@ export default function AppMenu({
       setPin('');
       setConfirmation('');
       setErrorMessage('');
+      setConfirmLogout(false);
       return;
     }
 
@@ -71,11 +73,14 @@ export default function AppMenu({
   useEffect(() => {
     if (!open) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape') {
+        if (confirmLogout) setConfirmLogout(false);
+        else onClose();
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose, open]);
+  }, [confirmLogout, onClose, open]);
 
   async function submitPin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -195,20 +200,25 @@ export default function AppMenu({
             <button className="button secondary wide" onClick={onClose}>Tutup</button>
           </>
         )}
-        {stage === 'items' && (
+        {stage === 'items' && !confirmLogout && (
           <nav className="menu-gate-items" aria-label="Menu aplikasi">
             {pages.map((page) => (
               <button key={page.id} onClick={() => onSelect(page.id)}>{page.label}</button>
             ))}
-            <button
-              className="menu-gate-logout"
-              onClick={() => {
-                if (window.confirm('Apakah Anda yakin ingin keluar dari akun?')) onLogout();
-              }}
-            >
+            <button className="menu-gate-logout" onClick={() => setConfirmLogout(true)}>
               Keluar
             </button>
           </nav>
+        )}
+        {stage === 'items' && confirmLogout && (
+          <section className="menu-logout-confirm" role="alertdialog" aria-modal="true" aria-labelledby="logout-confirm-title">
+            <h3 id="logout-confirm-title">Keluar dari akun?</h3>
+            <p>Sesi akun ini akan diakhiri pada perangkat ini.</p>
+            <div className="menu-logout-actions">
+              <button className="button secondary" onClick={() => setConfirmLogout(false)}>Batal</button>
+              <button className="button danger-button" onClick={onLogout}>Keluar</button>
+            </div>
+          </section>
         )}
       </section>
     </div>

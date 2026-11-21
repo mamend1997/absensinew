@@ -97,6 +97,11 @@ td small { margin-top: 3px; color: #7d8b84; font-size: 9px; }
 .name-form { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 10px; }
 .name-form label { font-size: 10px; }
 .name-form input { min-height: 38px; font-size: 11px; }
+.billing-prices-panel { display: grid; grid-template-columns: minmax(0, .85fr) minmax(320px, 1.15fr); align-items: center; gap: 22px; }
+.billing-prices-panel .muted { margin: 6px 0 8px; font-size: 11px; }
+.billing-prices-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) auto; align-items: end; gap: 10px; }
+.billing-prices-form label { font-size: 10px; }
+.billing-prices-form input { min-height: 38px; font-size: 11px; }
 .modal-backdrop { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; overflow-y: auto; background: #10251fc2; padding: 20px; }
 .modal-card { display: grid; width: min(460px, 100%); gap: 14px; border: 1px solid #e0e8e2; border-radius: 16px; background: #fff; padding: 22px; box-shadow: 0 24px 80px #06120f55; }
 .modal-card h2 { margin: 0; }
@@ -108,7 +113,7 @@ td small { margin-top: 3px; color: #7d8b84; font-size: 9px; }
 .alert.error { border: 1px solid #f3ceca; background: #fff1ef; color: #8d322a; }
 .alert.success { border: 1px solid #cce7d4; background: #effaf2; color: #21633d; }
 .empty { padding: 24px; color: #78867f; text-align: center; }
-@media (max-width: 900px) { .create-form { grid-template-columns: repeat(2, minmax(0, 1fr)); } .create-form .button { align-self: end; } .branding-panel, .name-panel, .gateway-panel, .apk-panel { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .create-form { grid-template-columns: repeat(2, minmax(0, 1fr)); } .create-form .button { align-self: end; } .branding-panel, .name-panel, .billing-prices-panel, .gateway-panel, .apk-panel { grid-template-columns: 1fr; } }
 @media (max-width: 600px) {
   .topbar { height: 60px; padding: 0 14px; }
   .content { gap: 14px; padding: 22px 13px 40px; }
@@ -122,6 +127,7 @@ td small { margin-top: 3px; color: #7d8b84; font-size: 9px; }
   .create-form .button { width: 100%; }
   .branding-form { grid-template-columns: 64px 1fr; }
   .name-form { grid-template-columns: 1fr; }
+  .billing-prices-form { grid-template-columns: 1fr; }
   .school-actions { min-width: 220px; }
   .branding-form .button { width: 100%; }
   .gateway-actions { display: grid; }

@@ -1,8 +1,21 @@
 import { Router } from 'express';
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
 import { db } from '../config/database.js';
+import { config } from '../config/env.js';
 import { allowRoles, authenticate } from '../middleware/auth.js';
 import { auditRequestContext, writeAuditLog } from '../services/audit-service.js';
+import {
+  backupTableColumns,
+  backupTableNames,
+  createBackupTables,
+} from '../services/backup-data.js';
+import {
+  decryptBackupCredentials,
+  encryptBackupCredentials,
+} from '../services/scheduled-backup-service.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { HttpError } from '../utils/http-error.js';
 
@@ -12,45 +25,7 @@ router.use(authenticate, allowRoles('admin'));
 const BACKUP_VERSION = 1;
 const MAX_BACKUP_ROWS = 300000;
 
-const tableColumns = {
-  units: ['id', 'name', 'created_at'],
-  classrooms: ['id', 'unit_id', 'name', 'created_at'],
-  users: [
-    'id', 'username', 'display_name', 'password_hash', 'role',
-    'classroom_id', 'is_active', 'created_at', 'updated_at',
-  ],
-  participants: [
-    'id', 'participant_code', 'full_name', 'classroom_id', 'qr_code',
-    'guardian_phone', 'is_active', 'created_at', 'updated_at',
-  ],
-  operational_settings: [
-    'id', 'timezone', 'check_in_deadline', 'lateness_tolerance_minutes',
-    'check_out_start', 'scan_welcome_message', 'scan_success_message',
-    'scan_failure_message', 'enable_external_scanner', 'updated_by', 'updated_at',
-  ],
-  weekly_operational_schedules: [
-    'weekday', 'is_working_day', 'check_in_deadline',
-    'lateness_tolerance_minutes', 'check_out_start',
-  ],
-  participant_day_overrides: ['participant_id', 'weekday', 'check_in_deadline'],
-  admin_menu_pin: ['id', 'pin_hash', 'updated_at'],
-  attendance_logs: [
-    'id', 'id_unik', 'participant_id', 'participant_code_snapshot',
-    'participant_name_snapshot', 'classroom_name_snapshot', 'attendance_date',
-    'event_type', 'client_timestamp', 'server_received_at', 'synced_at',
-    'attendance_status', 'late_minutes', 'scan_method', 'device_id', 'recorded_by',
-  ],
-  attendance_notifications: [
-    'id', 'id_unik', 'recipient_phone', 'event_type', 'message', 'status',
-    'attempt_count', 'next_attempt_at', 'last_error', 'created_at', 'sent_at',
-  ],
-  activity_logs: [
-    'id', 'actor_user_id', 'actor_username', 'actor_display_name', 'action',
-    'entity_type', 'entity_id', 'before_data', 'after_data', 'ip_address', 'created_at',
-  ],
-};
-
-const tableNames = Object.keys(tableColumns);
+const tableNames = backupTableNames;
 const insertOrder = tableNames;
 const deleteOrder = [...tableNames].reverse().filter((tableName) => tableName !== 'activity_logs');
 
@@ -66,6 +41,115 @@ function parseJsonColumn(value) {
 function downloadName(date) {
   return `ruang-hadir-backup-${date.toISOString().slice(0, 10)}.json`;
 }
+
+function backupScheduleResponse(settings) {
+  const credentials = settings.encrypted_credentials
+    ? decryptBackupCredentials(settings.encrypted_credentials)
+    : null;
+  const chatId = credentials?.chat_id ?? '';
+  return {
+    enabled: Boolean(Number(settings.enabled)),
+    backup_time: settings.backup_time,
+    bot_configured: Boolean(credentials?.bot_token && chatId),
+    chat_id_hint: chatId.length > 4 ? `***${chatId.slice(-4)}` : chatId,
+    last_status: settings.last_status,
+    last_run_at: settings.last_run_at,
+    last_error: settings.last_error,
+  };
+}
+
+router.get('/backup/schedule', asyncHandler(async (_request, response) => {
+  const [settings] = await db.query(
+    `SELECT enabled, backup_time, encrypted_credentials, last_status,
+            last_run_at, last_error
+       FROM scheduled_backup_settings WHERE id = 1`,
+  );
+  response.json(backupScheduleResponse(settings));
+}));
+
+router.put('/backup/schedule', asyncHandler(async (request, response) => {
+  const input = z.object({
+    enabled: z.boolean(),
+    backup_time: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
+    bot_token: z.string().max(512).optional(),
+    chat_id: z.string().max(100).optional(),
+  }).parse(request.body);
+  const [current] = await db.query(
+    'SELECT encrypted_credentials FROM scheduled_backup_settings WHERE id = 1',
+  );
+  let encryptedCredentials = current?.encrypted_credentials ?? null;
+  const botToken = input.bot_token?.trim() ?? '';
+  const chatId = input.chat_id?.trim() ?? '';
+  if (botToken || chatId) {
+    if (!botToken || !chatId) {
+      throw new HttpError(400, 'Token Bot dan Chat ID harus diisi bersama.');
+    }
+    encryptedCredentials = encryptBackupCredentials({
+      bot_token: botToken,
+      chat_id: chatId,
+    });
+  }
+  if (input.enabled && (!encryptedCredentials || !config.backupDirectory)) {
+    throw new HttpError(
+      400,
+      !encryptedCredentials
+        ? 'Isi kredensial Telegram terlebih dahulu.'
+        : 'BACKUP_DIRECTORY harus diarahkan ke volume privat yang persisten.',
+    );
+  }
+  await db.query(
+    `UPDATE scheduled_backup_settings
+        SET enabled = ?, backup_time = ?, encrypted_credentials = ?
+      WHERE id = 1`,
+    [input.enabled ? 1 : 0, input.backup_time, encryptedCredentials],
+  );
+  await writeAuditLog({
+    ...auditRequestContext(request),
+    action: 'database.backup.schedule.updated',
+    entityType: 'database_backup',
+    after: {
+      enabled: input.enabled,
+      backup_time: input.backup_time,
+      credentials_updated: Boolean(botToken && chatId),
+    },
+  });
+  const [updated] = await db.query(
+    `SELECT enabled, backup_time, encrypted_credentials, last_status,
+            last_run_at, last_error
+       FROM scheduled_backup_settings WHERE id = 1`,
+  );
+  response.json(backupScheduleResponse(updated));
+}));
+
+router.get('/backup/scheduled/latest', asyncHandler(async (_request, response, next) => {
+  const [settings] = await db.query(
+    'SELECT last_run_date FROM scheduled_backup_settings WHERE id = 1',
+  );
+  if (!config.backupDirectory || !/^\d{4}-\d{2}-\d{2}$/.test(settings?.last_run_date ?? '')) {
+    throw new HttpError(404, 'Backup otomatis belum tersedia.');
+  }
+  const directory = isAbsolute(config.backupDirectory)
+    ? config.backupDirectory
+    : resolve(process.cwd(), config.backupDirectory);
+  const filename = `ruang-hadir-${settings.last_run_date}.json.enc`;
+  const path = resolve(directory, filename);
+  try {
+    const file = await stat(path);
+    if (!file.isFile()) throw new HttpError(404, 'File backup otomatis tidak ditemukan.');
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    if (error?.code === 'ENOENT') throw new HttpError(404, 'File backup otomatis tidak ditemukan.');
+    throw error;
+  }
+  response.setHeader('Content-Type', 'application/octet-stream');
+  response.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  const stream = createReadStream(path);
+  stream.on('error', (error) => {
+    if (response.headersSent) response.destroy(error);
+    else next(error);
+  });
+  stream.pipe(response);
+}));
 
 router.get('/activity-logs', asyncHandler(async (request, response) => {
   const query = z.object({
@@ -109,13 +193,7 @@ router.get('/activity-logs', asyncHandler(async (request, response) => {
 }));
 
 router.get('/backup', asyncHandler(async (_request, response) => {
-  const tables = await db.transaction(async (transaction) => {
-    const snapshot = {};
-    for (const tableName of tableNames) {
-      snapshot[tableName] = await transaction.query(`SELECT * FROM ${tableName}`);
-    }
-    return snapshot;
-  });
+  const tables = await createBackupTables(db);
   const createdAt = new Date();
   const backup = {
     format: 'ruang-hadir-backup',
@@ -167,7 +245,7 @@ function validateBackup(value) {
       if (!row || typeof row !== 'object' || Array.isArray(row)) {
         throw new HttpError(400, `Data tabel ${tableName} tidak valid.`);
       }
-      if (Object.keys(row).some((column) => !tableColumns[tableName].includes(column))) {
+      if (Object.keys(row).some((column) => !backupTableColumns[tableName].includes(column))) {
         throw new HttpError(400, `File cadangan memiliki kolom tak dikenal pada tabel ${tableName}.`);
       }
     }
@@ -184,7 +262,7 @@ function validateBackup(value) {
 }
 
 function restoreRowColumns(tableName, row) {
-  const columns = Object.keys(row).filter((column) => tableColumns[tableName].includes(column));
+  const columns = Object.keys(row).filter((column) => backupTableColumns[tableName].includes(column));
   if (!columns.length) throw new HttpError(400, `Baris kosong tidak diizinkan pada tabel ${tableName}.`);
   return columns;
 }

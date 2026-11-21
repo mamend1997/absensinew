@@ -50,8 +50,27 @@ router.post('/login', loginLimiter, asyncHandler(async (request, response) => {
   );
   const user = rows[0];
   if (!user || !user.is_active || !(await bcrypt.compare(password, user.password_hash))) {
+    await writeAuditLog({
+      user: user
+        ? { id: user.id, username: user.username, displayName: user.display_name }
+        : { id: null, username, displayName: 'Pengguna tidak diketahui' },
+      action: 'auth.login.failed',
+      entityType: 'user',
+      entityId: user?.id ?? null,
+      after: { reason: 'invalid_credentials' },
+      ipAddress: request.ip,
+    });
     throw new HttpError(401, 'Username atau password salah');
   }
+
+  await writeAuditLog({
+    user: { id: user.id, username: user.username, displayName: user.display_name },
+    action: 'auth.login.succeeded',
+    entityType: 'user',
+    entityId: user.id,
+    after: { role: user.role },
+    ipAddress: request.ip,
+  });
 
   const token = jwt.sign(
     { role: user.role },

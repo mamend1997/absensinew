@@ -111,9 +111,26 @@ Link unduhan APK Google Drive dapat diatur Super Admin dan tampil pada menu
 mengarah ke Google Drive, dan akses berbagi file perlu mengizinkan akun sekolah
 mengunduhnya.
 
+Pembayaran sekolah menggunakan Xendit atau Duitku. Isi salah satu konfigurasi
+provider di `backend\.env.example` pada environment backend (jangan commit
+secret), lalu tetapkan URL backend publik pada `PUBLIC_API_URL` dan portal
+sekolah pada `PUBLIC_WEB_URL`. Atur callback Xendit ke
+`/api/payments/xendit/callback` dan callback Duitku ke
+`/api/payments/duitku/callback`; callback Xendit harus menggunakan token yang
+sama dengan `XENDIT_CALLBACK_TOKEN`. Atur harga paket melalui menu Super Admin;
+default-nya Rp50.000/bulan dan Rp1.000.000 untuk Lifetime. Status pesanan hanya
+diaktifkan setelah callback provider lolos verifikasi dan nominalnya cocok.
+Sekolah yang kedaluwarsa masih dapat masuk ke halaman langganan untuk membayar,
+tetapi endpoint operasional tetap ditolak sampai pembayaran terkonfirmasi.
+
+Portal sekolah menyediakan pengaturan gateway WhatsApp per sekolah. Alamat
+gateway dan token Bearer disimpan secara tenant-scoped; token dienkripsi sebelum
+disimpan. Rahasia `JWT_SECRET` harus dijaga tetap stabil karena digunakan untuk
+menurunkan kunci enkripsi token tersimpan.
+
 Konfigurasi `.env` hanya dibaca backend; jangan commit file tersebut. Endpoint
-pengelolaan memakai permissions yang telah diseed schema Tahap 1; tidak ada
-perubahan pada skema inti.
+pengelolaan memakai permissions yang telah diseed schema; tidak ada perubahan
+pada skema inti.
 
 ## Skema dan seed
 

@@ -48,6 +48,12 @@ interface ResetCredentials {
   temporaryPassword: string;
 }
 
+interface BillingPrices {
+  monthly_price: number;
+  lifetime_price: number;
+  providers?: { xendit: boolean; duitku: boolean };
+}
+
 const emptyForm: SchoolForm = {
   name: '',
   slug: '',
@@ -126,6 +132,12 @@ export default function App() {
   const [gatewayBusy, setGatewayBusy] = useState(false);
   const [apkDriveUrl, setApkDriveUrl] = useState('');
   const [apkBusy, setApkBusy] = useState(false);
+  const [billingPrices, setBillingPrices] = useState<BillingPrices>({
+    monthly_price: 50000,
+    lifetime_price: 1000000,
+    providers: { xendit: false, duitku: false },
+  });
+  const [billingBusy, setBillingBusy] = useState(false);
   const [applicationName, setApplicationName] = useState('Ruang Hadir');
   const [applicationNameBusy, setApplicationNameBusy] = useState(false);
   const [editingSchool, setEditingSchool] = useState<School | null>(null);
@@ -223,6 +235,13 @@ export default function App() {
     request<{ application_name: string }>('/super-admin/settings/application-name', token)
       .then((result) => setApplicationName(result.application_name))
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Nama aplikasi gagal dimuat.'));
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+    request<BillingPrices>('/super-admin/settings/billing-prices', token)
+      .then(setBillingPrices)
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Harga langganan gagal dimuat.'));
   }, [token]);
 
   async function login(event: FormEvent<HTMLFormElement>) {
@@ -381,6 +400,32 @@ export default function App() {
       setError(reason instanceof Error ? reason.message : 'Nama aplikasi gagal disimpan.');
     } finally {
       setApplicationNameBusy(false);
+    }
+  }
+
+  async function saveBillingPrices(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBillingBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await request<Pick<BillingPrices, 'monthly_price' | 'lifetime_price'>>(
+        '/super-admin/settings/billing-prices',
+        token,
+        {
+          method: 'PUT',
+          body: {
+            monthly_price: Number(billingPrices.monthly_price),
+            lifetime_price: Number(billingPrices.lifetime_price),
+          },
+        },
+      );
+      setBillingPrices((current) => ({ ...current, ...result }));
+      setNotice('Harga paket langganan diperbarui.');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Harga paket gagal disimpan.');
+    } finally {
+      setBillingBusy(false);
     }
   }
 
@@ -599,6 +644,23 @@ export default function App() {
               <input required maxLength={120} value={applicationName} onChange={(event) => setApplicationName(event.target.value)} />
             </label>
             <button className="button primary" disabled={applicationNameBusy}>{applicationNameBusy ? 'Menyimpan…' : 'Simpan nama'}</button>
+          </form>
+        </section>
+        <section className="panel billing-prices-panel">
+          <div>
+            <h2>Harga perpanjangan</h2>
+            <p className="muted">Harga digunakan server saat membuat tagihan baru. Perubahan tidak mengubah tagihan yang sudah dibuat.</p>
+            <span className={`gateway-status ${billingPrices.providers?.xendit || billingPrices.providers?.duitku ? 'ready' : ''}`}>
+              Provider tersedia: {[
+                billingPrices.providers?.xendit && 'Xendit',
+                billingPrices.providers?.duitku && 'Duitku',
+              ].filter(Boolean).join(', ') || 'belum dikonfigurasi'}
+            </span>
+          </div>
+          <form className="billing-prices-form" onSubmit={(event) => void saveBillingPrices(event)}>
+            <label>Langganan bulanan (Rp)<input type="number" min={1000} max={1000000000} step={1000} required value={billingPrices.monthly_price} onChange={(event) => setBillingPrices((current) => ({ ...current, monthly_price: Number(event.target.value) }))} /></label>
+            <label>Sekali bayar Lifetime (Rp)<input type="number" min={1000} max={1000000000} step={1000} required value={billingPrices.lifetime_price} onChange={(event) => setBillingPrices((current) => ({ ...current, lifetime_price: Number(event.target.value) }))} /></label>
+            <button className="button primary" disabled={billingBusy}>{billingBusy ? 'Menyimpan…' : 'Simpan harga'}</button>
           </form>
         </section>
         <section className="panel gateway-panel">

@@ -153,6 +153,18 @@ CREATE INDEX IF NOT EXISTS idx_activity_logs_created
 CREATE INDEX IF NOT EXISTS idx_activity_logs_entity
     ON activity_logs (entity_type, entity_id, created_at);
 
+CREATE TABLE IF NOT EXISTS scheduled_backup_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+    backup_time TEXT NOT NULL DEFAULT '02:00',
+    encrypted_credentials TEXT,
+    last_run_date TEXT,
+    last_status TEXT NOT NULL DEFAULT 'never',
+    last_run_at TEXT,
+    last_error TEXT
+);
+INSERT OR IGNORE INTO scheduled_backup_settings (id) VALUES (1);
+
 INSERT OR IGNORE INTO units (name) VALUES ('Unit Contoh');
 INSERT OR IGNORE INTO classrooms (unit_id, name)
     SELECT id, 'Kelas 1' FROM units WHERE name = 'Unit Contoh';

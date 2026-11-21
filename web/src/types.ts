@@ -93,6 +93,7 @@ export interface ReportRow {
 
 export interface ReportResponse {
   filters: { start_date: string; end_date: string };
+  holiday_dates?: string[];
   summary: {
     hadir_tepat_waktu: number;
     terlambat: number;

@@ -182,6 +182,40 @@ router.put('/settings/apk-download', requireSuperAdmin, asyncRoute(async (req, r
 
 router.use(requireSuperAdmin);
 
+router.get('/settings/billing-prices', asyncRoute(async (req, res) => {
+  const [[settings]] = await pool.execute(
+    'SELECT monthly_price, lifetime_price FROM platform_billing_settings WHERE id = 1',
+  );
+  res.json({
+    monthly_price: Number(settings?.monthly_price ?? 50000),
+    lifetime_price: Number(settings?.lifetime_price ?? 1000000),
+    providers: {
+      xendit: Boolean(
+        process.env.XENDIT_SECRET_KEY && process.env.XENDIT_CALLBACK_TOKEN &&
+        process.env.PUBLIC_WEB_URL && process.env.PUBLIC_API_URL,
+      ),
+      duitku: Boolean(
+        process.env.DUITKU_MERCHANT_CODE && process.env.DUITKU_API_KEY &&
+        process.env.PUBLIC_WEB_URL && process.env.PUBLIC_API_URL,
+      ),
+    },
+  });
+}));
+
+router.put('/settings/billing-prices', asyncRoute(async (req, res) => {
+  const { monthly_price: monthlyPrice, lifetime_price: lifetimePrice } = req.body ?? {};
+  for (const [name, value] of [['monthly_price', monthlyPrice], ['lifetime_price', lifetimePrice]]) {
+    if (!Number.isSafeInteger(value) || value < 1000 || value > 1000000000) {
+      throw fail(400, `${name} harus berupa bilangan rupiah antara 1.000 dan 1.000.000.000.`, 'VALIDATION_ERROR');
+    }
+  }
+  await pool.execute(
+    `UPDATE platform_billing_settings SET monthly_price = ?, lifetime_price = ? WHERE id = 1`,
+    [monthlyPrice, lifetimePrice],
+  );
+  res.json({ monthly_price: monthlyPrice, lifetime_price: lifetimePrice });
+}));
+
 router.get('/schools', asyncRoute(async (req, res) => {
   const [rows] = await pool.execute(
     `SELECT id, slug, school_code, name, subscription_status, trial_ends_at,

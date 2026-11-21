@@ -131,11 +131,13 @@ function monthDays(month: string): string[] {
 function monthlyTableData(
   rows: ReportRow[],
   days: string[],
+  holidayDates: string[],
   timeZone: string,
   heading: string,
   period: string,
 ): SheetData {
   const totalColumns = 6 + days.length * 3;
+  const holidayDateSet = new Set(holidayDates);
   const headerRow: Cell[] = [
     headerCell('No', { rowSpan: 2 }),
     headerCell('Nama', { rowSpan: 2 }),
@@ -173,6 +175,19 @@ function monthlyTableData(
     const records = days.map((day) => participant.records.get(day)).filter(Boolean);
     const dailyValues: Cell[] = days.flatMap((day) => {
       const record = participant.records.get(day);
+      if (holidayDateSet.has(day) && !record?.masuk_at && !record?.pulang_at) {
+        return [
+          styledCell('Hari libur', {
+            columnSpan: 3,
+            ...cellBorder,
+            align: 'center',
+            fontWeight: 'bold',
+            backgroundColor: '#f1f5f2',
+          }),
+          null,
+          null,
+        ];
+      }
       return [
         record?.masuk_at ? timeLabel(record.masuk_at, timeZone) : '',
         record?.status_kehadiran === 'belum_hadir'
@@ -371,6 +386,7 @@ export default function Dashboard({ participants, timeZone }: DashboardProps) {
         data = monthlyTableData(
           rows,
           days,
+          report?.holiday_dates ?? [],
           timeZone,
           'REKAP ABSENSI',
           periodHeading,

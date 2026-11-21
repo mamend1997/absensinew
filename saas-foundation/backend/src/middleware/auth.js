@@ -36,18 +36,19 @@ export const requireSchoolUser = asyncRoute(async (req, res, next) => {
     throw fail(401, 'Autentikasi sekolah wajib.', 'UNAUTHENTICATED');
   }
   const [rows] = await pool.execute(
-    `SELECT u.id, u.sekolah_id, u.role_id, u.classroom_id, u.username,
-            u.display_name, r.role_name, r.permissions, r.sekolah_id AS role_sekolah_id,
-            s.school_code, s.name AS school_name, s.timezone, s.subscription_status
+    `SELECT u.id, u.sekolah_id, u.role_id, u.classroom_id, u.username, u.whatsapp_phone,
+            u.display_name, r.role_key, r.role_name, r.permissions, r.sekolah_id AS role_sekolah_id,
+            s.school_code, s.name AS school_name, s.timezone, s.subscription_status,
+            s.trial_ends_at, s.subscription_expires_at,
+            ((s.subscription_status = 'trial' AND s.trial_ends_at IS NOT NULL
+              AND s.trial_ends_at <= UTC_TIMESTAMP()) OR
+             (s.subscription_expires_at IS NOT NULL
+              AND s.subscription_expires_at <= UTC_TIMESTAMP())) AS subscription_expired
        FROM users u
        JOIN roles r ON r.id = u.role_id AND r.sekolah_id = u.sekolah_id
        JOIN schools s ON s.id = u.sekolah_id
       WHERE u.id = ? AND u.sekolah_id = ? AND u.is_active = TRUE
-        AND s.is_active = TRUE AND s.subscription_status <> 'suspend'
-        AND (s.subscription_status <> 'trial' OR s.trial_ends_at IS NULL
-             OR s.trial_ends_at > UTC_TIMESTAMP())
-        AND (s.subscription_expires_at IS NULL
-             OR s.subscription_expires_at > UTC_TIMESTAMP())`,
+        AND s.is_active = TRUE AND s.subscription_status <> 'suspend'`,
     [claims.sub, claims.schoolId],
   );
   const row = rows[0];
@@ -57,10 +58,12 @@ export const requireSchoolUser = asyncRoute(async (req, res, next) => {
   const permissions = parseJson(row.permissions);
   req.schoolUser = {
     ...row,
+    role_key: row.role_key,
     sekolah_id: String(row.sekolah_id),
     role_sekolah_id: String(row.role_sekolah_id),
     classroom_id: row.classroom_id == null ? null : String(row.classroom_id),
     permissions,
+    subscription_expired: Boolean(Number(row.subscription_expired)),
   };
   next();
 });
@@ -89,6 +92,9 @@ export const requireDevice = asyncRoute(async (req, res, next) => {
 export function requirePermission(permission) {
   return (req, res, next) => {
     const user = req.schoolUser;
+    if (user?.subscription_expired) {
+      return next(fail(402, 'Langganan sekolah telah berakhir. Perpanjang untuk melanjutkan.', 'SUBSCRIPTION_EXPIRED'));
+    }
     if (!user || String(user.role_sekolah_id) !== String(user.sekolah_id) ||
         !user.permissions.includes(permission)) {
       return next(fail(403, 'Izin tidak mencukupi.', 'FORBIDDEN'));

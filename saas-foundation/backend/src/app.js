@@ -1,4 +1,5 @@
 import express from 'express';
+import paymentRoutes from './routes/payments.js';
 import superAdminRoutes from './routes/super-admin.js';
 import schoolRoutes from './routes/school.js';
 import { pool } from './db.js';
@@ -26,6 +27,7 @@ app.use((req, res, next) => {
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   return next();
 });
+app.use(express.urlencoded({ extended: false, limit: '20kb' }));
 app.use(express.json({ limit: '2mb', strict: true }));
 
 app.get('/api/health', asyncRoute(async (req, res) => {
@@ -58,6 +60,7 @@ app.get('/api/platform/downloads', asyncRoute(async (req, res) => {
 }));
 app.use('/api/super-admin', superAdminRoutes);
 app.use('/api/school', schoolRoutes);
+app.use('/api/payments', paymentRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Endpoint tidak ditemukan.' } });

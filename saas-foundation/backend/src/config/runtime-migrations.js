@@ -67,6 +67,58 @@ export async function ensureRuntimeMigrations(pool) {
   await pool.execute('INSERT IGNORE INTO whatsapp_gateway_config (id) VALUES (1)');
 
   await pool.execute(`
+    CREATE TABLE IF NOT EXISTS school_whatsapp_gateway_config (
+      sekolah_id BIGINT UNSIGNED NOT NULL,
+      endpoint_url VARCHAR(500) NULL,
+      token_ciphertext VARBINARY(1024) NULL,
+      token_iv BINARY(12) NULL,
+      token_auth_tag BINARY(16) NULL,
+      is_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (sekolah_id),
+      CONSTRAINT fk_school_whatsapp_gateway_school FOREIGN KEY (sekolah_id)
+        REFERENCES schools (id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS platform_billing_settings (
+      id TINYINT UNSIGNED NOT NULL,
+      monthly_price BIGINT UNSIGNED NOT NULL DEFAULT 50000,
+      lifetime_price BIGINT UNSIGNED NOT NULL DEFAULT 1000000,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      CONSTRAINT chk_platform_billing_singleton CHECK (id = 1)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+  await pool.execute('INSERT IGNORE INTO platform_billing_settings (id) VALUES (1)');
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS subscription_payment_orders (
+      id CHAR(36) NOT NULL,
+      sekolah_id BIGINT UNSIGNED NOT NULL,
+      order_id VARCHAR(50) NOT NULL,
+      provider ENUM('xendit', 'duitku') NOT NULL,
+      plan ENUM('monthly', 'lifetime') NOT NULL,
+      amount BIGINT UNSIGNED NOT NULL,
+      payment_method VARCHAR(20) NULL,
+      status ENUM('pending', 'paid', 'expired', 'failed') NOT NULL DEFAULT 'pending',
+      provider_reference VARCHAR(100) NULL,
+      checkout_url VARCHAR(2048) NULL,
+      expires_at DATETIME NULL,
+      paid_at DATETIME NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      UNIQUE KEY uq_subscription_payment_order (order_id),
+      KEY idx_subscription_payment_school (sekolah_id, created_at),
+      KEY idx_subscription_payment_status (status, created_at),
+      CONSTRAINT fk_subscription_payment_school FOREIGN KEY (sekolah_id)
+        REFERENCES schools (id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await pool.execute(`
     CREATE TABLE IF NOT EXISTS platform_download_settings (
       id TINYINT UNSIGNED NOT NULL,
       apk_drive_url VARCHAR(2048) NULL,

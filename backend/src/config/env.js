@@ -16,6 +16,13 @@ if (jwtSecret.length < 32 || jwtSecret.startsWith('replace-this-')) {
   throw new Error('JWT_SECRET must be a non-example secret of at least 32 characters');
 }
 
+const appTimezone = process.env.APP_TIMEZONE ?? 'Asia/Jakarta';
+try {
+  new Intl.DateTimeFormat('en', { timeZone: appTimezone });
+} catch {
+  throw new Error('APP_TIMEZONE must be a valid IANA timezone');
+}
+
 const whatsappGatewayUrl = process.env.WHATSAPP_GATEWAY_URL?.trim() || '';
 const whatsappGatewayToken = process.env.WHATSAPP_GATEWAY_TOKEN?.trim() || '';
 if (Boolean(whatsappGatewayUrl) !== Boolean(whatsappGatewayToken)) {
@@ -44,12 +51,13 @@ export const config = {
   },
   jwtSecret,
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '8h',
-  appTimezone: process.env.APP_TIMEZONE ?? 'Asia/Jakarta',
+  appTimezone,
   webOrigin: process.env.WEB_ORIGIN ?? 'http://localhost:5173',
   whatsappGatewayUrl,
   whatsappGatewayToken,
   notificationAdminPhone: process.env.NOTIFICATION_ADMIN_PHONE?.trim() ?? '',
   notificationLateMinutes: Number(process.env.NOTIFICATION_LATE_MINUTES ?? 0),
+  backupDirectory: process.env.BACKUP_DIRECTORY?.trim() ?? '',
 };
 
 if (!Number.isInteger(config.port) || config.port < 1 || config.port > 65535) {

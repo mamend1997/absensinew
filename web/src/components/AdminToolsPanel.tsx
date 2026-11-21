@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { api } from '../lib/api';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { api, apiUrl, getToken } from '../lib/api';
 
 interface ActivityLog {
   id: string | number;
@@ -19,6 +19,16 @@ interface ActivityResponse {
   page: number;
   page_size: number;
   total: number;
+}
+
+interface BackupSchedule {
+  enabled: boolean;
+  backup_time: string;
+  bot_configured: boolean;
+  chat_id_hint: string;
+  last_status: 'never' | 'running' | 'success' | 'failed' | 'notification_failed';
+  last_run_at: string | null;
+  last_error: string | null;
 }
 
 interface AdminToolsPanelProps {
@@ -47,6 +57,13 @@ export default function AdminToolsPanel({ showToast, onRestored }: AdminToolsPan
   const [error, setError] = useState('');
   const [backupFile, setBackupFile] = useState<File | null>(null);
   const [confirmation, setConfirmation] = useState('');
+  const [backupSchedule, setBackupSchedule] = useState<BackupSchedule | null>(null);
+  const [backupEnabled, setBackupEnabled] = useState(false);
+  const [backupTime, setBackupTime] = useState('02:00');
+  const [botToken, setBotToken] = useState('');
+  const [chatId, setChatId] = useState('');
+  const [backupSettingsBusy, setBackupSettingsBusy] = useState(false);
+  const [backupSettingsError, setBackupSettingsError] = useState('');
   const uploadRef = useRef<HTMLInputElement>(null);
 
   const refreshActivity = useCallback(async () => {
@@ -68,6 +85,22 @@ export default function AdminToolsPanel({ showToast, onRestored }: AdminToolsPan
     void refreshActivity();
   }, [refreshActivity]);
 
+  const refreshBackupSchedule = useCallback(async () => {
+    try {
+      const result = await api<BackupSchedule>('/admin-tools/backup/schedule');
+      setBackupSchedule(result);
+      setBackupEnabled(result.enabled);
+      setBackupTime(result.backup_time);
+      setBackupSettingsError('');
+    } catch (reason) {
+      setBackupSettingsError(reason instanceof Error ? reason.message : 'Pengaturan backup gagal dimuat.');
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshBackupSchedule();
+  }, [refreshBackupSchedule]);
+
   async function downloadBackup() {
     setBusy(true);
     try {
@@ -84,6 +117,35 @@ export default function AdminToolsPanel({ showToast, onRestored }: AdminToolsPan
       await refreshActivity();
     } catch (reason) {
       showToast(reason instanceof Error ? reason.message : 'Backup database gagal dibuat.', 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function downloadScheduledBackup() {
+    setBusy(true);
+    try {
+      const response = await fetch(`${apiUrl()}/admin-tools/backup/scheduled/latest`, {
+        headers: { authorization: `Bearer ${getToken() ?? ''}` },
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as {
+          error?: string | { message?: string };
+        };
+        const message = typeof payload.error === 'string'
+          ? payload.error
+          : payload.error?.message;
+        throw new Error(message || `Unduhan gagal (${response.status}).`);
+      }
+      const blob = await response.blob();
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = 'ruang-hadir-backup-encrypted.json.enc';
+      link.click();
+      URL.revokeObjectURL(link.href);
+      showToast('Backup otomatis terenkripsi berhasil diunduh.');
+    } catch (reason) {
+      showToast(reason instanceof Error ? reason.message : 'Unduhan backup otomatis gagal.', 'error');
     } finally {
       setBusy(false);
     }
@@ -123,6 +185,31 @@ export default function AdminToolsPanel({ showToast, onRestored }: AdminToolsPan
       showToast(reason instanceof Error ? reason.message : 'Pemulihan database gagal.', 'error');
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function saveBackupSchedule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBackupSettingsBusy(true);
+    setBackupSettingsError('');
+    try {
+      const result = await api<BackupSchedule>('/admin-tools/backup/schedule', {
+        method: 'PUT',
+        body: JSON.stringify({
+          enabled: backupEnabled,
+          backup_time: backupTime,
+          bot_token: botToken,
+          chat_id: chatId,
+        }),
+      });
+      setBackupSchedule(result);
+      setBotToken('');
+      setChatId('');
+      showToast('Pengaturan backup harian berhasil disimpan.');
+    } catch (reason) {
+      setBackupSettingsError(reason instanceof Error ? reason.message : 'Pengaturan backup gagal disimpan.');
+    } finally {
+      setBackupSettingsBusy(false);
     }
   }
 
@@ -193,6 +280,40 @@ export default function AdminToolsPanel({ showToast, onRestored }: AdminToolsPan
           )}
         </div>
       </section>
+
+      <form className="panel-card backup-schedule-card" onSubmit={(event) => void saveBackupSchedule(event)}>
+        <div>
+          <p className="eyebrow">BACKUP OTOMATIS</p>
+          <h2>Jadwal harian &amp; notifikasi Telegram</h2>
+          <p className="muted">
+            Backup disimpan terenkripsi di volume privat server. Telegram hanya menerima status,
+            bukan file atau data peserta. Waktu mengikuti zona waktu aplikasi.
+          </p>
+        </div>
+        <div className="backup-schedule-fields">
+          <label className="backup-enable">
+            <input type="checkbox" checked={backupEnabled} onChange={(event) => setBackupEnabled(event.target.checked)} />
+            Aktifkan backup harian
+          </label>
+          <label>Waktu backup<input type="time" required value={backupTime} onChange={(event) => setBackupTime(event.target.value)} /></label>
+          <label>Token Telegram Bot<input type="password" autoComplete="new-password" value={botToken} onChange={(event) => setBotToken(event.target.value)} placeholder={backupSchedule?.bot_configured ? 'Tersimpan terenkripsi; kosongkan untuk mempertahankan' : 'Token dari BotFather'} /></label>
+          <label>Chat ID / channel<input value={chatId} onChange={(event) => setChatId(event.target.value)} placeholder={backupSchedule?.chat_id_hint || 'Chat ID tujuan notifikasi'} /></label>
+          {backupSchedule && <p className="muted backup-status">
+            Status: <strong>{backupSchedule.last_status}</strong>
+            {backupSchedule.last_run_at ? ` · terakhir ${displayDate(backupSchedule.last_run_at)}` : ''}
+            {backupSchedule.last_error ? ` · ${backupSchedule.last_error}` : ''}
+          </p>}
+          {backupSchedule && ['success', 'notification_failed'].includes(backupSchedule.last_status) && (
+            <button type="button" className="button secondary" disabled={busy} onClick={() => void downloadScheduledBackup()}>
+              Unduh backup otomatis terenkripsi
+            </button>
+          )}
+          {backupSettingsError && <p className="notice error">{backupSettingsError}</p>}
+          <button className="button primary" disabled={backupSettingsBusy}>
+            {backupSettingsBusy ? 'Menyimpan…' : 'Simpan jadwal backup'}
+          </button>
+        </div>
+      </form>
 
       <section className="table-card activity-log-card">
         <div className="table-heading">

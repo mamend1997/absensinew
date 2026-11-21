@@ -173,6 +173,19 @@ CREATE TABLE IF NOT EXISTS activity_logs (
         REFERENCES users (id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS scheduled_backup_settings (
+    id TINYINT UNSIGNED NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    backup_time CHAR(5) NOT NULL DEFAULT '02:00',
+    encrypted_credentials TEXT NULL,
+    last_run_date CHAR(10) NULL,
+    last_status VARCHAR(24) NOT NULL DEFAULT 'never',
+    last_run_at TIMESTAMP NULL,
+    last_error VARCHAR(500) NULL,
+    PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+INSERT IGNORE INTO scheduled_backup_settings (id) VALUES (1);
+
 -- Seed referensi awal. Tidak ada akun dengan password default.
 INSERT INTO units (name) VALUES ('Unit Contoh')
     ON DUPLICATE KEY UPDATE name = VALUES(name);

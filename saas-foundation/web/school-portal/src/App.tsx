@@ -11,7 +11,7 @@ import { createOfflineSyncManager } from './core/offline-sync.js';
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '');
 const SESSION_KEY = 'saas_school_session';
 const DEVICE_KEY_PREFIX = 'saas_scanner_device_key_';
-type Page = 'dashboard' | 'scanner' | 'reports' | 'participants' | 'settings' | 'roles' | 'devices' | 'downloads';
+type Page = 'dashboard' | 'scanner' | 'reports' | 'participants' | 'settings' | 'roles' | 'devices' | 'downloads' | 'billing';
 type Permission =
   | 'dashboard.read'
   | 'attendance.read'
@@ -26,7 +26,13 @@ type Permission =
   | 'school.roles.manage'
   | 'scanner.devices.manage';
 
-interface SchoolInfo { id: string | number; name: string; school_code: string }
+interface SchoolInfo {
+  id: string | number;
+  name: string;
+  school_code: string;
+  subscription_status?: string;
+  subscription_expired?: boolean;
+}
 interface UserInfo {
   id: string | number;
   display_name: string;
@@ -34,6 +40,22 @@ interface UserInfo {
   permissions: Permission[];
 }
 interface SchoolSession { token: string; school: SchoolInfo; user: UserInfo }
+interface BillingData {
+  subscription: { status: string; trial_ends_at: string | null; expires_at: string | null; expired: boolean };
+  prices: { monthly: number; lifetime: number };
+  providers: { xendit: boolean; duitku: boolean };
+  orders: Array<{
+    order_id: string;
+    provider: 'xendit' | 'duitku';
+    plan: 'monthly' | 'lifetime';
+    amount: number;
+    payment_method: string | null;
+    status: 'pending' | 'paid' | 'expired' | 'failed';
+    checkout_url: string | null;
+    created_at: string;
+  }>;
+}
+interface PaymentMethod { code: string; name: string; fee: number }
 interface Participant {
   id: string;
   participant_code: string;
@@ -72,6 +94,12 @@ interface ReportRow {
   menit_terlambat?: number;
 }
 interface Device { id: string | number; device_name: string; is_active: boolean | number }
+interface SchoolWhatsappGatewaySettings {
+  endpoint_url: string;
+  is_enabled: boolean;
+  is_configured: boolean;
+  token_hint: string;
+}
 interface QueuedScan {
   id_unik: string;
   sekolah_id: string;
@@ -195,6 +223,14 @@ function csvCell(value: unknown) {
   return `"${text.replace(/"/g, '""')}"`;
 }
 
+function rupiah(value: number) {
+  return new Intl.NumberFormat('id-ID', {
+    style: 'currency',
+    currency: 'IDR',
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
 function downloadReport(rows: ReportRow[]) {
   const table = [
     ['Tanggal', 'Kode', 'Nama', 'Kelas', 'Masuk', 'Keluar', 'Status', 'Menit terlambat'],
@@ -224,7 +260,8 @@ function downloadReport(rows: ReportRow[]) {
 export default function App() {
   const [session, setSession] = useState<SchoolSession | null>(readSession);
   const [applicationName, setApplicationName] = useState('Ruang Hadir');
-  const [page, setPage] = useState<Page>('dashboard');
+  const [page, setPage] = useState<Page>(() =>
+    new URLSearchParams(window.location.search).get('billing') === 'return' ? 'billing' : 'dashboard');
   const [loginView, setLoginView] = useState<LoginView>('login');
   const [loginForm, setLoginForm] = useState({ school_code: '', username: '', password: '' });
   const [registrationForm, setRegistrationForm] = useState(initialRegistrationForm);
@@ -239,6 +276,21 @@ export default function App() {
   const [users, setUsers] = useState<Record<string, unknown>[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
   const [apkDriveUrl, setApkDriveUrl] = useState('');
+  const [billingData, setBillingData] = useState<BillingData | null>(null);
+  const [billingProvider, setBillingProvider] = useState<'xendit' | 'duitku'>('xendit');
+  const [billingPlan, setBillingPlan] = useState<'monthly' | 'lifetime'>('monthly');
+  const [billingEmail, setBillingEmail] = useState('');
+  const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([]);
+  const [paymentMethod, setPaymentMethod] = useState('');
+  const [billingBusy, setBillingBusy] = useState(false);
+  const [whatsappSettings, setWhatsappSettings] = useState<SchoolWhatsappGatewaySettings>({
+    endpoint_url: '',
+    is_enabled: false,
+    is_configured: false,
+    token_hint: '',
+  });
+  const [whatsappToken, setWhatsappToken] = useState('');
+  const [whatsappBusy, setWhatsappBusy] = useState(false);
   const [reportRows, setReportRows] = useState<ReportRow[]>([]);
   const [reportFrom, setReportFrom] = useState(initialDate);
   const [reportTo, setReportTo] = useState(initialDate);
@@ -327,7 +379,6 @@ export default function App() {
   useEffect(() => {
     if (!session) return;
     setDeviceKey(sessionStorage.getItem(deviceStorageKey) ?? '');
-    void loadSchoolData(session);
     void request<{ session?: SchoolSession; school?: SchoolInfo; user?: UserInfo }>(
       '/school/auth/me',
       session.token,
@@ -338,9 +389,50 @@ export default function App() {
       setSession(refreshed);
       sessionStorage.setItem(SESSION_KEY, JSON.stringify(refreshed));
       setOfflineMode(false);
-    }).catch(() => {
+      if (refreshed.school.subscription_expired) setPage('billing');
+      else void loadSchoolData(refreshed);
+    }).catch((reason: unknown) => {
       setOfflineMode(true);
+      setError(reason instanceof Error ? reason.message : 'Sesi sekolah gagal diperbarui.');
     });
+  }, [session?.token]);
+
+  useEffect(() => {
+    if (!session || page !== 'billing' ||
+        !session.user.permissions.includes('school.users.manage')) return;
+    void loadBillingData();
+  }, [page, session?.token]);
+
+  useEffect(() => {
+    if (!session || page !== 'billing' || billingProvider !== 'duitku') {
+      setPaymentMethods([]);
+      setPaymentMethod('');
+      return;
+    }
+    let active = true;
+    request<{ payment_methods: PaymentMethod[] }>(
+      `/school/billing/payment-methods?provider=duitku&plan=${billingPlan}`,
+      session.token,
+    )
+      .then((result) => {
+        if (!active) return;
+        setPaymentMethods(result.payment_methods);
+        setPaymentMethod(result.payment_methods[0]?.code ?? '');
+      })
+      .catch((reason: unknown) => {
+        if (active) setError(reason instanceof Error ? reason.message : 'Metode pembayaran Duitku gagal dimuat.');
+      });
+    return () => { active = false; };
+  }, [billingPlan, billingProvider, page, session?.token]);
+
+  useEffect(() => {
+    if (!session || !session.user.permissions.includes('settings.operational.manage')) return;
+    request<{ settings: SchoolWhatsappGatewaySettings }>(
+      '/school/settings/whatsapp-gateway',
+      session.token,
+    )
+      .then((result) => setWhatsappSettings(result.settings))
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Pengaturan WhatsApp sekolah gagal dimuat.'));
   }, [session?.token]);
 
   useEffect(() => {
@@ -385,6 +477,7 @@ export default function App() {
   }, [online, deviceKey, page, session?.school.id]);
 
   async function loadSchoolData(currentSession: SchoolSession) {
+    if (currentSession.school.subscription_expired) return;
     const db = await database(currentSession.school.id);
     const cached = await db.getAll('participants');
     setParticipants(cached);
@@ -421,6 +514,18 @@ export default function App() {
     await refreshPendingCount(currentSession.school.id);
   }
 
+  async function loadBillingData() {
+    if (!session) return;
+    try {
+      const result = await request<BillingData>('/school/billing', session.token);
+      setBillingData(result);
+      if (!result.providers.xendit && result.providers.duitku) setBillingProvider('duitku');
+      setError('');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Informasi tagihan gagal dimuat.');
+    }
+  }
+
   async function refreshPendingCount(schoolId = session?.school.id) {
     if (schoolId == null) return;
     const db = await database(schoolId);
@@ -455,8 +560,10 @@ export default function App() {
       setSession(nextSession);
       sessionStorage.setItem(SESSION_KEY, JSON.stringify(nextSession));
       setLoginForm((current) => ({ ...current, password: '' }));
-      setPage(nextSession.user.permissions.includes('scanner.use') &&
-        !nextSession.user.permissions.includes('dashboard.read') ? 'scanner' : 'dashboard');
+      setPage(nextSession.school.subscription_expired
+        ? 'billing'
+        : nextSession.user.permissions.includes('scanner.use') &&
+          !nextSession.user.permissions.includes('dashboard.read') ? 'scanner' : 'dashboard');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Login sekolah gagal.');
     } finally {
@@ -816,6 +923,75 @@ export default function App() {
     }
   }
 
+  async function saveSchoolWhatsappSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session) return;
+    setWhatsappBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await request('/school/settings/whatsapp-gateway', session.token, {
+        method: 'PUT',
+        body: {
+          endpoint_url: whatsappSettings.endpoint_url,
+          is_enabled: whatsappSettings.is_enabled,
+          ...(whatsappToken ? { token: whatsappToken } : {}),
+        },
+      });
+      setWhatsappToken('');
+      const current = await request<{ settings: SchoolWhatsappGatewaySettings }>(
+        '/school/settings/whatsapp-gateway',
+        session.token,
+      );
+      setWhatsappSettings(current.settings);
+      setNotice('Pengaturan WhatsApp gateway sekolah berhasil disimpan.');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Pengaturan WhatsApp sekolah gagal disimpan.');
+    } finally {
+      setWhatsappBusy(false);
+    }
+  }
+
+  async function startBillingPayment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session) return;
+    setBillingBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await request<{ checkout_url: string }>('/school/billing/orders', session.token, {
+        method: 'POST',
+        body: {
+          provider: billingProvider,
+          plan: billingPlan,
+          email: billingEmail.trim(),
+          ...(billingProvider === 'duitku' ? { payment_method: paymentMethod } : {}),
+        },
+      });
+      window.location.assign(result.checkout_url);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Tagihan pembayaran gagal dibuat.');
+      setBillingBusy(false);
+    }
+  }
+
+  async function clearSchoolWhatsappSettings() {
+    if (!session || !window.confirm('Hapus konfigurasi WhatsApp gateway sekolah ini?')) return;
+    setWhatsappBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await request('/school/settings/whatsapp-gateway', session.token, { method: 'DELETE' });
+      setWhatsappSettings({ endpoint_url: '', is_enabled: false, is_configured: false, token_hint: '' });
+      setWhatsappToken('');
+      setNotice('Konfigurasi WhatsApp gateway sekolah dihapus.');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Konfigurasi WhatsApp sekolah gagal dihapus.');
+    } finally {
+      setWhatsappBusy(false);
+    }
+  }
+
   async function addHoliday(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const next = [...operationalForm.holidays, holidayForm];
@@ -887,6 +1063,7 @@ export default function App() {
       { id: 'devices', label: 'Perangkat', permission: 'scanner.use' },
       { id: 'scanner', label: 'Scanner', permission: 'scanner.use' },
       { id: 'downloads', label: 'Unduh APK' },
+      ...(can('school.users.manage') ? [{ id: 'billing' as const, label: 'Langganan' }] : []),
     ];
     return items.filter((item) => !item.permission || can(item.permission));
   }, [session?.user.permissions]);
@@ -1098,6 +1275,27 @@ export default function App() {
                 <div className="form-grid"><label>Tanggal<input type="date" required value={holidayForm.date} onChange={(event) => setHolidayForm((current) => ({ ...current, date: event.target.value }))} /></label><label>Nama libur<input required value={holidayForm.name} onChange={(event) => setHolidayForm((current) => ({ ...current, name: event.target.value }))} /></label><button className="button secondary">Tambah libur</button></div>
                 <ul className="holiday-list">{operationalForm.holidays.map((holiday) => <li key={`${holiday.date}-${holiday.name}`}><span>{holiday.date} · {holiday.name}</span><button type="button" className="text-button" onClick={() => setOperationalForm((current) => ({ ...current, holidays: current.holidays.filter((item) => item !== holiday) }))}>Hapus</button></li>)}</ul>
               </form>
+              {can('settings.operational.manage') && <section className="panel school-whatsapp-panel">
+                <div>
+                  <h2>Gateway WhatsApp sekolah</h2>
+                  <p className="muted">Konfigurasi ini khusus untuk tenant sekolah ini. Token dienkripsi di database dan tidak ditampilkan kembali.</p>
+                  <span className={`gateway-status ${whatsappSettings.is_enabled && whatsappSettings.is_configured ? 'ready' : ''}`}>
+                    {whatsappSettings.is_enabled && whatsappSettings.is_configured ? '● Aktif' : '○ Belum aktif'}
+                  </span>
+                </div>
+                <form className="school-whatsapp-form" onSubmit={(event) => void saveSchoolWhatsappSettings(event)}>
+                  <label>URL HTTPS gateway<input type="url" required placeholder="https://gateway.example/api/send" value={whatsappSettings.endpoint_url} onChange={(event) => setWhatsappSettings((current) => ({ ...current, endpoint_url: event.target.value }))} /></label>
+                  <label>Bearer token
+                    <input type="password" autoComplete="new-password" placeholder={whatsappSettings.is_configured ? 'Tersimpan — kosongkan untuk mempertahankan' : 'Masukkan token gateway'} value={whatsappToken} onChange={(event) => setWhatsappToken(event.target.value)} />
+                  </label>
+                  {whatsappSettings.is_configured && <small className="gateway-hint">{whatsappSettings.token_hint}</small>}
+                  <label className="school-whatsapp-toggle"><input type="checkbox" checked={whatsappSettings.is_enabled} onChange={(event) => setWhatsappSettings((current) => ({ ...current, is_enabled: event.target.checked }))} /> Aktifkan konfigurasi gateway</label>
+                  <div className="heading-actions">
+                    <button className="button primary" disabled={whatsappBusy}>{whatsappBusy ? 'Menyimpan…' : 'Simpan pengaturan'}</button>
+                    <button className="button secondary" type="button" disabled={whatsappBusy || !whatsappSettings.is_configured} onClick={() => void clearSchoolWhatsappSettings()}>Hapus konfigurasi</button>
+                  </div>
+                </form>
+              </section>}
             </section>
           )}
 
@@ -1140,6 +1338,57 @@ export default function App() {
                   ? <><div className="apk-download-icon" aria-hidden="true">↓</div><h2>Versi Android tersedia</h2><p className="muted">Pastikan nama dan versi file sesuai instruksi Admin sekolah sebelum memasang.</p><a className="button primary" href={apkDriveUrl} target="_blank" rel="noopener noreferrer">Buka link download Google Drive</a></>
                   : <><h2>APK belum tersedia</h2><p className="muted">Link unduhan akan muncul di sini setelah Super Admin mengaturnya.</p></>}
               </div>
+            </section>
+          )}
+
+          {page === 'billing' && (
+            <section>
+              <div className="page-heading"><div><p className="eyebrow">AKUN SEKOLAH</p><h1>Langganan &amp; pembayaran</h1><p className="muted">Kelola akses dan perpanjang layanan sekolah.</p></div></div>
+              {billingData && (
+                <>
+                  <div className="panel billing-status-panel">
+                    <div><small>Status langganan</small><strong>{billingData.subscription.status === 'lifetime' ? 'Lifetime' : billingData.subscription.expired ? 'Kedaluwarsa' : billingData.subscription.status === 'trial' ? 'Uji coba' : 'Aktif'}</strong></div>
+                    <div><small>Masa berlaku</small><strong>{billingData.subscription.status === 'lifetime' ? 'Selamanya' : billingData.subscription.expires_at ? new Date(billingData.subscription.expires_at).toLocaleDateString('id-ID') : billingData.subscription.trial_ends_at ? new Date(billingData.subscription.trial_ends_at).toLocaleDateString('id-ID') : 'Belum ditentukan'}</strong></div>
+                  </div>
+                  {billingData.subscription.status !== 'lifetime' && (
+                    <form className="panel billing-form" onSubmit={(event) => void startBillingPayment(event)}>
+                      <h2>Pilih paket</h2>
+                      <div className="form-grid">
+                        <label>Paket
+                          <select value={billingPlan} onChange={(event) => setBillingPlan(event.target.value as 'monthly' | 'lifetime')}>
+                            <option value="monthly">Bulanan · {rupiah(billingData.prices.monthly)}</option>
+                            <option value="lifetime">Lifetime · {rupiah(billingData.prices.lifetime)}</option>
+                          </select>
+                        </label>
+                        <label>Payment gateway
+                          <select value={billingProvider} onChange={(event) => setBillingProvider(event.target.value as 'xendit' | 'duitku')}>
+                            {billingData.providers.xendit && <option value="xendit">Xendit</option>}
+                            {billingData.providers.duitku && <option value="duitku">Duitku</option>}
+                          </select>
+                        </label>
+                        <label>Email bukti pembayaran<input type="email" autoComplete="email" required maxLength={255} value={billingEmail} onChange={(event) => setBillingEmail(event.target.value)} /></label>
+                        {billingProvider === 'duitku' && <label>Metode pembayaran
+                          <select required value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)}>
+                            {paymentMethods.map((method) => <option key={method.code} value={method.code}>{method.name}{method.fee ? ` · biaya ${rupiah(method.fee)}` : ''}</option>)}
+                          </select>
+                        </label>}
+                        <div className="billing-total"><span>Total</span><strong>{rupiah(billingPlan === 'lifetime' ? billingData.prices.lifetime : billingData.prices.monthly)}</strong></div>
+                        <button className="button primary" disabled={billingBusy || (!billingData.providers.xendit && !billingData.providers.duitku) || (billingProvider === 'duitku' && !paymentMethod)}>
+                          {billingBusy ? 'Membuat tagihan…' : 'Lanjutkan pembayaran'}
+                        </button>
+                      </div>
+                      {!billingData.providers.xendit && !billingData.providers.duitku && <p className="alert warning">Payment gateway belum dikonfigurasi oleh Super Admin.</p>}
+                    </form>
+                  )}
+                  <div className="panel">
+                    <div className="section-title"><div><h2>Riwayat tagihan</h2><p className="muted">Status diperbarui otomatis setelah callback payment gateway terverifikasi.</p></div><button className="button secondary" onClick={() => void loadBillingData()}>Muat ulang</button></div>
+                    <div className="table-scroll"><table><thead><tr><th>Order</th><th>Paket</th><th>Provider</th><th>Jumlah</th><th>Status</th><th>Tanggal</th><th>Link</th></tr></thead><tbody>
+                      {billingData.orders.map((order) => <tr key={order.order_id}><td><code>{order.order_id}</code></td><td>{order.plan === 'lifetime' ? 'Lifetime' : 'Bulanan'}</td><td>{order.provider}</td><td>{rupiah(order.amount)}</td><td>{order.status}</td><td>{new Date(order.created_at).toLocaleString('id-ID')}</td><td>{order.status === 'pending' && order.checkout_url ? <a href={order.checkout_url} target="_blank" rel="noopener noreferrer">Bayar</a> : '—'}</td></tr>)}
+                      {!billingData.orders.length && <tr><td colSpan={7} className="empty">Belum ada tagihan.</td></tr>}
+                    </tbody></table></div>
+                  </div>
+                </>
+              )}
             </section>
           )}
         </main>

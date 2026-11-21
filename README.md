@@ -157,9 +157,22 @@ sistem yang dikenal, maksimal 25 MB/300.000 baris, dan menolak cadangan tanpa
 Admin aktif. Restore menggantikan seluruh data aktif dalam transaksi, lalu
 mempertahankan log lokal yang sudah ada, menambahkan log dari backup tanpa
 duplikasi ID, dan mencatat aktivitas restore. Dari panel, Admin harus memilih file dan mengetik
-`PULIHKAN DATABASE` sebelum konfirmasi. Simpan backup berkala ke penyimpanan di
-luar hosting; fitur ini mengekspor/memulihkan backup secara manual, bukan
-penjadwal backup otomatis.
+`PULIHKAN DATABASE` sebelum konfirmasi.
+
+Admin juga dapat menjadwalkan backup harian dari menu **Audit & Backup**. Atur
+`BACKUP_DIRECTORY` pada environment backend ke direktori pada persistent volume
+privat (misalnya `/data/backups` di Railway), lalu isi waktu dan kredensial Bot
+Telegram serta Chat ID pada panel. Jam mengikuti `APP_TIMEZONE`. File backup
+disimpan terenkripsi AES-256-GCM di volume tersebut; bot hanya menerima
+notifikasi status dan tidak pernah menerima file, data peserta, atau hash akun.
+Kunci enkripsi diturunkan dari `JWT_SECRET`, jadi secret itu harus tetap stabil
+dan backup perlu disalin secara aman ke penyimpanan terpisah untuk pemulihan
+bencana. Backup terakhir dapat diunduh terenkripsi dari panel Admin. Untuk
+memulihkannya, gunakan `node scripts/decrypt-scheduled-backup.js <file.enc>
+<backup.json>` dari folder `backend` dengan `JWT_SECRET` yang sama, lalu unggah
+JSON hasil dekripsi pada panel Restore. File hasil dekripsi memuat data pribadi
+dan hash kredensial; simpan dan hapus dengan aman setelah pemulihan. Backup JSON
+manual tetap berisi hash kredensial dan harus disimpan dengan aman.
 
 Notifikasi hanya dibuat untuk absensi baru setelah record tersimpan dalam
 transaksi. Nomor wali diatur melalui `guardian_phone` pada master peserta; nomor

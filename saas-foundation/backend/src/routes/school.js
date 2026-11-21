@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { Router } from 'express';
+import {
+  createProviderPayment, getDuitkuPaymentMethods,
+} from '../core/billing.js';
 import { calculateAttendance } from '../core/attendance.js';
 import { inTransaction, pool } from '../db.js';
 import {
@@ -19,7 +22,9 @@ import {
 } from '../core/school-registration.js';
 import { generateUniqueSchoolCode } from '../core/school-code.js';
 import { provisionSchool } from '../core/school-provision.js';
-import { decryptGatewayToken, sendWhatsappMessage } from '../core/whatsapp-gateway.js';
+import {
+  decryptGatewayToken, encryptGatewayToken, sendWhatsappMessage, validateGatewayUrl,
+} from '../core/whatsapp-gateway.js';
 import { config } from '../config.js';
 import { createDeviceApiKey, hashPassword, signToken, verifyPassword } from '../security.js';
 
@@ -62,6 +67,24 @@ function validDate(value) {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) &&
     !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) &&
     new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+}
+
+function validateSchoolGatewaySettings(body) {
+  const endpointUrl = validateGatewayUrl(body.endpoint_url).toString();
+  if (typeof body.is_enabled !== 'boolean') {
+    throw fail(400, 'is_enabled harus berupa boolean.', 'VALIDATION_ERROR');
+  }
+  if (body.token !== undefined &&
+      (typeof body.token !== 'string' || body.token.length > 1024)) {
+    throw fail(400, 'Token gateway tidak valid.', 'VALIDATION_ERROR');
+  }
+  return { endpointUrl, isEnabled: body.is_enabled, token: body.token?.trim() ?? '' };
+}
+
+function requireBillingAdmin(req) {
+  if (req.schoolUser.role_key !== 'admin-sekolah') {
+    throw fail(403, 'Hanya Admin Sekolah yang dapat mengelola langganan.', 'FORBIDDEN');
+  }
 }
 
 async function loadAttendanceSettings(schoolId) {
@@ -221,17 +244,13 @@ router.post('/auth/login', asyncRoute(async (req, res) => {
     throw fail(401, 'Kode sekolah, username, atau password tidak benar.', 'INVALID_CREDENTIALS');
   }
   const [rows] = await pool.execute(
-    `SELECT u.id, u.sekolah_id, u.username, u.display_name, u.password_hash,
+    `SELECT u.id, u.sekolah_id, u.username, u.display_name, u.whatsapp_phone, u.password_hash,
             u.is_active, s.school_code, s.name AS school_name, s.timezone,
-            s.subscription_status, r.role_name
+            s.subscription_status, s.subscription_expires_at, r.role_name, r.role_key
        FROM schools s JOIN users u ON u.sekolah_id = s.id
        JOIN roles r ON r.id = u.role_id AND r.sekolah_id = u.sekolah_id
       WHERE s.school_code = ? AND u.username = ? AND s.is_active = TRUE
-        AND s.subscription_status <> 'suspend'
-        AND (s.subscription_status <> 'trial' OR s.trial_ends_at IS NULL
-             OR s.trial_ends_at > UTC_TIMESTAMP())
-        AND (s.subscription_expires_at IS NULL
-             OR s.subscription_expires_at > UTC_TIMESTAMP())`,
+        AND s.subscription_status <> 'suspend'`,
     [req.body.school_code, req.body.username],
   );
   const user = rows[0];
@@ -255,6 +274,7 @@ router.post('/auth/login', asyncRoute(async (req, res) => {
     school: {
       id: String(user.sekolah_id), school_code: user.school_code,
       name: user.school_name, timezone: user.timezone,
+      subscription_status: user.subscription_status,
     },
   });
 }));
@@ -266,15 +286,19 @@ router.get('/auth/me', requireSchoolUser, (req, res) => {
       id: String(user.id), username: user.username, display_name: user.display_name,
       role_id: String(user.role_id), role_name: user.role_name,
       classroom_id: user.classroom_id, permissions: user.permissions,
+      role_key: user.role_key,
+      subscription_expired: user.subscription_expired,
     },
     school: {
       id: user.sekolah_id, school_code: user.school_code,
       name: user.school_name, timezone: user.timezone,
+      subscription_status: user.subscription_status,
+      subscription_expired: user.subscription_expired,
     },
   });
 });
 
-router.get('/roles', requireSchoolUser, asyncRoute(async (req, res) => {
+router.get('/roles', requireSchoolUser, requirePermission('school.roles.manage'), asyncRoute(async (req, res) => {
   if (!req.schoolUser.permissions.includes('school.roles.manage') &&
       !req.schoolUser.permissions.includes('school.users.manage')) {
     throw fail(403, 'Izin tidak mencukupi.', 'FORBIDDEN');
@@ -601,6 +625,196 @@ router.put('/settings', requireSchoolUser, requirePermission('settings.operation
     connection.release();
   }
   res.json({ message: 'Pengaturan diperbarui.' });
+}));
+
+router.get('/settings/whatsapp-gateway', requireSchoolUser, requirePermission('settings.operational.manage'), asyncRoute(async (req, res) => {
+  const [[settings]] = await pool.execute(
+    `SELECT endpoint_url, token_ciphertext, is_enabled
+       FROM school_whatsapp_gateway_config WHERE sekolah_id = ?`,
+    [req.schoolUser.sekolah_id],
+  );
+  res.json({
+    settings: {
+      endpoint_url: settings?.endpoint_url ?? '',
+      is_enabled: Boolean(settings?.is_enabled),
+      is_configured: Boolean(settings?.endpoint_url && settings?.token_ciphertext),
+      token_hint: settings?.token_ciphertext ? 'Token tersimpan aman' : '',
+    },
+  });
+}));
+
+router.put('/settings/whatsapp-gateway', requireSchoolUser, requirePermission('settings.operational.manage'), asyncRoute(async (req, res) => {
+  const settings = validateSchoolGatewaySettings(req.body ?? {});
+  const [[existing]] = await pool.execute(
+    `SELECT token_ciphertext, token_iv, token_auth_tag
+       FROM school_whatsapp_gateway_config WHERE sekolah_id = ?`,
+    [req.schoolUser.sekolah_id],
+  );
+  const encrypted = settings.token
+    ? encryptGatewayToken(settings.token)
+    : existing?.token_ciphertext
+      ? {
+        ciphertext: existing.token_ciphertext,
+        iv: existing.token_iv,
+        authTag: existing.token_auth_tag,
+      }
+      : null;
+  if (settings.isEnabled && !encrypted) {
+    throw fail(400, 'Masukkan token gateway sebelum mengaktifkannya.', 'VALIDATION_ERROR');
+  }
+  await pool.execute(
+    `INSERT INTO school_whatsapp_gateway_config
+      (sekolah_id, endpoint_url, token_ciphertext, token_iv, token_auth_tag, is_enabled)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE endpoint_url = VALUES(endpoint_url),
+       token_ciphertext = VALUES(token_ciphertext), token_iv = VALUES(token_iv),
+       token_auth_tag = VALUES(token_auth_tag), is_enabled = VALUES(is_enabled)`,
+    [req.schoolUser.sekolah_id, settings.endpointUrl, encrypted?.ciphertext ?? null,
+      encrypted?.iv ?? null, encrypted?.authTag ?? null, settings.isEnabled],
+  );
+  res.json({ message: 'Pengaturan WhatsApp sekolah disimpan.' });
+}));
+
+router.delete('/settings/whatsapp-gateway', requireSchoolUser, requirePermission('settings.operational.manage'), asyncRoute(async (req, res) => {
+  await pool.execute(
+    `DELETE FROM school_whatsapp_gateway_config WHERE sekolah_id = ?`,
+    [req.schoolUser.sekolah_id],
+  );
+  res.json({ message: 'Konfigurasi WhatsApp sekolah dihapus.' });
+}));
+
+router.get('/billing', requireSchoolUser, asyncRoute(async (req, res) => {
+  requireBillingAdmin(req);
+  const [[school]] = await pool.execute(
+    `SELECT subscription_status, trial_ends_at, subscription_expires_at
+       FROM schools WHERE id = ?`,
+    [req.schoolUser.sekolah_id],
+  );
+  const [[prices]] = await pool.execute(
+    'SELECT monthly_price, lifetime_price FROM platform_billing_settings WHERE id = 1',
+  );
+  const [orders] = await pool.execute(
+    `SELECT order_id, provider, plan, amount, payment_method, status,
+            checkout_url, expires_at, paid_at, created_at
+       FROM subscription_payment_orders
+      WHERE sekolah_id = ? ORDER BY created_at DESC LIMIT 10`,
+    [req.schoolUser.sekolah_id],
+  );
+  res.json({
+    subscription: {
+      status: school.subscription_status,
+      trial_ends_at: school.trial_ends_at,
+      expires_at: school.subscription_expires_at,
+      expired: req.schoolUser.subscription_expired,
+    },
+    prices: {
+      monthly: Number(prices?.monthly_price ?? 50000),
+      lifetime: Number(prices?.lifetime_price ?? 1000000),
+    },
+    providers: {
+      xendit: Boolean(
+        config.xenditSecretKey && config.xenditCallbackToken &&
+        config.publicWebUrl && config.publicApiUrl,
+      ),
+      duitku: Boolean(
+        config.duitkuMerchantCode && config.duitkuApiKey &&
+        config.publicWebUrl && config.publicApiUrl,
+      ),
+    },
+    orders: orders.map((order) => ({ ...order, amount: Number(order.amount) })),
+  });
+}));
+
+router.get('/billing/payment-methods', requireSchoolUser, asyncRoute(async (req, res) => {
+  requireBillingAdmin(req);
+  if (req.query.provider !== 'duitku' ||
+      !['monthly', 'lifetime'].includes(String(req.query.plan))) {
+    throw fail(400, 'Provider atau paket pembayaran tidak valid.', 'VALIDATION_ERROR');
+  }
+  const [[prices]] = await pool.execute(
+    'SELECT monthly_price, lifetime_price FROM platform_billing_settings WHERE id = 1',
+  );
+  const amount = Number(req.query.plan === 'lifetime'
+    ? prices?.lifetime_price ?? 1000000
+    : prices?.monthly_price ?? 50000);
+  res.json({ payment_methods: await getDuitkuPaymentMethods(amount) });
+}));
+
+router.post('/billing/orders', requireSchoolUser, asyncRoute(async (req, res) => {
+  requireBillingAdmin(req);
+  const { provider, plan, payment_method: paymentMethod, email } = req.body ?? {};
+  if (!['xendit', 'duitku'].includes(provider) ||
+      !['monthly', 'lifetime'].includes(plan) ||
+      typeof email !== 'string' || email.length > 255 ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+    throw fail(400, 'Provider, paket, dan email pembayaran harus valid.', 'VALIDATION_ERROR');
+  }
+  if (req.schoolUser.subscription_status === 'lifetime') {
+    throw fail(409, 'Sekolah sudah memiliki langganan Lifetime.', 'ALREADY_LIFETIME');
+  }
+  if (provider === 'duitku' &&
+      (typeof paymentMethod !== 'string' || !/^[A-Za-z0-9]{1,20}$/.test(paymentMethod))) {
+    throw fail(400, 'Pilih metode pembayaran Duitku.', 'VALIDATION_ERROR');
+  }
+  const [[prices]] = await pool.execute(
+    'SELECT monthly_price, lifetime_price FROM platform_billing_settings WHERE id = 1',
+  );
+  const amount = Number(plan === 'lifetime'
+    ? prices?.lifetime_price ?? 1000000
+    : prices?.monthly_price ?? 50000);
+  if (provider === 'duitku') {
+    const methods = await getDuitkuPaymentMethods(amount);
+    if (!methods.some((method) => method.code === paymentMethod)) {
+      throw fail(400, 'Metode pembayaran Duitku tidak tersedia untuk paket ini.', 'PAYMENT_METHOD_UNAVAILABLE');
+    }
+  }
+
+  const id = randomUUID();
+  const orderId = `RH-${randomUUID()}`;
+  const order = {
+    id,
+    order_id: orderId,
+    provider,
+    plan,
+    amount,
+    payment_method: provider === 'duitku' ? paymentMethod : null,
+  };
+  await pool.execute(
+    `INSERT INTO subscription_payment_orders
+      (id, sekolah_id, order_id, provider, plan, amount, payment_method, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`,
+    [id, req.schoolUser.sekolah_id, orderId, provider, plan, amount, order.payment_method],
+  );
+  try {
+    const payment = await createProviderPayment({
+      order,
+      school: { id: req.schoolUser.sekolah_id, name: req.schoolUser.school_name },
+      email: email.trim(),
+      phone: req.schoolUser.whatsapp_phone,
+    });
+    await pool.execute(
+      `UPDATE subscription_payment_orders
+          SET checkout_url = ?, provider_reference = ?, expires_at = ?
+        WHERE id = ? AND sekolah_id = ? AND status = 'pending'`,
+      [payment.checkoutUrl, payment.reference, payment.expiresAt,
+        id, req.schoolUser.sekolah_id],
+    );
+    res.status(201).json({
+      order_id: orderId,
+      provider,
+      plan,
+      amount,
+      checkout_url: payment.checkoutUrl,
+      expires_at: payment.expiresAt,
+    });
+  } catch (error) {
+    await pool.execute(
+      `UPDATE subscription_payment_orders SET status = 'failed'
+        WHERE id = ? AND sekolah_id = ? AND status = 'pending'`,
+      [id, req.schoolUser.sekolah_id],
+    );
+    throw error;
+  }
 }));
 
 router.get('/devices', requireSchoolUser, requirePermission('scanner.use'), asyncRoute(async (req, res) => {

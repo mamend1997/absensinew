@@ -11,6 +11,13 @@ export const config = Object.freeze({
   port: Number(process.env.PORT ?? 4100),
   jwtSecret,
   jwtTtl: process.env.JWT_TTL ?? '8h',
+  publicWebUrl: process.env.PUBLIC_WEB_URL?.trim() ?? '',
+  publicApiUrl: process.env.PUBLIC_API_URL?.trim() ?? '',
+  xenditSecretKey: process.env.XENDIT_SECRET_KEY?.trim() ?? '',
+  xenditCallbackToken: process.env.XENDIT_CALLBACK_TOKEN?.trim() ?? '',
+  duitkuMerchantCode: process.env.DUITKU_MERCHANT_CODE?.trim() ?? '',
+  duitkuApiKey: process.env.DUITKU_API_KEY?.trim() ?? '',
+  duitkuEnvironment: process.env.DUITKU_ENVIRONMENT === 'sandbox' ? 'sandbox' : 'production',
   mysql: Object.freeze({
     host: process.env.MYSQL_HOST ?? '127.0.0.1',
     port: Number(process.env.MYSQL_PORT ?? 3306),

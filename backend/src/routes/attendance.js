@@ -260,6 +260,7 @@ router.get('/rekap', allowRoles('admin'), asyncHandler(async (request, response)
   }
 
   const rows = [];
+  const holidayDates = [];
   for (let offset = 0; offset < dayCount; offset += 1) {
     const date = addCalendarDays(startDate, offset);
     const weekday = new Date(`${date}T00:00:00.000Z`).getUTCDay();
@@ -267,6 +268,7 @@ router.get('/rekap', allowRoles('admin'), asyncHandler(async (request, response)
     const isWorkingDay = schedule
       ? Boolean(Number(schedule.is_working_day))
       : weekday >= 1 && weekday <= 5;
+    if (!isWorkingDay) holidayDates.push(date);
     for (const participant of participants) {
       const events = logMap.get(`${String(participant.id)}:${date}`) ?? {};
       if (!isWorkingDay && !events.check_in && !events.check_out) continue;
@@ -318,7 +320,12 @@ router.get('/rekap', allowRoles('admin'), asyncHandler(async (request, response)
     belum_hadir: 0,
   });
 
-  response.json({ filters: { start_date: startDate, end_date: endDate }, summary, rows });
+  response.json({
+    filters: { start_date: startDate, end_date: endDate },
+    holiday_dates: holidayDates,
+    summary,
+    rows,
+  });
 }));
 
 router.get('/', allowRoles('admin'), asyncHandler(async (request, response) => {

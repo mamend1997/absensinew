@@ -1,4 +1,6 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -7,6 +9,7 @@ import bcrypt from 'bcryptjs';
 import { ensureRuntimeMigrations } from '../src/config/runtime-migrations.js';
 
 const tempDir = await mkdtemp(join(tmpdir(), 'absensi-api-'));
+const execFileAsync = promisify(execFile);
 process.env.DB_DRIVER = 'sqlite';
 process.env.SQLITE_PATH = join(tempDir, 'test.sqlite');
 process.env.JWT_SECRET = 'test-secret-for-absensi-api-at-least-32-characters';
@@ -15,18 +18,30 @@ process.env.WEB_ORIGIN = 'http://localhost:5173';
 process.env.NOTIFICATION_ADMIN_PHONE = '08123456789';
 process.env.WHATSAPP_GATEWAY_URL = '';
 process.env.WHATSAPP_GATEWAY_TOKEN = '';
+process.env.BACKUP_DIRECTORY = join(tempDir, 'private-backups');
 
-const [{ app }, { db }] = await Promise.all([
+const [{ app }, { db }, { runScheduledBackup }] = await Promise.all([
   import('../src/app.js'),
   import('../src/config/database.js'),
+  import('../src/services/scheduled-backup-service.js'),
 ]);
 await db.initializeSchema();
 
 test('startup migration recreates a missing audit table without replacing other data', async () => {
   await db.query('DROP TABLE activity_logs');
+  await db.query('DROP TABLE scheduled_backup_settings');
+  await db.query('DROP TABLE attendance_notifications');
   await ensureRuntimeMigrations(db);
   const rows = await db.query('SELECT COUNT(*) AS count FROM activity_logs');
   assert.equal(Number(rows[0].count), 0);
+  const backupSettings = await db.query(
+    'SELECT enabled, backup_time FROM scheduled_backup_settings WHERE id = 1',
+  );
+  assert.equal(backupSettings[0].backup_time, '02:00');
+  assert.equal(
+    Number((await db.query('SELECT COUNT(*) AS count FROM attendance_notifications'))[0].count),
+    0,
+  );
 });
 
 const passwordHash = await bcrypt.hash('test-password-2026', 4);
@@ -78,12 +93,33 @@ test('auth, role permissions, idempotent batch sync, and monthly report', async 
   });
   assert.equal(login.response.status, 200);
   const adminToken = login.data.token;
-
+  const backupScheduleUpdate = await request('/admin-tools/backup/schedule', {
+    method: 'PUT',
+    token: adminToken,
+    body: {
+      enabled: false,
+      backup_time: '03:15',
+      bot_token: '123456:example-token-for-tests',
+      chat_id: '-1001234567890',
+    },
+  });
+  assert.equal(backupScheduleUpdate.response.status, 200);
+  assert.equal(backupScheduleUpdate.data.bot_configured, true);
+  assert.equal(JSON.stringify(backupScheduleUpdate.data).includes('example-token'), false);
+  assert.equal(JSON.stringify(backupScheduleUpdate.data).includes('-1001234567890'), false);
+  const storedCredentials = (await db.query(
+    'SELECT encrypted_credentials FROM scheduled_backup_settings WHERE id = 1',
+  ))[0].encrypted_credentials;
+  assert.equal(storedCredentials.includes('example-token'), false);
   const operatorLogin = await request('/auth/login', {
     method: 'POST',
     body: { username: 'operator-test', password: 'test-password-2026' },
   });
   const operatorToken = operatorLogin.data.token;
+  assert.equal(
+    (await request('/admin-tools/backup/schedule', { token: operatorToken })).response.status,
+    403,
+  );
 
   const classList = await request('/kelas', { token: adminToken });
   assert.equal(classList.response.status, 200);
@@ -585,6 +621,7 @@ test('auth, role permissions, idempotent batch sync, and monthly report', async 
     report.data.rows.some((item) => item.attendance_date === '2026-11-29'),
     false,
   );
+  assert.ok(report.data.holiday_dates.includes('2026-11-29'));
 
   assert.equal(
     (await request('/admin-tools/activity-logs', { token: operatorToken })).response.status,
@@ -693,4 +730,58 @@ test('auth, role permissions, idempotent batch sync, and monthly report', async 
   });
   assert.equal(rateLimitedLogin.response.status, 429);
   assert.match(rateLimitedLogin.data.error, /Terlalu banyak percobaan masuk/);
+  const loginAudit = await db.query(
+    `SELECT action, after_data FROM activity_logs
+      WHERE action IN ('auth.login.succeeded', 'auth.login.failed')`,
+  );
+  assert.ok(loginAudit.some((row) => row.action === 'auth.login.succeeded'));
+  assert.ok(loginAudit.some((row) => row.action === 'auth.login.failed'));
+  assert.equal(JSON.stringify(loginAudit).includes('test-password-2026'), false);
+
+  const enableSchedule = await request('/admin-tools/backup/schedule', {
+    method: 'PUT',
+    token: adminToken,
+    body: { enabled: true, backup_time: '00:00' },
+  });
+  assert.equal(enableSchedule.response.status, 200);
+  const originalFetch = globalThis.fetch;
+  let telegramRequest;
+  globalThis.fetch = async (url, options) => {
+    telegramRequest = { url: String(url), body: JSON.parse(options.body) };
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  try {
+    assert.equal(await runScheduledBackup(), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  const backupDirectory = join(tempDir, 'private-backups');
+  const backupFiles = await readdir(backupDirectory);
+  assert.equal(backupFiles.length, 1);
+  const encryptedBackup = await readFile(join(backupDirectory, backupFiles[0]), 'utf8');
+  assert.equal(encryptedBackup.includes('test-password-2026'), false);
+  assert.equal(encryptedBackup.includes('Unit Contoh'), false);
+  assert.match(encryptedBackup, /"algorithm":"aes-256-gcm"/);
+  assert.match(telegramRequest.url, /^https:\/\/api\.telegram\.org\/bot/);
+  assert.match(telegramRequest.body.text, /tidak dikirim melalui Telegram/);
+  assert.equal('document' in telegramRequest.body, false);
+  const encryptedDownload = await fetch(`${baseUrl}/admin-tools/backup/scheduled/latest`, {
+    headers: { authorization: `Bearer ${adminToken}` },
+  });
+  assert.equal(encryptedDownload.status, 200);
+  assert.equal(await encryptedDownload.text(), encryptedBackup);
+  const decryptedPath = join(tempDir, 'recovered-backup.json');
+  await execFileAsync(process.execPath, [
+    join(process.cwd(), 'scripts', 'decrypt-scheduled-backup.js'),
+    join(backupDirectory, backupFiles[0]),
+    decryptedPath,
+  ]);
+  const recoveredBackup = JSON.parse(await readFile(decryptedPath, 'utf8'));
+  assert.equal(recoveredBackup.format, 'ruang-hadir-backup');
+  assert.ok(recoveredBackup.tables.users.length > 0);
+  const backupStatus = await request('/admin-tools/backup/schedule', { token: adminToken });
+  assert.equal(backupStatus.data.last_status, 'success');
 });
