@@ -48,7 +48,7 @@ berjalan dan diperbarui setiap batch absensi diterima.
    satu kali dan jam masuk/keluar berada pada baris nama yang benar di tab
    **Rekap Bulanan**.
 8. Muat ulang spreadsheet setelah deployment. Untuk menghapus riwayat secara
-   permanen, pilih **Absensi → Hapus seluruh riwayat absensi...** dan konfirmasi.
+   permanen, pilih **Rekap Absensi → Reset semua riwayat** dan konfirmasi.
    Menu ini menghapus tab sumber serta rekap, dan menandai waktu penghapusan
    agar backfill lama dari backend tidak mengembalikan catatan tersebut.
 
@@ -66,7 +66,7 @@ berjalan dan diperbarui setiap batch absensi diterima.
 - Jangan menambahkan atau menggeser kolom secara manual di **Absensi**. Script
   otomatis menambahkan kolom ID peserta saat memperbarui tab sumber lama.
   Menghapus isi tab **Rekap Bulanan** saja tidak menghapus sumbernya; rekap akan
-  dibangun kembali. Gunakan menu **Absensi → Hapus seluruh riwayat absensi...**
+  dibangun kembali. Gunakan menu **Rekap Absensi → Reset semua riwayat**
   untuk menghapus keduanya tanpa memunculkan kembali backfill lama.
 - Setelah integrasi diaktifkan dan disimpan, backend otomatis mengirim riwayat
   absensi lama secara bertahap serta meneruskan absensi baru. Tidak diperlukan

@@ -20,8 +20,8 @@ const TOTAL_HEADERS = ['Total Terlambat', 'Total Hadir'];
 
 function onOpen() {
   SpreadsheetApp.getUi()
-    .createMenu('Absensi')
-    .addItem('Hapus seluruh riwayat absensi...', 'clearAllAttendanceHistory')
+    .createMenu('Rekap Absensi')
+    .addItem('Reset semua riwayat', 'clearAllAttendanceHistory')
     .addToUi();
 }
 
