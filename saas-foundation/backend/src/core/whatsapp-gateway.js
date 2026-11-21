@@ -22,6 +22,10 @@ export function validateGatewayUrl(value) {
   return url;
 }
 
+export function createWhatsappGatewayPayload(phone, message, event) {
+  return { to: phone, message, event };
+}
+
 export function encryptGatewayToken(token) {
   const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', key, iv);
@@ -61,18 +65,19 @@ function isPublicAddress(address) {
     !(a === 203 && b === 0);
 }
 
-export async function sendWhatsappMessage(urlValue, token, phone, message) {
+export async function sendWhatsappMessage(urlValue, token, phone, message, event = 'notification') {
   const url = validateGatewayUrl(urlValue);
   let addresses;
   try {
     addresses = await lookup(url.hostname, { all: true, verbatim: true });
-  } catch {
-    throw fail(502, 'Host gateway tidak dapat dihubungi.', 'GATEWAY_DELIVERY_FAILED');
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error ? ` (${error.code})` : '';
+    throw fail(502, `Host gateway tidak dapat dihubungi${code}.`, 'GATEWAY_DELIVERY_FAILED');
   }
   if (!addresses.length || addresses.some(({ address }) => !isPublicAddress(address))) {
     throw fail(503, 'Host gateway tidak dapat digunakan.', 'GATEWAY_UNAVAILABLE');
   }
-  const body = JSON.stringify({ phone, message });
+  const body = JSON.stringify(createWhatsappGatewayPayload(phone, message, event));
   const address = addresses[0];
   await new Promise((resolve, reject) => {
     const request = httpsRequest({
@@ -93,11 +98,32 @@ export async function sendWhatsappMessage(urlValue, token, phone, message) {
       response.resume();
       response.on('end', () => {
         if (response.statusCode >= 200 && response.statusCode < 300) resolve();
-        else reject(fail(502, 'Gateway WhatsApp gagal mengirim OTP.', 'GATEWAY_DELIVERY_FAILED'));
+        else {
+          const status = response.statusCode ?? 0;
+          const hint = status === 401 || status === 403
+            ? ' Periksa Bearer token gateway.'
+            : status === 404
+              ? ' Pastikan URL berakhir dengan /api/send-message.'
+              : status === 400
+                ? ' Periksa format nomor dan konfigurasi gateway.'
+                : '';
+          reject(fail(
+            502,
+            `Gateway menolak permintaan (HTTP ${status}).${hint}`,
+            'GATEWAY_DELIVERY_FAILED',
+          ));
+        }
       });
     });
-    request.on('timeout', () => request.destroy(new Error('Gateway timeout.')));
-    request.on('error', () => reject(fail(502, 'Gateway WhatsApp tidak dapat dihubungi.', 'GATEWAY_DELIVERY_FAILED')));
+    request.on('timeout', () => {
+      const error = new Error('Gateway timeout.');
+      error.code = 'ETIMEDOUT';
+      request.destroy(error);
+    });
+    request.on('error', (error) => {
+      const code = error && typeof error === 'object' && 'code' in error ? ` (${error.code})` : '';
+      reject(fail(502, `Koneksi ke gateway WhatsApp gagal${code}.`, 'GATEWAY_DELIVERY_FAILED'));
+    });
     request.end(body);
   });
 }

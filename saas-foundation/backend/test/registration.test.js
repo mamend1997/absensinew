@@ -15,6 +15,7 @@ import {
 process.env.JWT_SECRET ??= randomBytes(48).toString('base64url');
 const {
   decryptGatewayToken,
+  createWhatsappGatewayPayload,
   encryptGatewayToken,
   validateGatewayUrl,
 } = await import('../src/core/whatsapp-gateway.js');
@@ -81,4 +82,11 @@ test('WhatsApp gateway tokens are encrypted and gateway URLs must be public HTTP
   assert.throws(() => validateGatewayUrl('http://gateway.example/send'), { statusCode: 400 });
   assert.throws(() => validateGatewayUrl('https://localhost/send'), { statusCode: 400 });
   assert.throws(() => validateGatewayUrl('https://mysql.railway.internal/send'), { statusCode: 400 });
+});
+
+test('WhatsApp gateway payload matches the configured send-message API contract', () => {
+  assert.deepEqual(
+    createWhatsappGatewayPayload('+628123456789', 'Pesan uji', 'gateway_test'),
+    { to: '+628123456789', message: 'Pesan uji', event: 'gateway_test' },
+  );
 });

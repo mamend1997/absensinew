@@ -1,7 +1,7 @@
 import { BrowserMultiFormatReader } from '@zxing/browser';
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 import QRCode from 'qrcode';
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
   calculateAttendance,
   createQueuedScan,
@@ -9,6 +9,7 @@ import {
 import { createOfflineSyncManager } from './core/offline-sync.js';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '');
+const DEFAULT_WHATSAPP_GATEWAY_URL = 'https://gateway-production-a1168195.up.railway.app/api/send-message';
 const SESSION_KEY = 'saas_school_session';
 type Page = 'dashboard' | 'scanner' | 'reports' | 'participants' | 'settings' | 'roles' | 'downloads' | 'billing';
 type Permission =
@@ -236,6 +237,7 @@ interface QueuedScan {
   id_unik: string;
   sekolah_id: string;
   id_peserta: string;
+  participant_name?: string;
   id_perangkat: string | null;
   jenis_absen: 'check_in' | 'check_out';
   scan_method?: 'SCAN_QR' | 'MANUAL_INPUT';
@@ -262,6 +264,11 @@ interface ScannerCache extends DBSchema {
 }
 interface ScanResult { date: string; status: string | null; lateMinutes: number; reason?: string }
 type LoginView = 'login' | 'register' | 'verify' | 'forgot-password' | 'reset-password';
+interface ConfirmationDialog {
+  title: string;
+  message: string;
+  confirmLabel: string;
+}
 
 const initialRegistrationForm = {
   school_name: '',
@@ -380,10 +387,16 @@ function speakAttendanceMessage(text: string) {
 async function request<T>(
   path: string,
   token?: string,
-  options: { method?: string; body?: unknown; headers?: Record<string, string> } = {},
+  options: {
+    method?: string;
+    body?: unknown;
+    headers?: Record<string, string>;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     method: options.method ?? 'GET',
+    signal: options.signal,
     headers: {
       ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...options.headers,
@@ -528,7 +541,7 @@ export default function App() {
   const [paymentMethod, setPaymentMethod] = useState('');
   const [billingBusy, setBillingBusy] = useState(false);
   const [whatsappSettings, setWhatsappSettings] = useState<SchoolWhatsappGatewaySettings>({
-    endpoint_url: '',
+    endpoint_url: DEFAULT_WHATSAPP_GATEWAY_URL,
     is_enabled: false,
     is_configured: false,
     token_hint: '',
@@ -568,6 +581,7 @@ export default function App() {
   const [participantForm, setParticipantForm] = useState({
     full_name: '', classroom_id: '', qr_code: '',
   });
+  const [editingParticipantId, setEditingParticipantId] = useState('');
   const [classroomForm, setClassroomForm] = useState({ id: '', name: '' });
   const [roleForm, setRoleForm] = useState<{ role_key: string; role_name: string; permissions: Permission[] }>({
     role_key: '', role_name: '', permissions: [],
@@ -586,11 +600,14 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [confirmationDialog, setConfirmationDialog] = useState<ConfirmationDialog | null>(null);
   const [offlineMode, setOfflineMode] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const controlsRef = useRef<{ stop: () => void } | null>(null);
   const wedgeTimerRef = useRef<number | undefined>(undefined);
   const lastScanAtRef = useRef(new Map<string, number>());
+  const confirmationResolverRef = useRef<((accepted: boolean) => void) | null>(null);
+  const reportAbortRef = useRef<AbortController | null>(null);
   const passwordChecks = {
     length: registrationForm.password.length >= 8,
     uppercase: /[A-Z]/.test(registrationForm.password),
@@ -718,7 +735,10 @@ export default function App() {
       '/school/settings/whatsapp-gateway',
       session.token,
     )
-      .then((result) => setWhatsappSettings(result.settings))
+      .then((result) => setWhatsappSettings({
+        ...result.settings,
+        endpoint_url: result.settings.endpoint_url || DEFAULT_WHATSAPP_GATEWAY_URL,
+      }))
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Pengaturan WhatsApp sekolah gagal dimuat.'));
   }, [session?.token]);
 
@@ -1195,6 +1215,7 @@ export default function App() {
         scan_method: scanMethod,
         calculation,
       }) as QueuedScan;
+      scan.participant_name = participant.full_name;
       await syncManager().enqueue(scan);
       const attendanceStatus = calculation.status === 'check_out' || calculation.status === 'pulang'
         ? 'pulang'
@@ -1312,38 +1333,95 @@ export default function App() {
     }
   }
 
-  async function loadReport(event?: FormEvent<HTMLFormElement>) {
+  const loadReport = useCallback(async (
+    event?: FormEvent<HTMLFormElement>,
+    showLoading = true,
+  ) => {
     event?.preventDefault();
-    if (!session) return;
+    if (!session?.token) return;
+    reportAbortRef.current?.abort();
+    const controller = new AbortController();
+    reportAbortRef.current = controller;
     const query = new URLSearchParams({ from: reportFrom, to: reportTo });
     if (reportStatus) query.set('status', reportStatus);
     if (reportClassroom) query.set('classroom_id', reportClassroom);
+    setBusy(showLoading);
+    try {
+      const result = await request<unknown>(`/school/attendance/report?${query}`, session.token, {
+        signal: controller.signal,
+      });
+      if (reportAbortRef.current === controller) {
+        setReportRows(unwrapArray<ReportRow>(result, 'attendance'));
+        setError('');
+      }
+    } catch (reason) {
+      if (!controller.signal.aborted && reportAbortRef.current === controller) {
+        setMessage(reason instanceof Error ? reason.message : 'Rekap tidak dapat dimuat.', true);
+      }
+    } finally {
+      if (reportAbortRef.current === controller) {
+        reportAbortRef.current = null;
+        setBusy(false);
+      }
+    }
+  }, [reportClassroom, reportFrom, reportStatus, reportTo, session?.token]);
+
+  useEffect(() => {
+    if (page !== 'reports') return;
+    void loadReport();
+    const timer = window.setInterval(() => void loadReport(undefined, false), 30000);
+    return () => {
+      window.clearInterval(timer);
+      reportAbortRef.current?.abort();
+      reportAbortRef.current = null;
+      setBusy(false);
+    };
+  }, [loadReport, page]);
+
+  function requestConfirmation(dialog: ConfirmationDialog) {
+    return new Promise<boolean>((resolve) => {
+      confirmationResolverRef.current = resolve;
+      setConfirmationDialog(dialog);
+    });
+  }
+
+  function resolveConfirmation(accepted: boolean) {
+    const resolve = confirmationResolverRef.current;
+    confirmationResolverRef.current = null;
+    setConfirmationDialog(null);
+    resolve?.(accepted);
+  }
+
+  async function saveParticipant(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session) return;
     setBusy(true);
     try {
-      const result = await request<unknown>(`/school/attendance/report?${query}`, session.token);
-      setReportRows(unwrapArray<ReportRow>(result, 'attendance'));
-      setError('');
+      const isEditing = Boolean(editingParticipantId);
+      await request(
+        isEditing ? `/school/participants/${editingParticipantId}` : '/school/participants',
+        session.token,
+        { method: isEditing ? 'PUT' : 'POST', body: participantForm },
+      );
+      setParticipantForm({ full_name: '', classroom_id: '', qr_code: '' });
+      setEditingParticipantId('');
+      await loadSchoolData(session);
+      setMessage(isEditing ? 'Data peserta berhasil diperbarui.' : 'Peserta berhasil ditambahkan.');
     } catch (reason) {
-      setMessage(reason instanceof Error ? reason.message : 'Rekap tidak dapat dimuat.', true);
+      setMessage(reason instanceof Error ? reason.message : 'Data peserta gagal disimpan.', true);
     } finally {
       setBusy(false);
     }
   }
 
-  async function createParticipant(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!session) return;
-    setBusy(true);
-    try {
-      await request('/school/participants', session.token, { method: 'POST', body: participantForm });
-      setParticipantForm({ full_name: '', classroom_id: '', qr_code: '' });
-      await loadSchoolData(session);
-      setMessage('Peserta berhasil ditambahkan.');
-    } catch (reason) {
-      setMessage(reason instanceof Error ? reason.message : 'Peserta gagal ditambahkan.', true);
-    } finally {
-      setBusy(false);
-    }
+  function editParticipant(participant: Participant) {
+    setEditingParticipantId(participant.id);
+    setParticipantForm({
+      full_name: participant.full_name,
+      classroom_id: participant.classroom_id,
+      qr_code: participant.qr_code,
+    });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   async function saveClassroom(event: FormEvent<HTMLFormElement>) {
@@ -1374,7 +1452,11 @@ export default function App() {
   }
 
   async function deleteClassroom(classroom: Classroom) {
-    if (!session || !window.confirm(`Hapus kelas ${classroom.name}?`)) return;
+    if (!session || !await requestConfirmation({
+      title: 'Hapus kelas',
+      message: `Hapus kelas ${classroom.name}?`,
+      confirmLabel: 'Hapus kelas',
+    })) return;
     setBusy(true);
     try {
       await request(`/school/classrooms/${classroom.id}`, session.token, { method: 'DELETE' });
@@ -1544,11 +1626,15 @@ export default function App() {
   }
 
   async function removeParticipant(participant: Participant) {
-    if (!session || !window.confirm(`Nonaktifkan peserta ${participant.full_name}?`)) return;
+    if (!session || !await requestConfirmation({
+      title: 'Hapus peserta',
+      message: `Hapus peserta ${participant.full_name}? Jika sudah memiliki riwayat absensi, sistem dapat menolak penghapusan.`,
+      confirmLabel: 'Hapus peserta',
+    })) return;
     try {
       await request(`/school/participants/${participant.id}`, session.token, { method: 'DELETE' });
       await loadSchoolData(session);
-      setMessage('Peserta dinonaktifkan.');
+      setMessage('Peserta berhasil dihapus.');
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : 'Peserta gagal dinonaktifkan.', true);
     }
@@ -1619,7 +1705,11 @@ export default function App() {
   }
 
   async function deleteRole(role: Record<string, unknown>) {
-    if (!session || role.id == null || !window.confirm(`Hapus role ${String(role.role_name ?? '')}?`)) return;
+    if (!session || role.id == null || !await requestConfirmation({
+      title: 'Hapus role',
+      message: `Hapus role ${String(role.role_name ?? '')}?`,
+      confirmLabel: 'Hapus role',
+    })) return;
     try {
       await request(`/school/roles/${String(role.id)}`, session.token, { method: 'DELETE' });
       setRoles((current) => current.filter((item) => String(item.id) !== String(role.id)));
@@ -1644,7 +1734,11 @@ export default function App() {
 
   async function deactivateUser(user: Record<string, unknown>) {
     if (!session || user.id == null ||
-        !window.confirm(`Nonaktifkan akun ${String(user.username ?? '')}?`)) return;
+        !await requestConfirmation({
+          title: 'Nonaktifkan akun',
+          message: `Nonaktifkan akun ${String(user.username ?? '')}?`,
+          confirmLabel: 'Nonaktifkan akun',
+        })) return;
     try {
       await request(`/school/users/${String(user.id)}`, session.token, { method: 'DELETE' });
       setUsers((current) => current.map((item) =>
@@ -1885,14 +1979,18 @@ export default function App() {
   }
 
   async function clearSchoolWhatsappSettings() {
-    if (!session || !window.confirm('Hapus konfigurasi WhatsApp gateway sekolah ini?')) return;
+    if (!session || !await requestConfirmation({
+      title: 'Hapus konfigurasi gateway',
+      message: 'Hapus konfigurasi WhatsApp gateway sekolah ini?',
+      confirmLabel: 'Hapus konfigurasi',
+    })) return;
     setWhatsappBusy(true);
     setError('');
     setNotice('');
     try {
       await request('/school/settings/whatsapp-gateway', session.token, { method: 'DELETE' });
       setWhatsappSettings({
-        endpoint_url: '', is_enabled: false, is_configured: false, token_hint: '',
+        endpoint_url: DEFAULT_WHATSAPP_GATEWAY_URL, is_enabled: false, is_configured: false, token_hint: '',
         last_test_at: null, last_test_status: null, last_test_message: null,
       });
       setWhatsappToken('');
@@ -2099,7 +2197,7 @@ export default function App() {
                 <article className="metric-card"><span>Antrean belum terkirim</span><strong>{pendingCount}</strong></article>
                 <article className="metric-card"><span>Status koneksi</span><strong className={connected ? 'text-green' : 'text-red'}>{connected ? 'Online' : 'Offline'}</strong></article>
               </div>
-              <div className="panel quick-panel"><h2>Akses cepat</h2><p className="muted">Buka scanner untuk absensi atau rekap untuk memantau kehadiran.</p><div className="heading-actions">{can('scanner.use') && <button className="button primary" onClick={() => setPage('scanner')}>Buka Scanner</button>}{can('attendance.view') && <button className="button secondary" onClick={() => { setPage('reports'); void loadReport(); }}>Lihat Rekap</button>}</div></div>
+              <div className="panel quick-panel"><h2>Akses cepat</h2><p className="muted">Buka scanner untuk absensi atau rekap untuk memantau kehadiran.</p><div className="heading-actions">{can('scanner.use') && <button className="button primary" onClick={() => setPage('scanner')}>Buka Scanner</button>}{can('attendance.view') && <button className="button secondary" onClick={() => setPage('reports')}>Lihat Rekap</button>}</div></div>
             </section>
           )}
 
@@ -2146,7 +2244,7 @@ export default function App() {
 
               <section className="scan-history-card">
                 <div className="scan-history-heading"><div><h2>Log kehadiran terbaru</h2><p>Riwayat scan yang tersimpan di perangkat ini</p></div>{pendingCount > 0 && <span className="history-pending">{pendingCount} pending</span>}</div>
-                <LocalQueueList schoolId={session.school.id} />
+                <LocalQueueList schoolId={session.school.id} refreshKey={lastScan} />
               </section>
 
             </section>
@@ -2154,7 +2252,7 @@ export default function App() {
 
           {page === 'reports' && (
             <section className="report-page">
-              <div className="page-heading"><div><p className="eyebrow">LAPORAN</p><h1>Rekap absensi</h1><p className="muted">Filter tanggal, kelas, dan status absensi.</p></div></div>
+              <div className="page-heading"><div><p className="eyebrow">LAPORAN</p><h1>Rekap absensi</h1><p className="muted">Data dimuat otomatis saat menu dibuka, diperbarui setiap 30 detik, dan mengikuti filter tanggal, kelas, serta status.</p></div></div>
               <form className="filter-form panel no-print" onSubmit={(event) => void loadReport(event)}>
                 <label>Dari tanggal<input type="date" required value={reportFrom} onChange={(event) => setReportFrom(event.target.value)} /></label>
                 <label>Sampai tanggal<input type="date" required value={reportTo} onChange={(event) => setReportTo(event.target.value)} /></label>
@@ -2175,11 +2273,15 @@ export default function App() {
           {page === 'participants' && (
             <section>
               <div className="page-heading"><div><p className="eyebrow">DATA SEKOLAH</p><h1>Master peserta</h1><p className="muted">Master lokal digunakan untuk validasi scan saat offline.</p></div></div>
-              {can('participants.edit') && <form className="panel form-grid" onSubmit={(event) => void createParticipant(event)}>
+              {can('participants.edit') && <form className="panel form-grid" onSubmit={(event) => void saveParticipant(event)}>
+                <h2 className="wide">{editingParticipantId ? 'Edit peserta' : 'Tambah peserta'}</h2>
                 <label>Nama lengkap<input required value={participantForm.full_name} onChange={(event) => setParticipantForm((current) => ({ ...current, full_name: event.target.value }))} /></label>
                 <label>Kelas<select required value={participantForm.classroom_id} onChange={(event) => setParticipantForm((current) => ({ ...current, classroom_id: event.target.value }))}><option value="">Pilih kelas</option>{classrooms.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
                 <label>QR / Barcode<input required value={participantForm.qr_code} onChange={(event) => setParticipantForm((current) => ({ ...current, qr_code: event.target.value }))} /></label>
-                <button className="button primary" disabled={busy}>Tambah peserta</button>
+                <div className="heading-actions wide">
+                  <button className="button primary" disabled={busy}>{editingParticipantId ? 'Simpan perubahan' : 'Tambah peserta'}</button>
+                  {editingParticipantId && <button type="button" className="button secondary" onClick={() => { setEditingParticipantId(''); setParticipantForm({ full_name: '', classroom_id: '', qr_code: '' }); }}>Batal</button>}
+                </div>
               </form>}
               {can('participants.edit') && <div className="panel classroom-manager">
                 <div className="section-title"><div><h2>Nama kelas / unit</h2><p className="muted">Kelola nama kelas yang digunakan pada master peserta.</p></div></div>
@@ -2222,7 +2324,7 @@ export default function App() {
               <div className="panel">
                 <div className="section-title"><div><h2>{participants.length} peserta lokal</h2><p className="muted">Data di-cache per sekolah pada perangkat ini.</p></div><div className="heading-actions">{can('participants.qr.print') && <button className="button secondary" onClick={() => void printSelectedQrs()}>Cetak QR terpilih</button>}<button className="button secondary" onClick={() => session && void loadSchoolData(session)}>Sinkronkan master</button></div></div>
                 <div className="table-scroll"><table><thead><tr><th><input type="checkbox" aria-label="Pilih semua peserta" checked={participants.length > 0 && selectedParticipantIds.size === participants.length} onChange={(event) => setSelectedParticipantIds(event.target.checked ? new Set(participants.map((item) => item.id)) : new Set())} /></th><th>Nama</th><th>Kelas</th><th>QR / Barcode</th><th className="no-print">Aksi</th></tr></thead><tbody>
-                  {participants.map((participant) => <tr key={participant.id}><td><input type="checkbox" aria-label={`Pilih ${participant.full_name}`} checked={selectedParticipantIds.has(participant.id)} onChange={(event) => setSelectedParticipantIds((current) => { const next = new Set(current); if (event.target.checked) next.add(participant.id); else next.delete(participant.id); return next; })} /></td><td>{participant.full_name}</td><td>{participant.classroom_name ?? classrooms.find((item) => item.id === participant.classroom_id)?.name ?? '—'}</td><td><code>{participant.qr_code}</code></td><td className="no-print"><div className="participant-actions">{can('participants.edit') && <button className="button secondary small" onClick={() => openParticipantSchedule(participant.id)}>Atur jam</button>}{can('participants.delete') && <button className="button danger small" onClick={() => void removeParticipant(participant)}>Nonaktifkan</button>}</div></td></tr>)}
+                  {participants.map((participant) => <tr key={participant.id}><td><input type="checkbox" aria-label={`Pilih ${participant.full_name}`} checked={selectedParticipantIds.has(participant.id)} onChange={(event) => setSelectedParticipantIds((current) => { const next = new Set(current); if (event.target.checked) next.add(participant.id); else next.delete(participant.id); return next; })} /></td><td>{participant.full_name}</td><td>{participant.classroom_name ?? classrooms.find((item) => item.id === participant.classroom_id)?.name ?? '—'}</td><td><code>{participant.qr_code}</code></td><td className="no-print"><div className="participant-actions">{can('participants.edit') && <><button className="button secondary small" onClick={() => editParticipant(participant)}>Edit</button><button className="button secondary small" onClick={() => openParticipantSchedule(participant.id)}>Atur jam</button></>}{can('participants.delete') && <button className="button danger small" onClick={() => void removeParticipant(participant)}>Hapus</button>}</div></td></tr>)}
                   {!participants.length && <tr><td colSpan={5} className="empty">Master peserta belum tersedia. Hubungkan jaringan untuk mengambil data sekolah.</td></tr>}
                 </tbody></table></div>
               </div>
@@ -2374,7 +2476,7 @@ export default function App() {
                   </span>
                 </div>
                 {can('settings.operational.edit') ? <form className="school-whatsapp-form" onSubmit={(event) => void saveSchoolWhatsappSettings(event)}>
-                  <label>URL HTTPS gateway<input type="url" required placeholder="https://gateway.example/api/send" value={whatsappSettings.endpoint_url} onChange={(event) => setWhatsappSettings((current) => ({ ...current, endpoint_url: event.target.value }))} /></label>
+                  <label>URL HTTPS gateway<input type="url" required placeholder="https://gateway-production-a1168195.up.railway.app/api/send-message" value={whatsappSettings.endpoint_url} onChange={(event) => setWhatsappSettings((current) => ({ ...current, endpoint_url: event.target.value }))} /></label>
                   <label>Bearer token
                     <input type="password" autoComplete="new-password" placeholder={whatsappSettings.is_configured ? 'Tersimpan — kosongkan untuk mempertahankan' : 'Masukkan token gateway'} value={whatsappToken} onChange={(event) => setWhatsappToken(event.target.value)} />
                   </label>
@@ -2550,6 +2652,23 @@ export default function App() {
           <button type="button" aria-label="Tutup notifikasi" onClick={() => { setError(''); setNotice(''); }}>×</button>
         </div>
       </div>}
+      {confirmationDialog && <div
+        className="pin-modal-backdrop"
+        role="presentation"
+        onMouseDown={(event) => {
+          if (event.target === event.currentTarget) resolveConfirmation(false);
+        }}
+      >
+        <section className="pin-modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title" aria-describedby="confirm-dialog-message">
+          <div className="pin-modal-icon" aria-hidden="true">!</div>
+          <h2 id="confirm-dialog-title">{confirmationDialog.title}</h2>
+          <p id="confirm-dialog-message">{confirmationDialog.message}</p>
+          <div className="pin-modal-actions">
+            <button type="button" className="button secondary" onClick={() => resolveConfirmation(false)}>Batal</button>
+            <button type="button" className="button danger" onClick={() => resolveConfirmation(true)}>{confirmationDialog.confirmLabel}</button>
+          </div>
+        </section>
+      </div>}
       {scannerMenuOpen && <div className="pin-modal-backdrop" role="presentation">
         <form className="pin-modal" onSubmit={(event) => void unlockScannerMenu(event)} role="dialog" aria-modal="true" aria-labelledby="scanner-pin-title">
           <div className="pin-modal-icon" aria-hidden="true">PIN</div>
@@ -2594,15 +2713,39 @@ export default function App() {
   );
 }
 
-function LocalQueueList({ schoolId }: { schoolId: string | number }) {
+function formatAttendanceDate(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  return match ? `${match[3]}/${match[2]}/${match[1]}` : '—';
+}
+
+function LocalQueueList({ schoolId, refreshKey }: { schoolId: string | number; refreshKey: string }) {
   const [items, setItems] = useState<QueuedScan[]>([]);
+  const [participantNames, setParticipantNames] = useState<Map<string, string>>(new Map());
   useEffect(() => {
     let active = true;
     void database(schoolId).then(async (db) => {
-      const scans = await db.getAll('queue');
-      if (active) setItems(scans.sort((a, b) => b.client_timestamp.localeCompare(a.client_timestamp)).slice(0, 8));
+      const [scans, participants] = await Promise.all([
+        db.getAll('queue'),
+        db.getAll('participants'),
+      ]);
+      if (active) {
+        setItems(scans.sort((a, b) => b.client_timestamp.localeCompare(a.client_timestamp)).slice(0, 8));
+        setParticipantNames(new Map(participants.map((participant) => [
+          String(participant.id),
+          participant.full_name,
+        ])));
+      }
     }).catch((error: unknown) => console.error('Riwayat lokal gagal dimuat.', error));
     return () => { active = false; };
-  }, [schoolId]);
-  return <div className="table-scroll"><table><thead><tr><th>Waktu perangkat</th><th>Peserta ID</th><th>Jenis</th><th>Status</th><th>Sync</th></tr></thead><tbody>{items.map((item) => <tr key={item.id_unik}><td>{item.client_timestamp}</td><td>{item.id_peserta}</td><td>{item.jenis_absen === 'check_in' ? 'Masuk' : 'Pulang'}</td><td>{item.status_kehadiran}{item.menit_terlambat ? ` · ${item.menit_terlambat} mnt` : ''}</td><td><span className={`tag ${item.status_sync}`}>{item.status_sync}</span></td></tr>)}{!items.length && <tr><td colSpan={5} className="empty">Belum ada scan tersimpan di perangkat.</td></tr>}</tbody></table></div>;
+  }, [schoolId, refreshKey]);
+  return <div className="table-scroll"><table><thead><tr><th>Nama</th><th>Tanggal</th><th>Waktu</th><th>Jenis</th><th>Status sync</th></tr></thead><tbody>
+    {items.map((item) => <tr key={item.id_unik}>
+      <td>{item.participant_name ?? participantNames.get(item.id_peserta) ?? 'Nama tidak tersedia'}</td>
+      <td>{formatAttendanceDate(item.attendance_date)}</td>
+      <td>{toLocalTime(item.client_timestamp)}</td>
+      <td>{item.jenis_absen === 'check_in' ? 'Masuk' : 'Pulang'}</td>
+      <td><span className={`tag ${item.status_sync}`}>{item.status_sync}</span></td>
+    </tr>)}
+    {!items.length && <tr><td colSpan={5} className="empty">Belum ada scan tersimpan di perangkat.</td></tr>}
+  </tbody></table></div>;
 }

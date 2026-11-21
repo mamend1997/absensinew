@@ -154,6 +154,7 @@ router.post('/auth/password-reset/start', asyncRoute(async (req, res) => {
         decryptGatewayToken(gateway),
         phone,
         `Kode reset Super Admin Ruang Hadir: ${otp}. Berlaku 5 menit. Jangan bagikan kode ini kepada siapa pun.`,
+        'super_admin_password_reset',
       );
     } catch (error) {
       await pool.execute(
@@ -329,6 +330,7 @@ router.post('/settings/whatsapp-gateway/test', requireSuperAdmin, asyncRoute(asy
         decryptGatewayToken(gateway),
         phone,
         'Uji koneksi gateway WhatsApp Ruang Hadir. Jika pesan ini diterima, gateway siap digunakan.',
+        'gateway_test',
       );
       status = 'success';
       message = 'Gateway menerima permintaan (HTTP 2xx). Periksa WhatsApp penerima untuk memastikan pesan diterima.';
