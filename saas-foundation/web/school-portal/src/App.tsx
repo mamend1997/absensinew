@@ -5,13 +5,13 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
   calculateAttendance,
   createQueuedScan,
-} from '../../../backend/src/core/attendance.js';
-import { createOfflineSyncManager } from '../../../backend/src/core/offline-sync.js';
+} from './core/attendance.js';
+import { createOfflineSyncManager } from './core/offline-sync.js';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '');
 const SESSION_KEY = 'saas_school_session';
 const DEVICE_KEY_PREFIX = 'saas_scanner_device_key_';
-type Page = 'dashboard' | 'scanner' | 'reports' | 'participants' | 'settings' | 'roles' | 'devices';
+type Page = 'dashboard' | 'scanner' | 'reports' | 'participants' | 'settings' | 'roles' | 'devices' | 'downloads';
 type Permission =
   | 'dashboard.read'
   | 'attendance.read'
@@ -93,6 +93,14 @@ interface ScannerCache extends DBSchema {
   };
 }
 interface ScanResult { date: string; status: string | null; lateMinutes: number; reason?: string }
+type LoginView = 'login' | 'register' | 'verify';
+
+const initialRegistrationForm = {
+  school_name: '',
+  admin_name: '',
+  whatsapp_phone: '',
+  password: '',
+};
 
 const initialSettings: OperationalSettings = {
   timezone: 'Asia/Jakarta',
@@ -132,7 +140,14 @@ async function request<T>(
   });
   const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
   if (!response.ok) {
-    throw new Error(typeof payload.error === 'string' ? payload.error : `Permintaan gagal (${response.status}).`);
+    const apiError = payload.error;
+    const message = typeof apiError === 'string'
+      ? apiError
+      : apiError && typeof apiError === 'object' &&
+        typeof (apiError as Record<string, unknown>).message === 'string'
+        ? (apiError as Record<string, unknown>).message as string
+        : `Permintaan gagal (${response.status}).`;
+    throw new Error(message);
   }
   return payload as T;
 }
@@ -144,6 +159,16 @@ function unwrapArray<T>(payload: unknown, key: string): T[] {
     if (Array.isArray(value)) return value as T[];
   }
   return [];
+}
+
+function PasswordEye({ visible }: { visible: boolean }) {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M2.5 12s3.2-6 9.5-6 9.5 6 9.5 6-3.2 6-9.5 6-9.5-6-9.5-6Z" />
+      <circle cx="12" cy="12" r="2.7" />
+      {!visible && <path d="m4 4 16 16" />}
+    </svg>
+  );
 }
 
 function database(schoolId: string | number): Promise<IDBPDatabase<ScannerCache>> {
@@ -199,13 +224,19 @@ function downloadReport(rows: ReportRow[]) {
 export default function App() {
   const [session, setSession] = useState<SchoolSession | null>(readSession);
   const [page, setPage] = useState<Page>('dashboard');
+  const [loginView, setLoginView] = useState<LoginView>('login');
   const [loginForm, setLoginForm] = useState({ school_code: '', username: '', password: '' });
+  const [registrationForm, setRegistrationForm] = useState(initialRegistrationForm);
+  const [registrationChallengeId, setRegistrationChallengeId] = useState('');
+  const [registrationOtp, setRegistrationOtp] = useState('');
+  const [showRegistrationPassword, setShowRegistrationPassword] = useState(false);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [classrooms, setClassrooms] = useState<Classroom[]>([]);
   const [settings, setSettings] = useState<OperationalSettings>(initialSettings);
   const [roles, setRoles] = useState<Record<string, unknown>[]>([]);
   const [users, setUsers] = useState<Record<string, unknown>[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
+  const [apkDriveUrl, setApkDriveUrl] = useState('');
   const [reportRows, setReportRows] = useState<ReportRow[]>([]);
   const [reportFrom, setReportFrom] = useState(initialDate);
   const [reportTo, setReportTo] = useState(initialDate);
@@ -237,6 +268,14 @@ export default function App() {
   const wedgeTimerRef = useRef<number | undefined>(undefined);
   const lastScanAtRef = useRef(new Map<string, number>());
   const deviceStorageKey = session ? `${DEVICE_KEY_PREFIX}${session.school.id}` : '';
+  const passwordChecks = {
+    length: registrationForm.password.length >= 8,
+    uppercase: /[A-Z]/.test(registrationForm.password),
+    number: /\d/.test(registrationForm.password),
+    symbol: /[^A-Za-z0-9\s]/.test(registrationForm.password),
+    maxBytes: new TextEncoder().encode(registrationForm.password).length <= 72,
+  };
+  const validRegistrationPassword = Object.values(passwordChecks).every(Boolean);
 
   useEffect(() => {
     let active = true;
@@ -309,6 +348,13 @@ export default function App() {
 
   useEffect(() => () => {
     if (wedgeTimerRef.current) window.clearTimeout(wedgeTimerRef.current);
+  }, [page]);
+
+  useEffect(() => {
+    if (page !== 'downloads') return;
+    void request<{ apk_drive_url: string | null }>('/platform/downloads')
+      .then((result) => setApkDriveUrl(result.apk_drive_url ?? ''))
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Link APK gagal dimuat.'));
   }, [page]);
 
   useEffect(() => {
@@ -393,6 +439,58 @@ export default function App() {
         !nextSession.user.permissions.includes('dashboard.read') ? 'scanner' : 'dashboard');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Login sekolah gagal.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function startRegistration(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await request<{ challenge_id: string; message: string }>(
+        '/school/auth/register/start',
+        undefined,
+        { method: 'POST', body: registrationForm },
+      );
+      setRegistrationChallengeId(result.challenge_id);
+      setRegistrationOtp('');
+      setLoginView('verify');
+      setNotice(result.message);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Permintaan OTP gagal.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function verifyRegistration(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      const result = await request<{
+        school: SchoolInfo;
+        admin_username: string;
+        message: string;
+      }>('/school/auth/register/verify', undefined, {
+        method: 'POST',
+        body: { challenge_id: registrationChallengeId, otp: registrationOtp },
+      });
+      setLoginForm({
+        school_code: result.school.school_code,
+        username: result.admin_username,
+        password: '',
+      });
+      setRegistrationForm(initialRegistrationForm);
+      setRegistrationChallengeId('');
+      setRegistrationOtp('');
+      setLoginView('login');
+      setNotice(`${result.message} Kode sekolah Anda: ${result.school.school_code}.`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Verifikasi OTP gagal.');
     } finally {
       setBusy(false);
     }
@@ -760,7 +858,7 @@ export default function App() {
   }, [page, session?.token]);
 
   const navItems = useMemo(() => {
-    const items: { id: Page; label: string; permission: Permission }[] = [
+    const items: { id: Page; label: string; permission?: Permission }[] = [
       { id: 'dashboard', label: 'Ringkasan', permission: 'dashboard.read' },
       { id: 'reports', label: 'Rekap', permission: 'attendance.read' },
       { id: 'participants', label: 'Peserta', permission: 'participants.read' },
@@ -768,27 +866,68 @@ export default function App() {
       { id: 'roles', label: 'Akun & Role', permission: 'school.users.manage' },
       { id: 'devices', label: 'Perangkat', permission: 'scanner.use' },
       { id: 'scanner', label: 'Scanner', permission: 'scanner.use' },
+      { id: 'downloads', label: 'Unduh APK' },
     ];
-    return items.filter((item) => can(item.permission));
+    return items.filter((item) => !item.permission || can(item.permission));
   }, [session?.user.permissions]);
 
   if (!session) {
     return (
       <main className="login-shell">
-        <form className="login-card" onSubmit={(event) => void login(event)}>
+        {loginView === 'login' && <form className="login-card" onSubmit={(event) => void login(event)}>
           <div className="brand-mark">RH</div>
           <p className="eyebrow">PORTAL SEKOLAH</p>
           <h1>Masuk ke Ruang Hadir</h1>
           <p className="muted">Gunakan kode sekolah 4 digit dan akun sekolah Anda.</p>
           {error && <div className="alert error">{error}</div>}
+          {notice && <div className="alert success">{notice}</div>}
           <label>Kode sekolah
             <input inputMode="numeric" autoComplete="organization" maxLength={4} pattern="\d{4}" required value={loginForm.school_code} onChange={(event) => setLoginForm((current) => ({ ...current, school_code: event.target.value.replace(/\D/g, '').slice(0, 4) }))} placeholder="Contoh: 4829" />
           </label>
-          <label>Username<input autoComplete="username" required value={loginForm.username} onChange={(event) => setLoginForm((current) => ({ ...current, username: event.target.value }))} /></label>
+          <label>Username / nomor WhatsApp<input autoComplete="username" required value={loginForm.username} onChange={(event) => setLoginForm((current) => ({ ...current, username: event.target.value }))} /></label>
           <label>Password<input type="password" autoComplete="current-password" required value={loginForm.password} onChange={(event) => setLoginForm((current) => ({ ...current, password: event.target.value }))} /></label>
           <button className="button primary" disabled={busy}>{busy ? 'Memeriksa…' : 'Masuk ke sekolah'}</button>
+          <button className="text-button register-link" type="button" onClick={() => { setLoginView('register'); setError(''); setNotice(''); }}>Belum punya akun sekolah? Daftarkan sekolah</button>
           <small className="muted">Login Super Admin tersedia di portal platform yang terpisah.</small>
-        </form>
+        </form>}
+        {loginView === 'register' && <form className="login-card registration-card" onSubmit={(event) => void startRegistration(event)}>
+          <button className="text-button back-link" type="button" onClick={() => { setLoginView('login'); setError(''); setNotice(''); }}>← Kembali ke login</button>
+          <div className="brand-mark">RH</div>
+          <p className="eyebrow">PENDAFTARAN SEKOLAH</p>
+          <h1>Daftarkan sekolah</h1>
+          <p className="muted">Kami akan mengirim kode verifikasi ke WhatsApp admin. Akun mendapat masa uji coba 30 hari.</p>
+          {error && <div className="alert error">{error}</div>}
+          {notice && <div className="alert success">{notice}</div>}
+          <label>Nama sekolah<input autoComplete="organization" maxLength={180} required value={registrationForm.school_name} onChange={(event) => setRegistrationForm((current) => ({ ...current, school_name: event.target.value }))} /></label>
+          <label>Nama admin<input autoComplete="name" maxLength={150} required value={registrationForm.admin_name} onChange={(event) => setRegistrationForm((current) => ({ ...current, admin_name: event.target.value }))} /></label>
+          <label>Nomor WhatsApp admin<input type="tel" inputMode="tel" autoComplete="tel" required value={registrationForm.whatsapp_phone} onChange={(event) => setRegistrationForm((current) => ({ ...current, whatsapp_phone: event.target.value }))} placeholder="081234567890" /></label>
+          <label>Kata sandi admin
+            <span className="password-input-wrap">
+              <input type={showRegistrationPassword ? 'text' : 'password'} autoComplete="new-password" required value={registrationForm.password} onChange={(event) => setRegistrationForm((current) => ({ ...current, password: event.target.value }))} />
+              <button className="password-eye" type="button" onClick={() => setShowRegistrationPassword((visible) => !visible)} aria-label={showRegistrationPassword ? 'Sembunyikan kata sandi' : 'Tampilkan kata sandi'}><PasswordEye visible={showRegistrationPassword} /></button>
+            </span>
+          </label>
+          <ul className="password-checklist" aria-label="Persyaratan kata sandi">
+            <li className={passwordChecks.length ? 'valid' : ''}><span>{passwordChecks.length ? '✓' : '○'}</span> Minimal 8 karakter</li>
+            <li className={passwordChecks.uppercase ? 'valid' : ''}><span>{passwordChecks.uppercase ? '✓' : '○'}</span> Memiliki huruf besar</li>
+            <li className={passwordChecks.number ? 'valid' : ''}><span>{passwordChecks.number ? '✓' : '○'}</span> Memiliki angka</li>
+            <li className={passwordChecks.symbol ? 'valid' : ''}><span>{passwordChecks.symbol ? '✓' : '○'}</span> Memiliki simbol</li>
+            <li className={passwordChecks.maxBytes ? 'valid' : ''}><span>{passwordChecks.maxBytes ? '✓' : '○'}</span> Maksimal 72 byte</li>
+          </ul>
+          <button className="button primary" disabled={busy || !validRegistrationPassword}>{busy ? 'Mengirim OTP…' : 'Kirim kode verifikasi WhatsApp'}</button>
+        </form>}
+        {loginView === 'verify' && <form className="login-card registration-card" onSubmit={(event) => void verifyRegistration(event)}>
+          <button className="text-button back-link" type="button" onClick={() => { setLoginView('register'); setError(''); setNotice(''); }}>← Kembali</button>
+          <div className="brand-mark">RH</div>
+          <p className="eyebrow">VERIFIKASI WHATSAPP</p>
+          <h1>Masukkan kode OTP</h1>
+          <p className="muted">Kode dikirim ke {registrationForm.whatsapp_phone} dan berlaku selama 5 menit.</p>
+          {error && <div className="alert error">{error}</div>}
+          {notice && <div className="alert success">{notice}</div>}
+          <label>Kode OTP<input autoComplete="one-time-code" inputMode="numeric" pattern="\d{6}" maxLength={6} required value={registrationOtp} onChange={(event) => setRegistrationOtp(event.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="6 digit" /></label>
+          <button className="button primary" disabled={busy || registrationOtp.length !== 6}>{busy ? 'Memverifikasi…' : 'Verifikasi dan buat akun'}</button>
+          <button className="text-button register-link" type="button" disabled={busy} onClick={() => void startRegistration()}>{busy ? 'Mengirim…' : 'Kirim ulang OTP'}</button>
+        </form>}
       </main>
     );
   }
@@ -965,6 +1104,17 @@ export default function App() {
               {can('scanner.use') && <form className="panel form-grid" onSubmit={(event) => void createDevice(event)}><label>Nama perangkat<input required value={deviceName} onChange={(event) => setDeviceName(event.target.value)} /></label><button className="button primary">Daftarkan perangkat</button><button type="button" className="button secondary" onClick={() => void loadDevices()}>Muat daftar</button></form>}
               {deviceKey && <div className="alert success key-reveal">API Key aktif untuk perangkat ini tersimpan pada sesi browser. Jangan bagikan key dan cabut bila perangkat hilang.</div>}
               <div className="panel"><div className="table-scroll"><table><thead><tr><th>Perangkat</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{devices.map((device) => <tr key={device.id}><td>{device.device_name}</td><td>{Number(device.is_active) ? 'Aktif' : 'Dicabut'}</td><td>{Number(device.is_active) ? <button className="button danger small" onClick={() => void revokeDevice(device)}>Cabut akses</button> : '—'}</td></tr>)}{!devices.length && <tr><td colSpan={3} className="empty">Belum ada perangkat.</td></tr>}</tbody></table></div></div>
+            </section>
+          )}
+
+          {page === 'downloads' && (
+            <section>
+              <div className="page-heading"><div><p className="eyebrow">APLIKASI ANDROID</p><h1>Unduh aplikasi absensi</h1><p className="muted">APK disediakan melalui Google Drive dan belum dipublikasikan di Play Store.</p></div></div>
+              <div className="panel apk-download-panel">
+                {apkDriveUrl
+                  ? <><div className="apk-download-icon" aria-hidden="true">↓</div><h2>Versi Android tersedia</h2><p className="muted">Pastikan nama dan versi file sesuai instruksi Admin sekolah sebelum memasang.</p><a className="button primary" href={apkDriveUrl} target="_blank" rel="noopener noreferrer">Buka link download Google Drive</a></>
+                  : <><h2>APK belum tersedia</h2><p className="muted">Link unduhan akan muncul di sini setelah Super Admin mengaturnya.</p></>}
+              </div>
             </section>
           )}
         </main>

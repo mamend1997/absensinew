@@ -24,6 +24,28 @@ CREATE TABLE IF NOT EXISTS platform_branding (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 INSERT IGNORE INTO platform_branding (id) VALUES (1);
 
+CREATE TABLE IF NOT EXISTS whatsapp_gateway_config (
+    id TINYINT UNSIGNED NOT NULL,
+    endpoint_url VARCHAR(500) NULL,
+    token_ciphertext VARBINARY(1024) NULL,
+    token_iv BINARY(12) NULL,
+    token_auth_tag BINARY(16) NULL,
+    is_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    CONSTRAINT chk_whatsapp_gateway_singleton CHECK (id = 1)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+INSERT IGNORE INTO whatsapp_gateway_config (id) VALUES (1);
+
+CREATE TABLE IF NOT EXISTS platform_download_settings (
+    id TINYINT UNSIGNED NOT NULL,
+    apk_drive_url VARCHAR(2048) NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    CONSTRAINT chk_platform_download_singleton CHECK (id = 1)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+INSERT IGNORE INTO platform_download_settings (id) VALUES (1);
+
 CREATE TABLE IF NOT EXISTS schools (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     slug VARCHAR(100) NOT NULL,
@@ -94,12 +116,14 @@ CREATE TABLE IF NOT EXISTS users (
     classroom_id BIGINT UNSIGNED NULL,
     username VARCHAR(80) NOT NULL,
     display_name VARCHAR(150) NOT NULL,
+    whatsapp_phone VARCHAR(20) NULL,
     password_hash VARCHAR(255) NOT NULL,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     UNIQUE KEY uq_users_school_username (sekolah_id, username),
+    UNIQUE KEY uq_users_school_whatsapp (sekolah_id, whatsapp_phone),
     UNIQUE KEY uq_users_school_id (sekolah_id, id),
     KEY idx_users_role (sekolah_id, role_id),
     CONSTRAINT fk_users_school FOREIGN KEY (sekolah_id) REFERENCES schools (id)
@@ -108,6 +132,24 @@ CREATE TABLE IF NOT EXISTS users (
         REFERENCES roles (sekolah_id, id),
     CONSTRAINT fk_users_classroom FOREIGN KEY (sekolah_id, classroom_id)
         REFERENCES classrooms (sekolah_id, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS school_registration_challenges (
+    id CHAR(36) NOT NULL,
+    school_name VARCHAR(180) NOT NULL,
+    admin_name VARCHAR(150) NOT NULL,
+    whatsapp_phone VARCHAR(20) NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    otp_hash BINARY(32) NOT NULL,
+    expires_at DATETIME NOT NULL,
+    attempt_count TINYINT UNSIGNED NOT NULL DEFAULT 0,
+    request_ip_hash CHAR(64) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    verified_at DATETIME NULL,
+    PRIMARY KEY (id),
+    KEY idx_registration_phone_created (whatsapp_phone, created_at),
+    KEY idx_registration_ip_created (request_ip_hash, created_at),
+    KEY idx_registration_expiry (expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS participants (

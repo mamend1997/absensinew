@@ -16,6 +16,13 @@ interface School {
   is_active: boolean | number;
 }
 
+interface WhatsappGatewaySettings {
+  endpoint_url: string;
+  is_enabled: boolean;
+  is_configured: boolean;
+  token_hint: string;
+}
+
 interface SchoolForm {
   name: string;
   slug: string;
@@ -51,7 +58,14 @@ async function request<T>(
   });
   const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
   if (!response.ok) {
-    throw new Error(typeof payload.error === 'string' ? payload.error : `Permintaan gagal (${response.status}).`);
+    const apiError = payload.error;
+    const message = typeof apiError === 'string'
+      ? apiError
+      : apiError && typeof apiError === 'object' &&
+        typeof (apiError as Record<string, unknown>).message === 'string'
+        ? (apiError as Record<string, unknown>).message as string
+        : `Permintaan gagal (${response.status}).`;
+    throw new Error(message);
   }
   return payload as T;
 }
@@ -89,6 +103,16 @@ export default function App() {
   const [logoDataUrl, setLogoDataUrl] = useState('');
   const [logoAvailable, setLogoAvailable] = useState(false);
   const [logoVersion, setLogoVersion] = useState(0);
+  const [gatewaySettings, setGatewaySettings] = useState<WhatsappGatewaySettings>({
+    endpoint_url: '',
+    is_enabled: false,
+    is_configured: false,
+    token_hint: '',
+  });
+  const [gatewayToken, setGatewayToken] = useState('');
+  const [gatewayBusy, setGatewayBusy] = useState(false);
+  const [apkDriveUrl, setApkDriveUrl] = useState('');
+  const [apkBusy, setApkBusy] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -137,6 +161,20 @@ export default function App() {
   useEffect(() => {
     void loadSchools();
   }, [loadSchools]);
+
+  useEffect(() => {
+    if (!token) return;
+    request<{ settings: WhatsappGatewaySettings }>('/super-admin/settings/whatsapp-gateway', token)
+      .then((result) => setGatewaySettings(result.settings))
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Pengaturan WhatsApp gagal dimuat.'));
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+    request<{ apk_drive_url: string }>('/super-admin/settings/apk-download', token)
+      .then((result) => setApkDriveUrl(result.apk_drive_url))
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Link APK gagal dimuat.'));
+  }, [token]);
 
   async function login(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -282,6 +320,73 @@ export default function App() {
     }
   }
 
+  async function saveWhatsappGateway(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setGatewayBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await request('/super-admin/settings/whatsapp-gateway', token, {
+        method: 'PUT',
+        body: {
+          endpoint_url: gatewaySettings.endpoint_url,
+          is_enabled: gatewaySettings.is_enabled,
+          ...(gatewayToken ? { token: gatewayToken } : {}),
+        },
+      });
+      setGatewayToken('');
+      const current = await request<{ settings: WhatsappGatewaySettings }>(
+        '/super-admin/settings/whatsapp-gateway',
+        token,
+      );
+      setGatewaySettings(current.settings);
+      setNotice('Pengaturan WhatsApp gateway berhasil disimpan.');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Pengaturan WhatsApp gagal disimpan.');
+    } finally {
+      setGatewayBusy(false);
+    }
+  }
+
+  async function clearWhatsappGateway() {
+    if (!window.confirm('Hapus URL dan token gateway WhatsApp? Pendaftaran OTP akan berhenti sampai gateway diatur lagi.')) return;
+    setGatewayBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await request('/super-admin/settings/whatsapp-gateway', token, { method: 'DELETE' });
+      setGatewaySettings({ endpoint_url: '', is_enabled: false, is_configured: false, token_hint: '' });
+      setGatewayToken('');
+      setNotice('Konfigurasi WhatsApp gateway telah dihapus.');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Konfigurasi WhatsApp gagal dihapus.');
+    } finally {
+      setGatewayBusy(false);
+    }
+  }
+
+  async function saveApkDownload(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setApkBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await request<{ apk_drive_url: string }>(
+        '/super-admin/settings/apk-download',
+        token,
+        { method: 'PUT', body: { apk_drive_url: apkDriveUrl.trim() } },
+      );
+      setApkDriveUrl(result.apk_drive_url);
+      setNotice(result.apk_drive_url
+        ? 'Link Google Drive APK tersedia di menu akun sekolah.'
+        : 'Link download APK dihapus dari menu akun sekolah.');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Link APK gagal disimpan.');
+    } finally {
+      setApkBusy(false);
+    }
+  }
+
   function signOut() {
     sessionStorage.removeItem(TOKEN_KEY);
     setToken('');
@@ -335,6 +440,44 @@ export default function App() {
             <label>Pilih logo<input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void selectLogo(event.target.files?.[0])} /></label>
             <button className="button primary" disabled={busy || !logoDataUrl}>{busy ? 'Menyimpan…' : 'Simpan logo'}</button>
             <button className="button secondary" type="button" disabled={busy} onClick={() => void removeLogo()}>Hapus logo</button>
+          </form>
+        </section>
+        <section className="panel gateway-panel">
+          <div>
+            <h2>Gateway WhatsApp untuk OTP</h2>
+            <p className="muted">Gateway harus menerima POST JSON <code>{'{ phone, message }'}</code> dengan autentikasi Bearer dan membalas status HTTP 2xx. Token dienkripsi di database dan tidak ditampilkan kembali.</p>
+            <span className={`gateway-status ${gatewaySettings.is_enabled && gatewaySettings.is_configured ? 'ready' : ''}`}>
+              {gatewaySettings.is_enabled && gatewaySettings.is_configured ? '● Aktif dan siap' : '○ Belum aktif'}
+            </span>
+          </div>
+          <form className="gateway-form" onSubmit={(event) => void saveWhatsappGateway(event)}>
+            <label>URL HTTPS gateway<input type="url" required placeholder="https://gateway.example/api/send" value={gatewaySettings.endpoint_url} onChange={(event) => setGatewaySettings((current) => ({ ...current, endpoint_url: event.target.value }))} /></label>
+            <label>Bearer token
+              <input type="password" autoComplete="new-password" placeholder={gatewaySettings.is_configured ? 'Tersimpan — kosongkan untuk mempertahankan' : 'Masukkan token gateway'} value={gatewayToken} onChange={(event) => setGatewayToken(event.target.value)} />
+            </label>
+            {gatewaySettings.is_configured && <small className="gateway-hint">{gatewaySettings.token_hint}</small>}
+            <label className="gateway-toggle"><input type="checkbox" checked={gatewaySettings.is_enabled} onChange={(event) => setGatewaySettings((current) => ({ ...current, is_enabled: event.target.checked }))} /> Aktifkan OTP WhatsApp untuk pendaftaran</label>
+            <div className="gateway-actions">
+              <button className="button primary" disabled={gatewayBusy}>{gatewayBusy ? 'Menyimpan…' : 'Simpan pengaturan'}</button>
+              <button className="button secondary" type="button" disabled={gatewayBusy || !gatewaySettings.is_configured} onClick={() => void clearWhatsappGateway()}>Hapus konfigurasi</button>
+            </div>
+          </form>
+        </section>
+        <section className="panel apk-panel">
+          <div>
+            <h2>Distribusi aplikasi Android</h2>
+            <p className="muted">Masukkan link berbagi file APK Google Drive. Setelah disimpan, menu “Unduh APK” tampil untuk akun sekolah. Atur akses Drive agar pemilik link dapat mengunduh.</p>
+            <span className={`gateway-status ${apkDriveUrl ? 'ready' : ''}`}>
+              {apkDriveUrl ? '● Link APK tersedia' : '○ Belum ada link APK'}
+            </span>
+          </div>
+          <form className="apk-form" onSubmit={(event) => void saveApkDownload(event)}>
+            <label>Link file APK di Google Drive
+              <input type="url" placeholder="https://drive.google.com/file/d/…/view" value={apkDriveUrl} onChange={(event) => setApkDriveUrl(event.target.value)} />
+            </label>
+            <div className="gateway-actions">
+              <button className="button primary" disabled={apkBusy}>{apkBusy ? 'Menyimpan…' : 'Simpan link'}</button>
+            </div>
           </form>
         </section>
         <section className="panel create-panel">

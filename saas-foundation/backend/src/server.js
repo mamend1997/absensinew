@@ -1,7 +1,9 @@
 import { app } from './app.js';
 import { config } from './config.js';
 import { pool } from './db.js';
+import { ensureRuntimeMigrations } from './config/runtime-migrations.js';
 
+await ensureRuntimeMigrations(pool);
 await pool.execute(`
   CREATE TABLE IF NOT EXISTS platform_branding (
     id TINYINT UNSIGNED NOT NULL,

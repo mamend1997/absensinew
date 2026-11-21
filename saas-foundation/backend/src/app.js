@@ -6,6 +6,26 @@ import { asyncRoute } from './http.js';
 
 export const app = express();
 app.disable('x-powered-by');
+app.set('trust proxy', 1);
+const allowedOrigins = new Set(
+  (process.env.CORS_ORIGINS ?? 'http://localhost:5174,http://localhost:5173')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+);
+app.use((req, res, next) => {
+  const origin = req.get('origin');
+  if (!origin) return next();
+  if (!allowedOrigins.has(origin)) {
+    return res.status(403).json({ error: { code: 'ORIGIN_NOT_ALLOWED', message: 'Origin tidak diizinkan.' } });
+  }
+  res.setHeader('Access-Control-Allow-Origin', origin);
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Device-Key');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  return next();
+});
 app.use(express.json({ limit: '2mb', strict: true }));
 
 app.get('/api/health', asyncRoute(async (req, res) => {
@@ -21,6 +41,13 @@ app.get('/api/branding/logo', asyncRoute(async (req, res) => {
   }
   res.set('Cache-Control', 'public, max-age=300');
   res.type(branding.logo_mime_type).send(branding.logo_data);
+}));
+app.get('/api/platform/downloads', asyncRoute(async (req, res) => {
+  const [[settings]] = await pool.execute(
+    'SELECT apk_drive_url FROM platform_download_settings WHERE id = 1',
+  );
+  res.set('Cache-Control', 'public, max-age=60');
+  res.json({ apk_drive_url: settings?.apk_drive_url ?? null });
 }));
 app.use('/api/super-admin', superAdminRoutes);
 app.use('/api/school', schoolRoutes);

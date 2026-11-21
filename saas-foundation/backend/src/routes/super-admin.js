@@ -1,19 +1,16 @@
 import { Router } from 'express';
 import { generateUniqueSchoolCode, isValidSchoolCode } from '../core/school-code.js';
 import { parseLogoDataUrl } from '../core/branding.js';
+import { provisionSchool } from '../core/school-provision.js';
+import {
+  decryptGatewayToken, encryptGatewayToken, validateGatewayUrl,
+} from '../core/whatsapp-gateway.js';
 import { inTransaction, pool } from '../db.js';
 import { asyncRoute, fail, requireFields } from '../http.js';
 import { requireSuperAdmin } from '../middleware/auth.js';
 import { hashPassword, signToken, verifyPassword } from '../security.js';
 
 const router = Router();
-const adminPermissions = [
-  'dashboard.read', 'attendance.read', 'attendance.export',
-  'participants.read', 'participants.manage', 'participants.qr.print',
-  'settings.operational.manage', 'attendance.excuse.manage',
-  'scanner.use', 'school.users.manage', 'school.roles.manage',
-];
-
 function validateString(value, name, maxLength) {
   if (typeof value !== 'string' || value.trim().length === 0 || value.length > maxLength) {
     throw fail(400, `${name} tidak valid.`, 'VALIDATION_ERROR');
@@ -26,6 +23,33 @@ function validateSchoolCode(value) {
     throw fail(400, 'Kode sekolah harus tepat 4 digit angka.', 'VALIDATION_ERROR');
   }
   return value;
+}
+
+function validateGatewaySettings(body) {
+  const endpointUrl = validateGatewayUrl(body.endpoint_url).toString();
+  if (typeof body.is_enabled !== 'boolean') {
+    throw fail(400, 'is_enabled harus berupa boolean.', 'VALIDATION_ERROR');
+  }
+  if (body.token !== undefined &&
+      (typeof body.token !== 'string' || body.token.length > 1024)) {
+    throw fail(400, 'Token gateway tidak valid.', 'VALIDATION_ERROR');
+  }
+  return { endpointUrl, isEnabled: body.is_enabled, token: body.token?.trim() ?? '' };
+}
+
+function validateDriveFileUrl(value) {
+  if (typeof value !== 'string' || value.length > 2048) {
+    throw fail(400, 'Link download APK tidak valid.', 'VALIDATION_ERROR');
+  }
+  let url;
+  try { url = new URL(value); } catch { throw fail(400, 'Link download APK tidak valid.', 'VALIDATION_ERROR'); }
+  const isDriveFile = url.hostname === 'drive.google.com' &&
+    (/^\/file\/d\/[A-Za-z0-9_-]+(?:\/|$)/.test(url.pathname) ||
+      ['/open', '/uc'].includes(url.pathname) && Boolean(url.searchParams.get('id')));
+  if (url.protocol !== 'https:' || !isDriveFile || url.username || url.password) {
+    throw fail(400, 'Gunakan link file Google Drive yang dapat dibuka dan diunduh.', 'VALIDATION_ERROR');
+  }
+  return url.toString();
 }
 
 router.post('/auth/login', asyncRoute(async (req, res) => {
@@ -63,6 +87,80 @@ router.delete('/branding/logo', requireSuperAdmin, asyncRoute(async (req, res) =
     'UPDATE platform_branding SET logo_mime_type = NULL, logo_data = NULL WHERE id = 1',
   );
   res.json({ message: 'Logo platform dihapus.' });
+}));
+
+router.get('/settings/whatsapp-gateway', requireSuperAdmin, asyncRoute(async (req, res) => {
+  const [[settings]] = await pool.execute(
+    `SELECT endpoint_url, token_ciphertext, is_enabled
+       FROM whatsapp_gateway_config WHERE id = 1`,
+  );
+  res.json({
+    settings: {
+      endpoint_url: settings?.endpoint_url ?? '',
+      is_enabled: Boolean(settings?.is_enabled),
+      is_configured: Boolean(settings?.endpoint_url && settings?.token_ciphertext),
+      token_hint: settings?.token_ciphertext ? 'Token tersimpan aman' : '',
+    },
+  });
+}));
+
+router.put('/settings/whatsapp-gateway', requireSuperAdmin, asyncRoute(async (req, res) => {
+  const settings = validateGatewaySettings(req.body ?? {});
+  const [[existing]] = await pool.execute(
+    'SELECT token_ciphertext, token_iv, token_auth_tag FROM whatsapp_gateway_config WHERE id = 1',
+  );
+  const encrypted = settings.token
+    ? encryptGatewayToken(settings.token)
+    : existing?.token_ciphertext
+      ? {
+        ciphertext: existing.token_ciphertext,
+        iv: existing.token_iv,
+        authTag: existing.token_auth_tag,
+      }
+      : null;
+  if (settings.isEnabled && !encrypted) {
+    throw fail(400, 'Masukkan token gateway sebelum mengaktifkannya.', 'VALIDATION_ERROR');
+  }
+  await pool.execute(
+    `INSERT INTO whatsapp_gateway_config
+      (id, endpoint_url, token_ciphertext, token_iv, token_auth_tag, is_enabled)
+     VALUES (1, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE endpoint_url = VALUES(endpoint_url),
+       token_ciphertext = VALUES(token_ciphertext), token_iv = VALUES(token_iv),
+       token_auth_tag = VALUES(token_auth_tag), is_enabled = VALUES(is_enabled)`,
+    [settings.endpointUrl, encrypted?.ciphertext ?? null, encrypted?.iv ?? null,
+      encrypted?.authTag ?? null, settings.isEnabled],
+  );
+  res.json({ message: 'Pengaturan WhatsApp gateway disimpan.' });
+}));
+
+router.delete('/settings/whatsapp-gateway', requireSuperAdmin, asyncRoute(async (req, res) => {
+  await pool.execute(
+    `UPDATE whatsapp_gateway_config
+        SET endpoint_url = NULL, token_ciphertext = NULL, token_iv = NULL,
+            token_auth_tag = NULL, is_enabled = FALSE
+      WHERE id = 1`,
+  );
+  res.json({ message: 'Konfigurasi WhatsApp gateway dihapus.' });
+}));
+
+router.get('/settings/apk-download', requireSuperAdmin, asyncRoute(async (req, res) => {
+  const [[settings]] = await pool.execute(
+    'SELECT apk_drive_url FROM platform_download_settings WHERE id = 1',
+  );
+  res.json({ apk_drive_url: settings?.apk_drive_url ?? '' });
+}));
+
+router.put('/settings/apk-download', requireSuperAdmin, asyncRoute(async (req, res) => {
+  const apkDriveUrl = req.body?.apk_drive_url === ''
+    ? null
+    : validateDriveFileUrl(req.body?.apk_drive_url);
+  await pool.execute(
+    `INSERT INTO platform_download_settings (id, apk_drive_url) VALUES (1, ?)
+     ON DUPLICATE KEY UPDATE apk_drive_url = VALUES(apk_drive_url)`,
+    [apkDriveUrl],
+  );
+  res.json({ message: 'Link download APK diperbarui.', apk_drive_url: apkDriveUrl ?? '' });
 }));
 
 router.use(requireSuperAdmin);
@@ -114,55 +212,19 @@ router.post('/schools', asyncRoute(async (req, res) => {
     })
     : validateSchoolCode(req.body.school_code);
   const passwordHash = await hashPassword(initialAdmin.password);
-  const result = await inTransaction(async (connection) => {
-    const [schoolResult] = await connection.execute(
-      `INSERT INTO schools
-        (slug, school_code, name, subscription_status, trial_ends_at, participant_quota, timezone)
-       VALUES (?, ?, ?, ?, IF(? = 'trial', DATE_ADD(UTC_TIMESTAMP(), INTERVAL 30 DAY), NULL), ?, ?)`,
-      [slug, schoolCode, name, status, status, quota, timezone],
-    );
-    const schoolId = String(schoolResult.insertId);
-    const roles = [
-      ['admin-sekolah', 'Admin Sekolah', adminPermissions, true],
-      ['operator-scanner', 'Operator Scanner', ['scanner.use'], true],
-      ['kepala-sekolah', 'Kepala Sekolah', ['dashboard.read', 'attendance.read', 'attendance.export'], false],
-      ['wakasek-kesiswaan', 'Wakasek Kesiswaan', [
-        'dashboard.read', 'attendance.read', 'attendance.export', 'participants.read',
-        'attendance.excuse.manage',
-      ], false],
-    ];
-    for (const [key, roleName, permissions, system] of roles) {
-      await connection.execute(
-        'INSERT INTO roles (sekolah_id, role_key, role_name, permissions, is_system) VALUES (?, ?, ?, ?, ?)',
-        [schoolId, key, roleName, JSON.stringify(permissions), system],
-      );
-    }
-    const [[adminRole]] = await connection.execute(
-      "SELECT id FROM roles WHERE sekolah_id = ? AND role_key = 'admin-sekolah'",
-      [schoolId],
-    );
-    await connection.execute(
-      `INSERT INTO users (sekolah_id, role_id, username, display_name, password_hash, is_active)
-       VALUES (?, ?, ?, ?, ?, TRUE)`,
-      [schoolId, adminRole.id, adminUsername, adminName, passwordHash],
-    );
-    await connection.execute(
-      'INSERT INTO operational_settings (sekolah_id, timezone) VALUES (?, ?)',
-      [schoolId, timezone],
-    );
-    for (let weekday = 0; weekday <= 6; weekday += 1) {
-      await connection.execute(
-        `INSERT INTO weekly_operational_schedules
-          (sekolah_id, weekday, is_working_day, check_in_deadline,
-           lateness_tolerance_minutes, check_out_start)
-         VALUES (?, ?, ?, '08:00:00', 0, '15:00:00')`,
-        [schoolId, weekday, weekday >= 1 && weekday <= 5],
-      );
-    }
-    return { id: schoolId };
-  });
+  const id = await inTransaction((connection) => provisionSchool(connection, {
+    slug,
+    schoolCode,
+    name,
+    adminUsername,
+    adminName,
+    passwordHash,
+    status,
+    quota,
+    timezone,
+  }));
   res.status(201).json({
-    school: { ...result, slug, school_code: schoolCode, name, subscription_status: status },
+    school: { id, slug, school_code: schoolCode, name, subscription_status: status },
     initial_admin: { username: adminUsername, display_name: adminName },
   });
 }));

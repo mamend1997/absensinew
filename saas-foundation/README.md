@@ -98,6 +98,19 @@ menggunakan `PUT`/`DELETE /api/super-admin/branding/logo` dengan autentikasi
 Super Admin. Tabel branding dibuat otomatis saat backend mulai, juga tercantum
 di `database/schema.sql`.
 
+Super Admin juga dapat mengatur endpoint WhatsApp gateway HTTPS yang menerima
+`POST` JSON `{ "phone": "...", "message": "..." }` dengan header Bearer. Token
+gateway dienkripsi dengan AES-GCM sebelum disimpan; OTP pendaftaran berlaku
+5 menit, dibatasi 5 percobaan verifikasi, dan permintaannya dibatasi per nomor
+serta IP. Pendaftaran mandiri membuat sekolah trial 30 hari setelah OTP benar.
+Username Admin sekolah baru adalah nomor WhatsApp yang telah dinormalisasi.
+Kata sandi harus memiliki minimal 8 karakter, huruf besar, angka, dan simbol.
+
+Link unduhan APK Google Drive dapat diatur Super Admin dan tampil pada menu
+“Unduh APK” di portal sekolah setelah dipasang. Untuk saat ini link file harus
+mengarah ke Google Drive, dan akses berbagi file perlu mengizinkan akun sekolah
+mengunduhnya.
+
 Konfigurasi `.env` hanya dibaca backend; jangan commit file tersebut. Endpoint
 pengelolaan memakai permissions yang telah diseed schema Tahap 1; tidak ada
 perubahan pada skema inti.

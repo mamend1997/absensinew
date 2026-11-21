@@ -1,13 +1,26 @@
 import { randomUUID } from 'node:crypto';
 import { Router } from 'express';
 import { calculateAttendance } from '../core/attendance.js';
-import { pool } from '../db.js';
+import { inTransaction, pool } from '../db.js';
 import {
   asyncRoute, fail, parseJson, requireFields,
 } from '../http.js';
 import {
   classroomScope, requireDevice, requirePermission, requireSchoolUser,
 } from '../middleware/auth.js';
+import {
+  createRegistrationOtp,
+  equalOtpHash,
+  hashRegistrationIp,
+  hashRegistrationOtp,
+  normalizeWhatsappPhone,
+  registrationSlug,
+  validateRegistrationPassword,
+} from '../core/school-registration.js';
+import { generateUniqueSchoolCode } from '../core/school-code.js';
+import { provisionSchool } from '../core/school-provision.js';
+import { decryptGatewayToken, sendWhatsappMessage } from '../core/whatsapp-gateway.js';
+import { config } from '../config.js';
 import { createDeviceApiKey, hashPassword, signToken, verifyPassword } from '../security.js';
 
 const router = Router();
@@ -70,6 +83,137 @@ async function loadAttendanceSettings(schoolId) {
   );
   return { ...base, weekly_schedules: weekly, holidays };
 }
+
+router.post('/auth/register/start', asyncRoute(async (req, res) => {
+  requireFields(req.body, ['school_name', 'admin_name', 'whatsapp_phone', 'password']);
+  const schoolName = string(req.body.school_name, 'Nama sekolah', 180);
+  const adminName = string(req.body.admin_name, 'Nama admin', 150);
+  const phone = normalizeWhatsappPhone(req.body.whatsapp_phone);
+  if (!phone) throw fail(400, 'Nomor WhatsApp tidak valid. Gunakan format Indonesia, misalnya 081234567890.', 'VALIDATION_ERROR');
+  if (!validateRegistrationPassword(req.body.password)) {
+    throw fail(400, 'Kata sandi minimal 8 karakter dan wajib memiliki huruf besar, angka, serta simbol.', 'VALIDATION_ERROR');
+  }
+
+  const [[gateway]] = await pool.execute(
+    `SELECT endpoint_url, token_ciphertext, token_iv, token_auth_tag, is_enabled
+       FROM whatsapp_gateway_config WHERE id = 1`,
+  );
+  if (!gateway?.is_enabled || !gateway.endpoint_url || !gateway.token_ciphertext) {
+    throw fail(503, 'Pendaftaran sekolah belum tersedia karena gateway WhatsApp belum diaktifkan.', 'REGISTRATION_UNAVAILABLE');
+  }
+
+  const ipHash = hashRegistrationIp(req.ip ?? req.socket.remoteAddress ?? 'unknown', config.jwtSecret);
+  await pool.execute(
+    'DELETE FROM school_registration_challenges WHERE created_at < UTC_TIMESTAMP() - INTERVAL 1 DAY',
+  );
+  const [[limits]] = await pool.execute(
+    `SELECT
+       SUM(whatsapp_phone = ? AND created_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR) AS phone_requests,
+       SUM(request_ip_hash = ? AND created_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR) AS ip_requests
+     FROM school_registration_challenges
+     WHERE created_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR`,
+    [phone, ipHash],
+  );
+  if (Number(limits.phone_requests ?? 0) >= 3 || Number(limits.ip_requests ?? 0) >= 20) {
+    throw fail(429, 'Batas permintaan OTP tercapai. Coba kembali beberapa saat lagi.', 'OTP_RATE_LIMITED');
+  }
+
+  const challengeId = randomUUID();
+  const otp = createRegistrationOtp();
+  const passwordHash = await hashPassword(req.body.password);
+  await pool.execute(
+    `INSERT INTO school_registration_challenges
+      (id, school_name, admin_name, whatsapp_phone, password_hash,
+       otp_hash, expires_at, request_ip_hash)
+     VALUES (?, ?, ?, ?, ?, ?, UTC_TIMESTAMP() + INTERVAL 5 MINUTE, ?)`,
+    [challengeId, schoolName, adminName, phone, passwordHash,
+      hashRegistrationOtp(challengeId, otp, config.jwtSecret), ipHash],
+  );
+
+  try {
+    await sendWhatsappMessage(
+      gateway.endpoint_url,
+      decryptGatewayToken(gateway),
+      phone,
+      `Kode verifikasi Ruang Hadir: ${otp}. Berlaku 5 menit. Jangan bagikan kode ini kepada siapa pun.`,
+    );
+  } catch (error) {
+    await pool.execute(
+      'UPDATE school_registration_challenges SET attempt_count = 5 WHERE id = ?',
+      [challengeId],
+    );
+    throw error;
+  }
+  res.status(202).json({
+    challenge_id: challengeId,
+    expires_in_seconds: 300,
+    message: 'Kode OTP telah dikirim ke WhatsApp admin.',
+  });
+}));
+
+router.post('/auth/register/verify', asyncRoute(async (req, res) => {
+  requireFields(req.body, ['challenge_id', 'otp']);
+  if (typeof req.body.challenge_id !== 'string' || !UUID.test(req.body.challenge_id) ||
+      typeof req.body.otp !== 'string' || !/^\d{6}$/.test(req.body.otp)) {
+    throw fail(400, 'ID pendaftaran atau OTP tidak valid.', 'VALIDATION_ERROR');
+  }
+  const result = await inTransaction(async (connection) => {
+    const [[challenge]] = await connection.execute(
+      `SELECT id, school_name, admin_name, whatsapp_phone, password_hash,
+              otp_hash, expires_at > UTC_TIMESTAMP() AS otp_is_valid,
+              attempt_count, verified_at
+         FROM school_registration_challenges WHERE id = ? FOR UPDATE`,
+      [req.body.challenge_id],
+    );
+    if (!challenge || challenge.verified_at ||
+        !challenge.otp_is_valid ||
+        Number(challenge.attempt_count) >= 5) {
+      return { error: 'OTP tidak valid atau sudah kedaluwarsa.' };
+    }
+    if (!equalOtpHash(
+      hashRegistrationOtp(challenge.id, req.body.otp, config.jwtSecret),
+      challenge.otp_hash,
+    )) {
+      await connection.execute(
+        'UPDATE school_registration_challenges SET attempt_count = attempt_count + 1 WHERE id = ?',
+        [challenge.id],
+      );
+      return { error: 'OTP tidak valid atau sudah kedaluwarsa.' };
+    }
+
+    const schoolCode = await generateUniqueSchoolCode({
+      isTaken: async (code) => {
+        const [rows] = await connection.execute(
+          'SELECT 1 FROM schools WHERE school_code = ? LIMIT 1',
+          [code],
+        );
+        return rows.length > 0;
+      },
+    });
+    const schoolId = await provisionSchool(connection, {
+      slug: registrationSlug(challenge.school_name, schoolCode),
+      schoolCode,
+      name: challenge.school_name,
+      adminUsername: challenge.whatsapp_phone,
+      adminName: challenge.admin_name,
+      adminPhone: challenge.whatsapp_phone,
+      passwordHash: challenge.password_hash,
+    });
+    await connection.execute(
+      'UPDATE school_registration_challenges SET verified_at = UTC_TIMESTAMP() WHERE id = ?',
+      [challenge.id],
+    );
+    return {
+      school: { id: schoolId, name: challenge.school_name, school_code: schoolCode },
+      admin_username: challenge.whatsapp_phone,
+    };
+  });
+  if (result.error) throw fail(400, result.error, 'INVALID_OTP');
+  res.status(201).json({
+    ...result,
+    message: 'Pendaftaran berhasil. Simpan kode sekolah dan gunakan nomor WhatsApp sebagai username.',
+  });
+}));
 
 router.post('/auth/login', asyncRoute(async (req, res) => {
   requireFields(req.body, ['school_code', 'username', 'password']);
