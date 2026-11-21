@@ -51,7 +51,7 @@ function callbackUrl(path) {
 
 export async function getPlatformPaymentSettings() {
   const [[row]] = await pool.execute(
-    `SELECT xendit_enabled, duitku_enabled, duitku_environment, encrypted_credentials
+    `SELECT xendit_enabled, duitku_enabled, duitku_environment, kasera_enabled, encrypted_credentials
        FROM platform_payment_gateway_settings WHERE id = 1`,
   );
   const stored = decryptCredentials(row?.encrypted_credentials);
@@ -64,6 +64,10 @@ export async function getPlatformPaymentSettings() {
       ? stored.duitku_merchant_code : config.duitkuMerchantCode,
     duitku_api_key: typeof stored.duitku_api_key === 'string'
       ? stored.duitku_api_key : config.duitkuApiKey,
+    kasera_api_key: typeof stored.kasera_api_key === 'string'
+      ? stored.kasera_api_key : '',
+    kasera_webhook_secret: typeof stored.kasera_webhook_secret === 'string'
+      ? stored.kasera_webhook_secret : '',
   };
   const xenditConfigured = Boolean(
     credentials.xendit_secret_key && credentials.xendit_callback_token &&
@@ -73,10 +77,16 @@ export async function getPlatformPaymentSettings() {
     credentials.duitku_merchant_code && credentials.duitku_api_key &&
     config.publicWebUrl && config.publicApiUrl,
   );
+  const kaseraConfigured = Boolean(
+    credentials.kasera_api_key && credentials.kasera_webhook_secret &&
+    config.publicWebUrl && config.publicApiUrl,
+  );
   const xenditEnabled = row?.xendit_enabled == null
     ? xenditConfigured : Boolean(Number(row.xendit_enabled));
   const duitkuEnabled = row?.duitku_enabled == null
     ? duitkuConfigured : Boolean(Number(row.duitku_enabled));
+  const kaseraEnabled = row?.kasera_enabled == null
+    ? kaseraConfigured : Boolean(Number(row.kasera_enabled));
 
   return {
     credentials,
@@ -91,6 +101,11 @@ export async function getPlatformPaymentSettings() {
       active: duitkuConfigured && duitkuEnabled,
       environment: row?.duitku_environment ?? config.duitkuEnvironment,
     },
+    kasera: {
+      configured: kaseraConfigured,
+      enabled: kaseraEnabled,
+      active: kaseraConfigured && kaseraEnabled,
+    },
     credential_source: row?.encrypted_credentials ? 'database' : 'environment',
   };
 }
@@ -103,6 +118,7 @@ export async function getAdminPaymentGatewaySettings() {
     callback_urls: {
       xendit: callbackUrl('/api/payments/xendit/callback'),
       duitku: callbackUrl('/api/payments/duitku/callback'),
+      kasera: callbackUrl('/api/payments/kasera/webhook'),
     },
     xendit: {
       configured: settings.xendit.configured,
@@ -116,6 +132,12 @@ export async function getAdminPaymentGatewaySettings() {
       environment: settings.duitku.environment,
       merchant_code_hint: mask(credentials.duitku_merchant_code),
       api_key_hint: mask(credentials.duitku_api_key),
+    },
+    kasera: {
+      configured: settings.kasera.configured,
+      enabled: settings.kasera.enabled,
+      api_key_hint: mask(credentials.kasera_api_key),
+      webhook_secret_hint: mask(credentials.kasera_webhook_secret),
     },
   };
 }
@@ -153,7 +175,19 @@ export function validatePaymentGatewayUpdate(body, current) {
     duitku_api_key: inputValue(
       body.duitku.api_key, current.credentials.duitku_api_key, 'API key Duitku', 500,
     ),
+    kasera_api_key: inputValue(
+      body.kasera?.api_key, current.credentials.kasera_api_key ?? '', 'API key Kasera', 500,
+    ),
+    kasera_webhook_secret: inputValue(
+      body.kasera?.webhook_secret, current.credentials.kasera_webhook_secret ?? '', 'Webhook secret Kasera', 500,
+    ),
   };
+  if (body.kasera !== undefined &&
+      (!body.kasera || typeof body.kasera !== 'object' || Array.isArray(body.kasera) ||
+       typeof body.kasera.enabled !== 'boolean')) {
+    throw fail(400, 'Pengaturan Kasera tidak valid.', 'VALIDATION_ERROR');
+  }
+  const kaseraEnabled = body.kasera?.enabled ?? current.kasera?.enabled ?? false;
   if (body.xendit.enabled && (!credentials.xendit_secret_key ||
       !credentials.xendit_callback_token || !config.publicWebUrl || !config.publicApiUrl)) {
     throw fail(400, 'Lengkapi kredensial Xendit serta PUBLIC_WEB_URL dan PUBLIC_API_URL sebelum mengaktifkannya.', 'VALIDATION_ERROR');
@@ -162,11 +196,20 @@ export function validatePaymentGatewayUpdate(body, current) {
       !credentials.duitku_api_key || !config.publicWebUrl || !config.publicApiUrl)) {
     throw fail(400, 'Lengkapi kredensial Duitku serta PUBLIC_WEB_URL dan PUBLIC_API_URL sebelum mengaktifkannya.', 'VALIDATION_ERROR');
   }
+  if (kaseraEnabled && (!credentials.kasera_api_key ||
+      !credentials.kasera_webhook_secret || !config.publicWebUrl || !config.publicApiUrl)) {
+    throw fail(400, 'Lengkapi API key dan webhook secret Kasera serta PUBLIC_WEB_URL dan PUBLIC_API_URL sebelum mengaktifkannya.', 'VALIDATION_ERROR');
+  }
+  if (kaseraEnabled && process.env.NODE_ENV === 'production' &&
+      !credentials.kasera_api_key.startsWith('kp_live_')) {
+    throw fail(400, 'Gunakan API key live Kasera untuk mengaktifkan tagihan produksi.', 'VALIDATION_ERROR');
+  }
   return {
     credentials,
     xendit_enabled: body.xendit.enabled,
     duitku_enabled: body.duitku.enabled,
     duitku_environment: environment,
+    kasera_enabled: kaseraEnabled,
   };
 }
 
@@ -175,13 +218,14 @@ export async function savePaymentGatewaySettings(body) {
   const settings = validatePaymentGatewayUpdate(body, current);
   await pool.execute(
     `UPDATE platform_payment_gateway_settings
-        SET xendit_enabled = ?, duitku_enabled = ?, duitku_environment = ?,
+        SET xendit_enabled = ?, duitku_enabled = ?, duitku_environment = ?, kasera_enabled = ?,
             encrypted_credentials = ?
       WHERE id = 1`,
     [
       settings.xendit_enabled,
       settings.duitku_enabled,
       settings.duitku_environment,
+      settings.kasera_enabled,
       seal(JSON.stringify(settings.credentials)),
     ],
   );

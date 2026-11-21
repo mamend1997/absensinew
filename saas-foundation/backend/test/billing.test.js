@@ -7,6 +7,7 @@ import {
   verifyDuitkuCallbackSignature,
   verifyXenditCallbackToken,
 } from '../src/core/billing-signatures.js';
+import { verifyKaseraWebhookSignature } from '../src/core/kasera-signatures.js';
 
 test('Duitku signatures use HMAC-SHA256 with the documented fields', () => {
   const key = 'merchant-api-key';
@@ -44,4 +45,21 @@ test('Xendit callback token comparison rejects absent or mismatched tokens', () 
   assert.equal(verifyXenditCallbackToken('callback-secret', 'callback-secret'), true);
   assert.equal(verifyXenditCallbackToken('other-secret', 'callback-secret'), false);
   assert.equal(verifyXenditCallbackToken(undefined, 'callback-secret'), false);
+});
+
+test('Kasera webhook signatures bind the raw body and reject stale timestamps', () => {
+  const secret = 'kasera-webhook-secret';
+  const timestamp = '1795224000';
+  const rawBody = Buffer.from('{"type":"payment.paid"}');
+  const signature = createHmac('sha256', secret)
+    .update(`${timestamp}.`)
+    .update(rawBody)
+    .digest('hex');
+  const header = `t=${timestamp},v1=${signature}`;
+  const now = Number(timestamp) * 1000;
+
+  assert.equal(verifyKaseraWebhookSignature(header, rawBody, secret, now), true);
+  assert.equal(verifyKaseraWebhookSignature(header, Buffer.from('{}'), secret, now), false);
+  assert.equal(verifyKaseraWebhookSignature(header, rawBody, secret, now + 301000), false);
+  assert.equal(verifyKaseraWebhookSignature(`t=${timestamp},v1=${'0'.repeat(64)}`, rawBody, secret, now), false);
 });

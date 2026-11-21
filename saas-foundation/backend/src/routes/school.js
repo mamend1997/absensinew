@@ -9,7 +9,7 @@ import {
   asyncRoute, fail, parseJson, requireFields,
 } from '../http.js';
 import {
-  classroomScope, requireDevice, requirePermission, requireSchoolUser,
+  classroomScope, requireAnyPermission, requireDevice, requirePermission, requireSchoolUser,
 } from '../middleware/auth.js';
 import {
   createRegistrationOtp,
@@ -107,7 +107,17 @@ async function loadAttendanceSettings(schoolId) {
     'SELECT holiday_date AS date, name FROM school_holidays WHERE sekolah_id = ?',
     [schoolId],
   );
-  return { ...base, weekly_schedules: weekly, holidays };
+  const [participantOverrides] = await pool.execute(
+    `SELECT participant_id, weekday, check_in_deadline
+       FROM participant_operational_overrides WHERE sekolah_id = ?`,
+    [schoolId],
+  );
+  return {
+    ...base,
+    weekly_schedules: weekly,
+    holidays,
+    participant_overrides: participantOverrides,
+  };
 }
 
 router.post('/auth/register/start', asyncRoute(async (req, res) => {
@@ -552,7 +562,8 @@ router.post('/users', requireSchoolUser, requirePermission('school.users.manage'
   });
 }));
 
-router.get('/classrooms', requireSchoolUser, requirePermission('participants.read'), asyncRoute(async (req, res) => {
+router.get('/classrooms', requireSchoolUser,
+  requireAnyPermission('participants.read', 'scanner.use'), asyncRoute(async (req, res) => {
   const scope = classroomScope(req.schoolUser, 'c');
   const [rows] = await pool.execute(
     `SELECT c.id, c.unit_id, c.name, u.name AS unit_name
@@ -563,7 +574,8 @@ router.get('/classrooms', requireSchoolUser, requirePermission('participants.rea
   res.json({ classrooms: rows });
 }));
 
-router.get('/participants', requireSchoolUser, requirePermission('participants.read'), asyncRoute(async (req, res) => {
+router.get('/participants', requireSchoolUser,
+  requireAnyPermission('participants.read', 'scanner.use'), asyncRoute(async (req, res) => {
   const scope = classroomScope(req.schoolUser);
   const [rows] = await pool.execute(
     `SELECT p.id, p.classroom_id, p.participant_code, p.full_name, p.qr_code,
@@ -573,6 +585,96 @@ router.get('/participants', requireSchoolUser, requirePermission('participants.r
     [req.schoolUser.sekolah_id, ...scope.params],
   );
   res.json({ participants: rows });
+}));
+
+router.post('/participants/import', requireSchoolUser, requirePermission('participants.manage'), asyncRoute(async (req, res) => {
+  const records = req.body?.participants;
+  if (!Array.isArray(records) || records.length < 1 || records.length > 500) {
+    throw fail(400, 'participants harus berisi 1–500 baris.', 'VALIDATION_ERROR');
+  }
+
+  const connection = await pool.getConnection();
+  const results = [];
+  const seenCodes = new Set();
+  const seenQrCodes = new Set();
+  try {
+    await connection.beginTransaction();
+    const classroomVisibility = classroomScope(req.schoolUser, 'c');
+    const [availableClassrooms] = await connection.execute(
+      `SELECT c.id FROM classrooms c
+        WHERE c.sekolah_id = ?${classroomVisibility.sql}`,
+      [req.schoolUser.sekolah_id, ...classroomVisibility.params],
+    );
+    const availableClassroomIds = new Set(availableClassrooms.map((item) => String(item.id)));
+    for (const [index, record] of records.entries()) {
+      const sourceRow = Number(record?.source_row);
+      const row = Number.isInteger(sourceRow) && sourceRow >= 2 && sourceRow <= 501
+        ? sourceRow
+        : index + 2;
+      try {
+        requireFields(record, ['classroom_id', 'participant_code', 'full_name']);
+        const classroomId = String(record.classroom_id);
+        if (!/^[1-9]\d*$/.test(classroomId)) {
+          throw fail(400, 'ID kelas tidak valid.', 'VALIDATION_ERROR');
+        }
+        if (!availableClassroomIds.has(classroomId)) {
+          throw fail(400, 'Kelas tidak tersedia untuk akun ini.', 'VALIDATION_ERROR');
+        }
+
+        const participantCode = string(record.participant_code, 'Kode peserta', 60);
+        const fullName = string(record.full_name, 'Nama lengkap', 150);
+        const qrCode = record.qr_code == null || record.qr_code === ''
+          ? `SAAS-${randomUUID()}`
+          : string(record.qr_code, 'QR / Barcode', 160);
+        const guardianPhone = record.guardian_phone == null || record.guardian_phone === ''
+          ? null
+          : string(record.guardian_phone, 'Nomor wali', 32);
+        if (seenCodes.has(participantCode) || seenQrCodes.has(qrCode)) {
+          results.push({ row, participant_code: participantCode, status: 'skipped', reason: 'Duplikat di file impor.' });
+          continue;
+        }
+        const [existing] = await connection.execute(
+          `SELECT participant_code, qr_code FROM participants
+            WHERE sekolah_id = ? AND (participant_code = ? OR qr_code = ?) LIMIT 1`,
+          [req.schoolUser.sekolah_id, participantCode, qrCode],
+        );
+        if (existing.length) {
+          results.push({ row, participant_code: participantCode, status: 'skipped', reason: 'Kode peserta atau QR sudah digunakan.' });
+          continue;
+        }
+        await connection.execute(
+          `INSERT INTO participants
+            (sekolah_id, classroom_id, participant_code, full_name, qr_code, guardian_phone)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [req.schoolUser.sekolah_id, classroomId, participantCode, fullName, qrCode, guardianPhone],
+        );
+        seenCodes.add(participantCode);
+        seenQrCodes.add(qrCode);
+        results.push({ row, participant_code: participantCode, status: 'imported' });
+      } catch (error) {
+        if (error?.code === 'ER_DUP_ENTRY') {
+          results.push({ row, status: 'skipped', reason: 'Kode peserta atau QR sudah digunakan.' });
+          continue;
+        }
+        if (error?.statusCode === 400 || error?.statusCode === 403) {
+          results.push({ row, status: 'skipped', reason: error.message });
+          continue;
+        }
+        throw error;
+      }
+    }
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+  res.status(200).json({
+    imported: results.filter((item) => item.status === 'imported').length,
+    skipped: results.filter((item) => item.status === 'skipped').length,
+    results,
+  });
 }));
 
 router.post('/participants', requireSchoolUser, requirePermission('participants.manage'), asyncRoute(async (req, res) => {
@@ -597,6 +699,53 @@ router.post('/participants', requireSchoolUser, requirePermission('participants.
     id: String(result.insertId), classroom_id: String(req.body.classroom_id),
     participant_code: participantCode, full_name: fullName, qr_code: qrCode, guardian_phone: guardianPhone,
   } });
+}));
+
+router.put('/participants/:id/schedule', requireSchoolUser, requirePermission('participants.manage'), asyncRoute(async (req, res) => {
+  const participantId = req.params.id;
+  if (!/^[1-9]\d*$/.test(participantId)) {
+    throw fail(400, 'ID peserta tidak valid.', 'VALIDATION_ERROR');
+  }
+  const overrides = req.body?.overrides;
+  const timePattern = /^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/;
+  if (!Array.isArray(overrides) || overrides.length > 7 ||
+      overrides.some((item) => !Number.isInteger(item.weekday) ||
+        item.weekday < 0 || item.weekday > 6 ||
+        typeof item.check_in_deadline !== 'string' ||
+        !timePattern.test(item.check_in_deadline)) ||
+      new Set(overrides.map((item) => item.weekday)).size !== overrides.length) {
+    throw fail(400, 'Jadwal khusus peserta tidak valid.', 'VALIDATION_ERROR');
+  }
+  const [[participant]] = await pool.execute(
+    'SELECT classroom_id FROM participants WHERE sekolah_id = ? AND id = ?',
+    [req.schoolUser.sekolah_id, participantId],
+  );
+  if (!participant) throw fail(404, 'Peserta tidak ditemukan.', 'NOT_FOUND');
+  scopedClassroom(req.schoolUser, String(participant.classroom_id));
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    await connection.execute(
+      'DELETE FROM participant_operational_overrides WHERE sekolah_id = ? AND participant_id = ?',
+      [req.schoolUser.sekolah_id, participantId],
+    );
+    for (const item of overrides) {
+      await connection.execute(
+        `INSERT INTO participant_operational_overrides
+          (sekolah_id, participant_id, weekday, check_in_deadline)
+         VALUES (?, ?, ?, ?)`,
+        [req.schoolUser.sekolah_id, participantId, item.weekday, item.check_in_deadline],
+      );
+    }
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+  res.json({ message: 'Jadwal khusus peserta diperbarui.', overrides });
 }));
 
 const updateParticipant = asyncRoute(async (req, res) => {
@@ -668,7 +817,8 @@ const deleteParticipant = asyncRoute(async (req, res) => {
 router.delete('/participants/:id', requireSchoolUser, requirePermission('participants.manage'), deleteParticipant);
 router.delete('/participants', requireSchoolUser, requirePermission('participants.manage'), deleteParticipant);
 
-router.get('/settings', requireSchoolUser, requirePermission('settings.operational.manage'), asyncRoute(async (req, res) => {
+router.get('/settings', requireSchoolUser,
+  requireAnyPermission('settings.operational.manage', 'participants.read', 'participants.manage', 'scanner.use'), asyncRoute(async (req, res) => {
   const [[settings]] = await pool.execute(
     `SELECT timezone, check_in_deadline, lateness_tolerance_minutes, check_out_start
        FROM operational_settings WHERE sekolah_id = ?`,
@@ -685,7 +835,24 @@ router.get('/settings', requireSchoolUser, requirePermission('settings.operation
       WHERE sekolah_id = ? ORDER BY holiday_date`,
     [req.schoolUser.sekolah_id],
   );
-  res.json({ settings: { ...settings, weekly_schedules: schedules, holidays } });
+  const overrideScope = classroomScope(req.schoolUser, 'p');
+  const [participantOverrides] = await pool.execute(
+    `SELECT o.participant_id, o.weekday, o.check_in_deadline
+       FROM participant_operational_overrides o
+       JOIN participants p
+         ON p.id = o.participant_id AND p.sekolah_id = o.sekolah_id
+      WHERE o.sekolah_id = ?${overrideScope.sql}
+      ORDER BY o.participant_id, o.weekday`,
+    [req.schoolUser.sekolah_id, ...overrideScope.params],
+  );
+  res.json({
+    settings: {
+      ...settings,
+      weekly_schedules: schedules,
+      holidays,
+      participant_overrides: participantOverrides,
+    },
+  });
 }));
 
 router.put('/settings', requireSchoolUser, requirePermission('settings.operational.manage'), asyncRoute(async (req, res) => {
@@ -893,6 +1060,7 @@ router.get('/billing', requireSchoolUser, asyncRoute(async (req, res) => {
     providers: {
       xendit: paymentSettings.xendit.active,
       duitku: paymentSettings.duitku.active,
+      kasera: paymentSettings.kasera.active,
     },
     orders: orders.map((order) => ({ ...order, amount: Number(order.amount) })),
   });
@@ -916,11 +1084,14 @@ router.get('/billing/payment-methods', requireSchoolUser, asyncRoute(async (req,
 router.post('/billing/orders', requireSchoolUser, asyncRoute(async (req, res) => {
   requireBillingAdmin(req);
   const { provider, plan, payment_method: paymentMethod, email } = req.body ?? {};
-  if (!['xendit', 'duitku'].includes(provider) ||
+  if (!['xendit', 'duitku', 'kasera'].includes(provider) ||
       !['monthly', 'lifetime'].includes(plan) ||
       typeof email !== 'string' || email.length > 255 ||
       !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
     throw fail(400, 'Provider, paket, dan email pembayaran harus valid.', 'VALIDATION_ERROR');
+  }
+  if (provider === 'kasera' && email.trim().length > 254) {
+    throw fail(400, 'Email pembayaran Kasera maksimal 254 karakter.', 'VALIDATION_ERROR');
   }
   if (req.schoolUser.subscription_status === 'lifetime') {
     throw fail(409, 'Sekolah sudah memiliki langganan Lifetime.', 'ALREADY_LIFETIME');
@@ -929,12 +1100,18 @@ router.post('/billing/orders', requireSchoolUser, asyncRoute(async (req, res) =>
       (typeof paymentMethod !== 'string' || !/^[A-Za-z0-9]{1,20}$/.test(paymentMethod))) {
     throw fail(400, 'Pilih metode pembayaran Duitku.', 'VALIDATION_ERROR');
   }
+  if (provider !== 'duitku' && paymentMethod !== undefined) {
+    throw fail(400, 'Metode pembayaran hanya berlaku untuk Duitku.', 'VALIDATION_ERROR');
+  }
   const [[prices]] = await pool.execute(
     'SELECT monthly_price, lifetime_price FROM platform_billing_settings WHERE id = 1',
   );
   const amount = Number(plan === 'lifetime'
     ? prices?.lifetime_price ?? 1000000
     : prices?.monthly_price ?? 50000);
+  if (provider === 'kasera' && amount > 1000000) {
+    throw fail(400, 'Kasera mensyaratkan informasi pengiriman untuk nominal di atas Rp1.000.000; gunakan provider lain untuk tagihan ini.', 'PAYMENT_AMOUNT_UNSUPPORTED');
+  }
   if (provider === 'duitku') {
     const methods = await getDuitkuPaymentMethods(amount);
     if (!methods.some((method) => method.code === paymentMethod)) {
@@ -962,6 +1139,7 @@ router.post('/billing/orders', requireSchoolUser, asyncRoute(async (req, res) =>
     const payment = await createProviderPayment({
       order,
       school: { id: req.schoolUser.sekolah_id, name: req.schoolUser.school_name },
+      payerName: req.schoolUser.display_name,
       email: email.trim(),
       phone: req.schoolUser.whatsapp_phone,
     });

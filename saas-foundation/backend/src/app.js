@@ -28,7 +28,15 @@ app.use((req, res, next) => {
   return next();
 });
 app.use(express.urlencoded({ extended: false, limit: '20kb' }));
-app.use(express.json({ limit: '2mb', strict: true }));
+app.use(express.json({
+  limit: '2mb',
+  strict: true,
+  verify(req, res, buffer) {
+    if (req.originalUrl.startsWith('/api/payments/kasera/webhook')) {
+      req.rawBody = Buffer.from(buffer);
+    }
+  },
+}));
 
 app.get('/api/health', asyncRoute(async (req, res) => {
   await pool.query('SELECT 1');

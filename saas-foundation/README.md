@@ -111,10 +111,20 @@ Link unduhan APK Google Drive dapat diatur Super Admin dan tampil pada menu
 mengarah ke Google Drive, dan akses berbagi file perlu mengizinkan akun sekolah
 mengunduhnya.
 
-Pembayaran sekolah menggunakan Xendit atau Duitku. Isi salah satu konfigurasi
-provider di `backend\.env.example` pada environment backend (jangan commit
-secret), lalu tetapkan URL backend publik pada `PUBLIC_API_URL` dan portal
-sekolah pada `PUBLIC_WEB_URL`. Atur callback Xendit ke
+Pembayaran sekolah menggunakan Xendit, Duitku, atau Kasera. Kasera diatur dari
+Super Admin → Pengaturan payment gateway: masukkan API key live dan webhook
+signing secret, lalu daftarkan URL yang ditampilkan sebagai endpoint webhook
+Kasera untuk event `payment.paid`. Backend memverifikasi header
+`Kasera-Signature-V1` memakai raw body dan batas waktu lima menit sebelum
+mengaktifkan langganan. Kasera menggunakan hosted checkout di
+`https://pay.kasera.id/v1/transactions`; untuk nominal di atas Rp1.000.000,
+gunakan provider lain karena API Kasera mewajibkan attestasi pengiriman.
+Spesifikasi API: https://pay.kasera.id/v1/openapi.json.
+
+Xendit dan Duitku dapat diatur dari Super Admin atau menggunakan fallback
+environment pada `backend\.env.example` (jangan commit secret). Tetapkan URL
+backend publik pada `PUBLIC_API_URL` dan portal sekolah pada `PUBLIC_WEB_URL`.
+Atur callback Xendit ke
 `/api/payments/xendit/callback` dan callback Duitku ke
 `/api/payments/duitku/callback`; callback Xendit harus menggunakan token yang
 sama dengan `XENDIT_CALLBACK_TOKEN`. Atur harga paket melalui menu Super Admin;
@@ -127,6 +137,11 @@ Portal sekolah menyediakan pengaturan gateway WhatsApp per sekolah. Alamat
 gateway dan token Bearer disimpan secara tenant-scoped; token dienkripsi sebelum
 disimpan. Rahasia `JWT_SECRET` harus dijaga tetap stabil karena digunakan untuk
 menurunkan kunci enkripsi token tersimpan.
+
+Master peserta mendukung impor `.xlsx` melalui menu Peserta. Unduh template
+terlebih dahulu untuk mendapatkan referensi ID kelas; impor dibatasi 500 peserta
+per file. Jadwal masuk khusus peserta dapat disimpan per hari dan ikut tersimpan
+di cache lokal scanner untuk perhitungan saat offline.
 
 Konfigurasi `.env` hanya dibaca backend; jangan commit file tersebut. Endpoint
 pengelolaan memakai permissions yang telah diseed schema; tidak ada perubahan

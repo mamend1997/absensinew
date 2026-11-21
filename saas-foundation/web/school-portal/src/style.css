@@ -105,6 +105,14 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
 .form-grid .wide { grid-column: 1 / -1; }
 .form-grid > .button { justify-self: start; }
 .scanner-grid { display: grid; grid-template-columns: minmax(0, 1fr) 240px; align-items: start; gap: 13px; }
+.participant-import, .participant-schedule-editor { display: grid; gap: 12px; }
+.participant-import .muted { margin: 4px 0 0; }
+.import-file-button { position: relative; overflow: hidden; }
+.import-file-button input[type=file] { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 100%; opacity: 0; cursor: pointer; }
+.import-result { border: 1px solid #d5e8d9; border-radius: 9px; background: #f3faf4; padding: 10px; color: #285d3b; font-size: 10px; }
+.import-result ul { display: grid; gap: 4px; margin: 7px 0 0; padding-left: 18px; color: #67512d; }
+.participant-schedule-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.participant-actions { display: flex; flex-wrap: wrap; gap: 5px; }
 .camera-panel { display: grid; gap: 12px; }
 .scanner-toolbar { display: flex; align-items: end; justify-content: space-between; gap: 10px; }
 .scanner-toolbar label { min-width: 180px; flex: 1; }
@@ -170,6 +178,7 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
   .portal-layout { grid-template-columns: 1fr; gap: 7px; padding: 9px 12px; }
   .side-nav { position: sticky; top: 65px; z-index: 3; flex-direction: row; overflow-x: auto; border-radius: 10px; padding: 5px; }
   .nav-item { flex: 0 0 auto; justify-content: center; gap: 5px; min-height: 34px; padding: 0 10px; white-space: nowrap; font-size: 10px; }
+  .nav-item[data-page='scanner'] { order: -1; }
   .content { padding: 10px 0 35px; }
   .scan-state { position: static; }
 }
@@ -188,6 +197,7 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
   .metric-card { min-height: 70px; }
   .panel { padding: 13px; }
   .scanner-grid { grid-template-columns: 1fr; }
+  .participant-schedule-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .scanner-toolbar { align-items: stretch; flex-direction: column; }
   .camera-view { max-height: 48vh; }
   .scan-state { grid-template-columns: 1fr 1fr; justify-items: start; text-align: left; }
@@ -198,6 +208,8 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
   .form-grid, .holiday-form .form-grid { grid-template-columns: 1fr; }
   .form-grid .wide { grid-column: auto; }
   .schedule-list { grid-template-columns: 1fr; }
+  .participant-import .heading-actions { align-items: stretch; flex-direction: column; }
+  .participant-import .heading-actions > * { width: 100%; }
   .section-title { align-items: flex-start; flex-direction: column; }
   .section-title > .heading-actions { width: 100%; flex-wrap: wrap; }
   .school-whatsapp-panel { grid-template-columns: 1fr; }

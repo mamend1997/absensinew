@@ -22,7 +22,7 @@ import {
   savePaymentGatewaySettings,
 } from '../core/platform-payment-settings.js';
 import {
-  decryptGatewayToken, encryptGatewayToken, validateGatewayUrl,
+  decryptGatewayToken, encryptGatewayToken, sendWhatsappMessage, validateGatewayUrl,
 } from '../core/whatsapp-gateway.js';
 import { inTransaction, pool } from '../db.js';
 import { asyncRoute, fail, requireFields } from '../http.js';
@@ -441,6 +441,7 @@ router.get('/settings/billing-prices', asyncRoute(async (req, res) => {
     providers: {
       xendit: paymentSettings.xendit.active,
       duitku: paymentSettings.duitku.active,
+      kasera: paymentSettings.kasera.active,
     },
   });
 }));

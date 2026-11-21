@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { calculateAttendance, createQueuedScan } from '../src/core/attendance.js';
+import { calculateAttendance as calculateBrowserAttendance } from '../../web/school-portal/src/core/attendance.js';
 import {
   assertValidSchoolCode,
   generateUniqueSchoolCode,
@@ -96,6 +97,38 @@ test('attendance calculation uses tenant timezone and tolerance', () => {
   });
   assert.equal(late.status, 'terlambat');
   assert.equal(late.lateMinutes, 10);
+});
+
+test('attendance calculation uses a participant-specific entry deadline for its weekday', () => {
+  const participantOverrideSettings = {
+    ...settings,
+    participant_overrides: [
+      { participant_id: 'p1', weekday: 1, check_in_deadline: '07:00:00' },
+    ],
+  };
+  const participantLate = calculateAttendance({
+    eventType: 'check_in',
+    clientTimestamp: '2026-11-23T00:06:00.000Z',
+    participantId: 'p1',
+    settings: participantOverrideSettings,
+  });
+  const regularSchedule = calculateAttendance({
+    eventType: 'check_in',
+    clientTimestamp: '2026-11-23T00:06:00.000Z',
+    participantId: 'p2',
+    settings: participantOverrideSettings,
+  });
+  const offlineParticipantResult = calculateBrowserAttendance({
+    eventType: 'check_in',
+    clientTimestamp: '2026-11-23T00:06:00.000Z',
+    participantId: 'p1',
+    settings: participantOverrideSettings,
+  });
+
+  assert.equal(participantLate.status, 'terlambat');
+  assert.equal(participantLate.lateMinutes, 1);
+  assert.equal(regularSchedule.status, 'hadir');
+  assert.deepEqual(offlineParticipantResult, participantLate);
 });
 
 test('attendance calculation respects non-working days and checkout start', () => {

@@ -95,13 +95,17 @@ export const requireDevice = asyncRoute(async (req, res, next) => {
 });
 
 export function requirePermission(permission) {
+  return requireAnyPermission(permission);
+}
+
+export function requireAnyPermission(...permissions) {
   return (req, res, next) => {
     const user = req.schoolUser;
     if (user?.subscription_expired) {
       return next(fail(402, 'Langganan sekolah telah berakhir. Perpanjang untuk melanjutkan.', 'SUBSCRIPTION_EXPIRED'));
     }
     if (!user || String(user.role_sekolah_id) !== String(user.sekolah_id) ||
-        !user.permissions.includes(permission)) {
+        !permissions.some((permission) => user.permissions.includes(permission))) {
       return next(fail(403, 'Izin tidak mencukupi.', 'FORBIDDEN'));
     }
     next();

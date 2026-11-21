@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS platform_payment_gateway_settings (
     xendit_enabled BOOLEAN NULL DEFAULT NULL,
     duitku_enabled BOOLEAN NULL DEFAULT NULL,
     duitku_environment ENUM('production', 'sandbox') NULL DEFAULT NULL,
+    kasera_enabled BOOLEAN NULL DEFAULT NULL,
     encrypted_credentials TEXT NULL,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
@@ -160,10 +161,10 @@ CREATE TABLE IF NOT EXISTS subscription_payment_orders (
     id CHAR(36) NOT NULL,
     sekolah_id BIGINT UNSIGNED NOT NULL,
     order_id VARCHAR(50) NOT NULL,
-    provider ENUM('xendit', 'duitku') NOT NULL,
+    provider ENUM('xendit', 'duitku', 'kasera') NOT NULL,
     plan ENUM('monthly', 'lifetime') NOT NULL,
     amount BIGINT UNSIGNED NOT NULL,
-    payment_method VARCHAR(20) NULL,
+    payment_method VARCHAR(32) NULL,
     status ENUM('pending', 'paid', 'expired', 'failed') NOT NULL DEFAULT 'pending',
     provider_reference VARCHAR(100) NULL,
     checkout_url VARCHAR(2048) NULL,
@@ -311,6 +312,18 @@ CREATE TABLE IF NOT EXISTS participants (
         ON DELETE CASCADE,
     CONSTRAINT fk_participants_classroom FOREIGN KEY (sekolah_id, classroom_id)
         REFERENCES classrooms (sekolah_id, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS participant_operational_overrides (
+    sekolah_id BIGINT UNSIGNED NOT NULL,
+    participant_id BIGINT UNSIGNED NOT NULL,
+    weekday TINYINT UNSIGNED NOT NULL,
+    check_in_deadline TIME NOT NULL,
+    PRIMARY KEY (sekolah_id, participant_id, weekday),
+    CONSTRAINT fk_participant_override_participant
+        FOREIGN KEY (sekolah_id, participant_id)
+        REFERENCES participants (sekolah_id, id) ON DELETE CASCADE,
+    CONSTRAINT chk_participant_override_weekday CHECK (weekday BETWEEN 0 AND 6)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS operational_settings (

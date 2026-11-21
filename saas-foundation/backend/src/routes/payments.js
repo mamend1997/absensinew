@@ -3,6 +3,7 @@ import { inTransaction, pool } from '../db.js';
 import {
   verifyDuitkuCallbackSignature, verifyXenditCallbackToken,
 } from '../core/billing-signatures.js';
+import { verifyKaseraWebhookSignature } from '../core/kasera-signatures.js';
 import { getPlatformPaymentSettings } from '../core/platform-payment-settings.js';
 import { asyncRoute, fail } from '../http.js';
 
@@ -11,7 +12,7 @@ const router = Router();
 async function applyPayment({ provider, orderId, amount, reference }) {
   await inTransaction(async (connection) => {
     const [[order]] = await connection.execute(
-      `SELECT id, sekolah_id, plan, amount, status
+      `SELECT id, sekolah_id, plan, amount, status, provider_reference
          FROM subscription_payment_orders
         WHERE provider = ? AND order_id = ? FOR UPDATE`,
       [provider, orderId],
@@ -19,6 +20,10 @@ async function applyPayment({ provider, orderId, amount, reference }) {
     if (!order) throw fail(404, 'Tagihan pembayaran tidak ditemukan.', 'PAYMENT_ORDER_NOT_FOUND');
     if (Number(order.amount) !== Number(amount)) {
       throw fail(400, 'Nominal pembayaran tidak cocok dengan tagihan.', 'PAYMENT_AMOUNT_MISMATCH');
+    }
+    if (provider === 'kasera' &&
+        (!reference || String(order.provider_reference) !== String(reference))) {
+      throw fail(400, 'Referensi transaksi Kasera tidak cocok dengan tagihan.', 'PAYMENT_REFERENCE_MISMATCH');
     }
     if (order.status === 'paid') return;
 
@@ -108,6 +113,45 @@ router.post('/duitku/callback', asyncRoute(async (req, res) => {
     await updateOrderStatus('duitku', body.merchantOrderId, 'failed');
   }
   res.status(200).send('OK');
+}));
+
+router.post('/kasera/webhook', asyncRoute(async (req, res) => {
+  const settings = await getPlatformPaymentSettings();
+  const rawBody = req.rawBody;
+  if (!settings.credentials.kasera_webhook_secret ||
+      !verifyKaseraWebhookSignature(
+        req.get('kasera-signature-v1'),
+        rawBody,
+        settings.credentials.kasera_webhook_secret,
+      )) {
+    throw fail(401, 'Webhook Kasera tidak terverifikasi.', 'INVALID_PAYMENT_SIGNATURE');
+  }
+
+  const event = req.body;
+  if (event?.type === 'test.ping' && event.test === true) {
+    return res.json({ received: true });
+  }
+  if (event?.type !== 'payment.paid' ||
+      typeof event.id !== 'string' ||
+      typeof event.livemode !== 'boolean' ||
+      event.livemode !== settings.credentials.kasera_api_key.startsWith('kp_live_')) {
+    throw fail(400, 'Webhook pembayaran Kasera tidak valid atau mode tidak cocok.', 'INVALID_PAYMENT_CALLBACK');
+  }
+  const payment = event.data;
+  if (typeof payment?.external_id !== 'string' ||
+      typeof payment.payment_request_id !== 'string' ||
+      !/^payreq_[0-9a-f-]{36}$/i.test(payment.payment_request_id) ||
+      payment.currency !== 'IDR' ||
+      !Number.isSafeInteger(Number(payment.amount))) {
+    throw fail(400, 'Data pembayaran Kasera tidak lengkap.', 'INVALID_PAYMENT_CALLBACK');
+  }
+  await applyPayment({
+    provider: 'kasera',
+    orderId: payment.external_id,
+    amount: Number(payment.amount),
+    reference: payment.payment_request_id,
+  });
+  res.json({ received: true });
 }));
 
 export default router;

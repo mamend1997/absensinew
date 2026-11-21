@@ -1,4 +1,18 @@
 export async function ensureRuntimeMigrations(pool) {
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS participant_operational_overrides (
+      sekolah_id BIGINT UNSIGNED NOT NULL,
+      participant_id BIGINT UNSIGNED NOT NULL,
+      weekday TINYINT UNSIGNED NOT NULL,
+      check_in_deadline TIME NOT NULL,
+      PRIMARY KEY (sekolah_id, participant_id, weekday),
+      CONSTRAINT fk_participant_override_participant
+        FOREIGN KEY (sekolah_id, participant_id)
+        REFERENCES participants (sekolah_id, id) ON DELETE CASCADE,
+      CONSTRAINT chk_participant_override_weekday CHECK (weekday BETWEEN 0 AND 6)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
   const [superAdminColumns] = await pool.execute(
     `SELECT COLUMN_NAME FROM information_schema.COLUMNS
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'super_admins'`,
@@ -149,6 +163,7 @@ export async function ensureRuntimeMigrations(pool) {
       xendit_enabled BOOLEAN NULL DEFAULT NULL,
       duitku_enabled BOOLEAN NULL DEFAULT NULL,
       duitku_environment ENUM('production', 'sandbox') NULL DEFAULT NULL,
+      kasera_enabled BOOLEAN NULL DEFAULT NULL,
       encrypted_credentials TEXT NULL,
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       PRIMARY KEY (id),
@@ -156,6 +171,13 @@ export async function ensureRuntimeMigrations(pool) {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
   await pool.execute('INSERT IGNORE INTO platform_payment_gateway_settings (id) VALUES (1)');
+  const [paymentGatewayColumns] = await pool.execute(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'platform_payment_gateway_settings'`,
+  );
+  if (!paymentGatewayColumns.some((column) => column.COLUMN_NAME === 'kasera_enabled')) {
+    await pool.execute('ALTER TABLE platform_payment_gateway_settings ADD COLUMN kasera_enabled BOOLEAN NULL DEFAULT NULL');
+  }
 
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS platform_backup_settings (
@@ -214,7 +236,7 @@ export async function ensureRuntimeMigrations(pool) {
       id CHAR(36) NOT NULL,
       sekolah_id BIGINT UNSIGNED NOT NULL,
       order_id VARCHAR(50) NOT NULL,
-      provider ENUM('xendit', 'duitku') NOT NULL,
+      provider ENUM('xendit', 'duitku', 'kasera') NOT NULL,
       plan ENUM('monthly', 'lifetime') NOT NULL,
       amount BIGINT UNSIGNED NOT NULL,
       payment_method VARCHAR(20) NULL,
@@ -233,6 +255,24 @@ export async function ensureRuntimeMigrations(pool) {
         REFERENCES schools (id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+  const [[paymentOrderProvider]] = await pool.execute(
+    `SELECT COLUMN_TYPE FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'subscription_payment_orders'
+        AND COLUMN_NAME = 'provider'`,
+  );
+  if (paymentOrderProvider && !paymentOrderProvider.COLUMN_TYPE.includes('kasera')) {
+    await pool.execute(
+      "ALTER TABLE subscription_payment_orders MODIFY provider ENUM('xendit', 'duitku', 'kasera') NOT NULL",
+    );
+  }
+  const [[paymentMethodColumn]] = await pool.execute(
+    `SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'subscription_payment_orders'
+        AND COLUMN_NAME = 'payment_method'`,
+  );
+  if (paymentMethodColumn && Number(paymentMethodColumn.CHARACTER_MAXIMUM_LENGTH) < 32) {
+    await pool.execute('ALTER TABLE subscription_payment_orders MODIFY payment_method VARCHAR(32) NULL');
+  }
 
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS platform_download_settings (

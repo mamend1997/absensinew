@@ -43,10 +43,10 @@ interface SchoolSession { token: string; school: SchoolInfo; user: UserInfo }
 interface BillingData {
   subscription: { status: string; trial_ends_at: string | null; expires_at: string | null; expired: boolean };
   prices: { monthly: number; lifetime: number };
-  providers: { xendit: boolean; duitku: boolean };
+  providers: { xendit: boolean; duitku: boolean; kasera: boolean };
   orders: Array<{
     order_id: string;
-    provider: 'xendit' | 'duitku';
+    provider: 'xendit' | 'duitku' | 'kasera';
     plan: 'monthly' | 'lifetime';
     amount: number;
     payment_method: string | null;
@@ -81,6 +81,22 @@ interface OperationalSettings {
   check_out_start: string;
   weekly_schedules: WeeklySchedule[];
   holidays: Holiday[];
+  participant_overrides: ParticipantSchedule[];
+}
+interface ParticipantSchedule {
+  participant_id: string | number;
+  weekday: number;
+  check_in_deadline: string;
+}
+interface ParticipantImportResult {
+  imported: number;
+  skipped: number;
+  results: Array<{
+    row: number;
+    participant_code?: string;
+    status: 'imported' | 'skipped';
+    reason?: string;
+  }>;
 }
 interface ReportRow {
   attendance_date: string;
@@ -117,6 +133,7 @@ interface QueuedScan {
 }
 interface ScannerCache extends DBSchema {
   participants: { key: string; value: Participant };
+  settings: { key: string; value: OperationalSettings };
   queue: {
     key: string;
     value: QueuedScan;
@@ -147,6 +164,7 @@ const initialSettings: OperationalSettings = {
   check_out_start: '15:00:00',
   weekly_schedules: [],
   holidays: [],
+  participant_overrides: [],
 };
 const weekDays = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
 const initialDate = new Date().toISOString().slice(0, 10);
@@ -160,6 +178,16 @@ function readSession(): SchoolSession | null {
     sessionStorage.removeItem(SESSION_KEY);
     return null;
   }
+}
+
+function initialPage(currentSession: SchoolSession): Page {
+  if (currentSession.school.subscription_expired ||
+      new URLSearchParams(window.location.search).get('billing') === 'return') return 'billing';
+  const permissions = currentSession.user.permissions;
+  return permissions.includes('scanner.use') &&
+    (!permissions.includes('dashboard.read') || window.matchMedia('(max-width: 900px)').matches)
+    ? 'scanner'
+    : 'dashboard';
 }
 
 async function request<T>(
@@ -211,11 +239,14 @@ function PasswordEye({ visible }: { visible: boolean }) {
 
 function database(schoolId: string | number): Promise<IDBPDatabase<ScannerCache>> {
   if (!('indexedDB' in window)) throw new Error('Penyimpanan lokal tidak tersedia pada browser ini.');
-  return openDB<ScannerCache>(`saas-school-${schoolId}`, 1, {
-    upgrade(db) {
-      db.createObjectStore('participants', { keyPath: 'id' });
-      const queue = db.createObjectStore('queue', { keyPath: 'id_unik' });
-      queue.createIndex('by-status', 'status_sync');
+  return openDB<ScannerCache>(`saas-school-${schoolId}`, 2, {
+    upgrade(db, oldVersion) {
+      if (oldVersion < 1) {
+        db.createObjectStore('participants', { keyPath: 'id' });
+        const queue = db.createObjectStore('queue', { keyPath: 'id_unik' });
+        queue.createIndex('by-status', 'status_sync');
+      }
+      if (oldVersion < 2) db.createObjectStore('settings');
     },
   });
 }
@@ -291,12 +322,15 @@ export default function App() {
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [classrooms, setClassrooms] = useState<Classroom[]>([]);
   const [settings, setSettings] = useState<OperationalSettings>(initialSettings);
+  const [scheduleParticipantId, setScheduleParticipantId] = useState('');
+  const [scheduleOverrides, setScheduleOverrides] = useState<Record<number, string>>({});
+  const [participantImportResult, setParticipantImportResult] = useState<ParticipantImportResult | null>(null);
   const [roles, setRoles] = useState<Record<string, unknown>[]>([]);
   const [users, setUsers] = useState<Record<string, unknown>[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
   const [apkDriveUrl, setApkDriveUrl] = useState('');
   const [billingData, setBillingData] = useState<BillingData | null>(null);
-  const [billingProvider, setBillingProvider] = useState<'xendit' | 'duitku'>('xendit');
+  const [billingProvider, setBillingProvider] = useState<'xendit' | 'duitku' | 'kasera'>('xendit');
   const [billingPlan, setBillingPlan] = useState<'monthly' | 'lifetime'>('monthly');
   const [billingEmail, setBillingEmail] = useState('');
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([]);
@@ -421,8 +455,10 @@ export default function App() {
       setSession(refreshed);
       sessionStorage.setItem(SESSION_KEY, JSON.stringify(refreshed));
       setOfflineMode(false);
-      if (refreshed.school.subscription_expired) setPage('billing');
-      else void loadSchoolData(refreshed);
+      setPage(initialPage(refreshed));
+      if (!refreshed.school.subscription_expired) {
+        void loadSchoolData(refreshed);
+      }
     }).catch((reason: unknown) => {
       setOfflineMode(true);
       setError(reason instanceof Error ? reason.message : 'Sesi sekolah gagal diperbarui.');
@@ -513,6 +549,11 @@ export default function App() {
     const db = await database(currentSession.school.id);
     const cached = await db.getAll('participants');
     setParticipants(cached);
+    const cachedSettings = await db.get('settings', 'operational');
+    if (cachedSettings) {
+      setSettings(cachedSettings);
+      setOperationalForm(cachedSettings);
+    }
     try {
       const [participantResult, classroomResult, settingResult] = await Promise.all([
         request<unknown>('/school/participants', currentSession.token),
@@ -532,9 +573,15 @@ export default function App() {
       const settingsPayload = settingResult && typeof settingResult === 'object'
         ? (settingResult as Record<string, unknown>).settings ?? settingResult
         : {};
-      const nextSettings = { ...initialSettings, ...(settingsPayload as Partial<OperationalSettings>) };
+      const nextSettings = {
+        ...initialSettings,
+        ...(settingsPayload as Partial<OperationalSettings>),
+        participant_overrides: unwrapArray<ParticipantSchedule>(settingsPayload, 'participant_overrides')
+          .map((item) => ({ ...item, participant_id: String(item.participant_id) })),
+      };
       setSettings(nextSettings);
       setOperationalForm(nextSettings);
+      await db.put('settings', nextSettings, 'operational');
       setOfflineMode(false);
       setError('');
     } catch (reason) {
@@ -551,7 +598,11 @@ export default function App() {
     try {
       const result = await request<BillingData>('/school/billing', session.token);
       setBillingData(result);
-      if (!result.providers.xendit && result.providers.duitku) setBillingProvider('duitku');
+      if (!result.providers[billingProvider]) {
+        const nextProvider = (['xendit', 'kasera', 'duitku'] as const)
+          .find((provider) => result.providers[provider]);
+        if (nextProvider) setBillingProvider(nextProvider);
+      }
       setError('');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Informasi tagihan gagal dimuat.');
@@ -592,10 +643,7 @@ export default function App() {
       setSession(nextSession);
       sessionStorage.setItem(SESSION_KEY, JSON.stringify(nextSession));
       setLoginForm((current) => ({ ...current, password: '' }));
-      setPage(nextSession.school.subscription_expired
-        ? 'billing'
-        : nextSession.user.permissions.includes('scanner.use') &&
-          !nextSession.user.permissions.includes('dashboard.read') ? 'scanner' : 'dashboard');
+      setPage(initialPage(nextSession));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Login sekolah gagal.');
     } finally {
@@ -805,7 +853,9 @@ export default function App() {
     const previous = lastScanAtRef.current.get(value) ?? 0;
     if (now - previous < 3000) return;
     lastScanAtRef.current.set(value, now);
-    const participant = participants.find((item) => item.qr_code === value || item.participant_code === value);
+    const participant = participants.find((item) =>
+      (item.qr_code === value || item.participant_code === value) &&
+      (item.is_active == null || item.is_active === true || Number(item.is_active) === 1));
     if (!participant) {
       setMessage('QR/barcode tidak ditemukan di master peserta lokal.', true);
       return;
@@ -943,6 +993,163 @@ export default function App() {
     }
   }
 
+  async function downloadParticipantTemplate() {
+    try {
+      const { default: ExcelJS } = await import('exceljs');
+      const workbook = new ExcelJS.Workbook();
+      const participantSheet = workbook.addWorksheet('Peserta');
+      participantSheet.columns = [
+        { header: 'Kode Peserta', key: 'participant_code', width: 22 },
+        { header: 'Nama Lengkap', key: 'full_name', width: 32 },
+        { header: 'ID Kelas', key: 'classroom_id', width: 16 },
+        { header: 'QR / Barcode', key: 'qr_code', width: 28 },
+        { header: 'No WA Wali', key: 'guardian_phone', width: 20 },
+      ];
+      participantSheet.views = [{ state: 'frozen', ySplit: 1 }];
+      participantSheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      participantSheet.getRow(1).fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FF176F4C' },
+      };
+
+      const classroomSheet = workbook.addWorksheet('Referensi Kelas');
+      classroomSheet.columns = [
+        { header: 'ID Kelas', key: 'id', width: 16 },
+        { header: 'Nama Kelas', key: 'name', width: 28 },
+        { header: 'Unit', key: 'unit', width: 28 },
+      ];
+      classroomSheet.getRow(1).font = { bold: true };
+      classrooms.forEach((classroom) => classroomSheet.addRow({
+        id: classroom.id,
+        name: classroom.name,
+        unit: classroom.unit_name ?? '',
+      }));
+      const bytes = new Uint8Array(await workbook.xlsx.writeBuffer());
+      const url = URL.createObjectURL(new Blob([bytes.buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'template-impor-peserta.xlsx';
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Template Excel gagal dibuat.', true);
+    }
+  }
+
+  async function importParticipants(file: File) {
+    if (!session) return;
+    setBusy(true);
+    setParticipantImportResult(null);
+    try {
+      if (!file.name.toLowerCase().endsWith('.xlsx') || file.size > 5 * 1024 * 1024) {
+        throw new Error('Pilih file .xlsx dengan ukuran maksimal 5 MB.');
+      }
+      const { default: ExcelJS } = await import('exceljs');
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(await file.arrayBuffer());
+      const sheet = workbook.getWorksheet('Peserta') ?? workbook.worksheets[0];
+      if (!sheet) throw new Error('Sheet peserta tidak ditemukan.');
+      if (sheet.rowCount > 501) throw new Error('Sheet peserta dibatasi maksimal 500 baris data.');
+      const headerColumns = new Map<string, number>();
+      sheet.getRow(1).eachCell((cell, column) => {
+        headerColumns.set(cell.text.trim().toLowerCase(), column);
+      });
+      const findColumn = (...names: string[]) =>
+        names.map((name) => headerColumns.get(name)).find((column) => column !== undefined);
+      const codeColumn = findColumn('kode peserta', 'participant_code');
+      const nameColumn = findColumn('nama lengkap', 'full_name');
+      const classroomColumn = findColumn('id kelas', 'classroom_id');
+      const qrColumn = findColumn('qr / barcode', 'qr_code');
+      const phoneColumn = findColumn('no wa wali', 'guardian_phone');
+      if (!codeColumn || !nameColumn || !classroomColumn) {
+        throw new Error('Kolom wajib: Kode Peserta, Nama Lengkap, dan ID Kelas.');
+      }
+      const rows: Array<Record<string, string>> = [];
+      for (let rowNumber = 2; rowNumber <= sheet.rowCount; rowNumber += 1) {
+        const row = sheet.getRow(rowNumber);
+        const value = (column?: number) => column ? row.getCell(column).text.trim() : '';
+        const participant = {
+          participant_code: value(codeColumn),
+          full_name: value(nameColumn),
+          classroom_id: value(classroomColumn),
+          qr_code: value(qrColumn),
+          guardian_phone: value(phoneColumn),
+          source_row: String(rowNumber),
+        };
+        if (![participant.participant_code, participant.full_name, participant.classroom_id,
+          participant.qr_code, participant.guardian_phone].some(Boolean)) continue;
+        rows.push(participant);
+        if (rows.length > 500) throw new Error('Impor dibatasi maksimal 500 peserta per file.');
+      }
+      if (!rows.length) throw new Error('File tidak berisi baris peserta.');
+
+      const result = await request<ParticipantImportResult>('/school/participants/import', session.token, {
+        method: 'POST',
+        body: { participants: rows },
+      });
+      setParticipantImportResult(result);
+      await loadSchoolData(session);
+      setMessage(`Impor selesai: ${result.imported} berhasil, ${result.skipped} dilewati.`);
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Impor peserta gagal.', true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function openParticipantSchedule(participantId: string) {
+    const next: Record<number, string> = {};
+    for (const override of settings.participant_overrides) {
+      if (String(override.participant_id) === participantId) {
+        next[Number(override.weekday)] = override.check_in_deadline.slice(0, 5);
+      }
+    }
+    setScheduleParticipantId(participantId);
+    setScheduleOverrides(next);
+  }
+
+  async function saveParticipantSchedule() {
+    if (!session || !scheduleParticipantId) return;
+    setBusy(true);
+    try {
+      const overrides = Object.entries(scheduleOverrides)
+        .filter(([, deadline]) => deadline)
+        .map(([weekday, deadline]) => ({
+          weekday: Number(weekday),
+          check_in_deadline: `${deadline}:00`,
+        }));
+      await request(`/school/participants/${scheduleParticipantId}/schedule`, session.token, {
+        method: 'PUT',
+        body: { overrides },
+      });
+      const nextSettings = {
+        ...settings,
+        participant_overrides: [
+          ...settings.participant_overrides.filter(
+            (item) => String(item.participant_id) !== scheduleParticipantId,
+          ),
+          ...overrides.map((item) => ({
+            ...item,
+            participant_id: scheduleParticipantId,
+          })),
+        ],
+      };
+      setSettings(nextSettings);
+      setOperationalForm(nextSettings);
+      const db = await database(session.school.id);
+      await db.put('settings', nextSettings, 'operational');
+      setScheduleParticipantId('');
+      setMessage('Jadwal khusus peserta berhasil disimpan dan tersedia untuk scanner offline.');
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Jadwal khusus peserta gagal disimpan.', true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function removeParticipant(participant: Participant) {
     if (!session || !window.confirm(`Nonaktifkan peserta ${participant.full_name}?`)) return;
     try {
@@ -1015,7 +1222,15 @@ export default function App() {
         method: 'PUT',
         body: operationalForm,
       });
-      setSettings({ ...operationalForm, ...((result as { settings?: Partial<OperationalSettings> }).settings ?? {}) });
+      const nextSettings = {
+        ...operationalForm,
+        ...((result as { settings?: Partial<OperationalSettings> }).settings ?? {}),
+        participant_overrides: settings.participant_overrides,
+      };
+      setSettings(nextSettings);
+      setOperationalForm(nextSettings);
+      const db = await database(session.school.id);
+      await db.put('settings', nextSettings, 'operational');
       setMessage('Pengaturan operasional tersimpan.');
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : 'Pengaturan gagal disimpan.', true);
@@ -1178,13 +1393,13 @@ export default function App() {
 
   const navItems = useMemo(() => {
     const items: { id: Page; label: string; permission?: Permission }[] = [
+      { id: 'scanner', label: 'Scanner', permission: 'scanner.use' },
       { id: 'dashboard', label: 'Ringkasan', permission: 'dashboard.read' },
       { id: 'reports', label: 'Rekap', permission: 'attendance.read' },
       { id: 'participants', label: 'Peserta', permission: 'participants.read' },
       { id: 'settings', label: 'Pengaturan', permission: 'settings.operational.manage' },
       { id: 'roles', label: 'Akun & Role', permission: 'school.users.manage' },
       { id: 'devices', label: 'Perangkat', permission: 'scanner.use' },
-      { id: 'scanner', label: 'Scanner', permission: 'scanner.use' },
       { id: 'downloads', label: 'Unduh APK' },
       ...(can('school.users.manage') ? [{ id: 'billing' as const, label: 'Langganan' }] : []),
     ];
@@ -1336,7 +1551,7 @@ export default function App() {
       <div className="portal-layout">
         <nav className="side-nav" aria-label="Menu sekolah">
           {navItems.map((item) => (
-            <button key={item.id} className={page === item.id ? 'nav-item active' : 'nav-item'} onClick={() => { setPage(item.id); setError(''); setNotice(''); }}>
+            <button key={item.id} data-page={item.id} aria-current={page === item.id ? 'page' : undefined} className={page === item.id ? 'nav-item active' : 'nav-item'} onClick={() => { setPage(item.id); setError(''); setNotice(''); }}>
               {item.label}{item.id === 'scanner' && pendingCount > 0 && <span className="nav-badge">{pendingCount}</span>}
             </button>
           ))}
@@ -1428,10 +1643,39 @@ export default function App() {
                 <label>QR / Barcode<input required value={participantForm.qr_code} onChange={(event) => setParticipantForm((current) => ({ ...current, qr_code: event.target.value }))} /></label>
                 <button className="button primary" disabled={busy}>Tambah peserta</button>
               </form>}
+              {can('participants.manage') && <div className="panel participant-import">
+                <div><h2>Impor dari Excel</h2><p className="muted">Gunakan template agar kolom dan ID kelas sesuai. Maksimal 500 baris per impor.</p></div>
+                <div className="heading-actions">
+                  <button type="button" className="button secondary" onClick={() => void downloadParticipantTemplate()}>Unduh template .xlsx</button>
+                  <label className="button primary import-file-button">Pilih file Excel
+                    <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={busy} onChange={(event) => {
+                      const file = event.currentTarget.files?.[0];
+                      event.currentTarget.value = '';
+                      if (file) void importParticipants(file);
+                    }} />
+                  </label>
+                </div>
+                {participantImportResult && <div className="import-result" role="status">
+                  <strong>{participantImportResult.imported} peserta berhasil ditambahkan; {participantImportResult.skipped} baris dilewati.</strong>
+                  {participantImportResult.results.some((item) => item.status === 'skipped') && <ul>
+                    {participantImportResult.results.filter((item) => item.status === 'skipped').slice(0, 20).map((item) => (
+                      <li key={`${item.row}-${item.participant_code ?? 'baris'}`}>Baris {item.row}{item.participant_code ? ` (${item.participant_code})` : ''}: {item.reason}</li>
+                    ))}
+                    {participantImportResult.skipped > 20 && <li>Dan {participantImportResult.skipped - 20} baris lainnya.</li>}
+                  </ul>}
+                </div>}
+              </div>}
+              {scheduleParticipantId && <div className="panel participant-schedule-editor">
+                <div className="section-title"><div><h2>Jam masuk khusus: {participants.find((item) => item.id === scheduleParticipantId)?.full_name ?? 'Peserta'}</h2><p className="muted">Hari yang dibiarkan kosong mengikuti jadwal sekolah. Tersedia untuk scan offline.</p></div><button type="button" className="button secondary" onClick={() => setScheduleParticipantId('')}>Tutup</button></div>
+                <div className="participant-schedule-grid">{weekDays.map((name, weekday) => <label key={weekday}>{name}
+                  <input type="time" value={scheduleOverrides[weekday] ?? ''} onChange={(event) => setScheduleOverrides((current) => ({ ...current, [weekday]: event.target.value }))} />
+                </label>)}</div>
+                <div className="heading-actions"><button type="button" className="button primary" disabled={busy} onClick={() => void saveParticipantSchedule()}>{busy ? 'Menyimpan…' : 'Simpan jadwal khusus'}</button></div>
+              </div>}
               <div className="panel">
                 <div className="section-title"><div><h2>{participants.length} peserta lokal</h2><p className="muted">Data di-cache per sekolah pada perangkat ini.</p></div><div className="heading-actions">{can('participants.qr.print') && <button className="button secondary" onClick={() => void printSelectedQrs()}>Cetak QR terpilih</button>}<button className="button secondary" onClick={() => session && void loadSchoolData(session)}>Sinkronkan master</button></div></div>
                 <div className="table-scroll"><table><thead><tr><th><input type="checkbox" aria-label="Pilih semua peserta" checked={participants.length > 0 && selectedParticipantIds.size === participants.length} onChange={(event) => setSelectedParticipantIds(event.target.checked ? new Set(participants.map((item) => item.id)) : new Set())} /></th><th>Kode</th><th>Nama</th><th>Kelas</th><th>QR</th><th className="no-print">Aksi</th></tr></thead><tbody>
-                  {participants.map((participant) => <tr key={participant.id}><td><input type="checkbox" aria-label={`Pilih ${participant.full_name}`} checked={selectedParticipantIds.has(participant.id)} onChange={(event) => setSelectedParticipantIds((current) => { const next = new Set(current); if (event.target.checked) next.add(participant.id); else next.delete(participant.id); return next; })} /></td><td>{participant.participant_code}</td><td>{participant.full_name}</td><td>{participant.classroom_name ?? classrooms.find((item) => item.id === participant.classroom_id)?.name ?? '—'}</td><td><code>{participant.qr_code}</code></td><td className="no-print">{can('participants.manage') && <button className="button danger small" onClick={() => void removeParticipant(participant)}>Nonaktifkan</button>}</td></tr>)}
+                  {participants.map((participant) => <tr key={participant.id}><td><input type="checkbox" aria-label={`Pilih ${participant.full_name}`} checked={selectedParticipantIds.has(participant.id)} onChange={(event) => setSelectedParticipantIds((current) => { const next = new Set(current); if (event.target.checked) next.add(participant.id); else next.delete(participant.id); return next; })} /></td><td>{participant.participant_code}</td><td>{participant.full_name}</td><td>{participant.classroom_name ?? classrooms.find((item) => item.id === participant.classroom_id)?.name ?? '—'}</td><td><code>{participant.qr_code}</code></td><td className="no-print">{can('participants.manage') && <div className="participant-actions"><button className="button secondary small" onClick={() => openParticipantSchedule(participant.id)}>Atur jam</button><button className="button danger small" onClick={() => void removeParticipant(participant)}>Nonaktifkan</button></div>}</td></tr>)}
                   {!participants.length && <tr><td colSpan={6} className="empty">Master peserta belum tersedia. Hubungkan jaringan untuk mengambil data sekolah.</td></tr>}
                 </tbody></table></div>
               </div>
@@ -1561,9 +1805,10 @@ export default function App() {
                           </select>
                         </label>
                         <label>Payment gateway
-                          <select value={billingProvider} onChange={(event) => setBillingProvider(event.target.value as 'xendit' | 'duitku')}>
+                          <select value={billingProvider} onChange={(event) => setBillingProvider(event.target.value as 'xendit' | 'duitku' | 'kasera')}>
                             {billingData.providers.xendit && <option value="xendit">Xendit</option>}
                             {billingData.providers.duitku && <option value="duitku">Duitku</option>}
+                            {billingData.providers.kasera && <option value="kasera">Kasera</option>}
                           </select>
                         </label>
                         <label>Email bukti pembayaran<input type="email" autoComplete="email" required maxLength={255} value={billingEmail} onChange={(event) => setBillingEmail(event.target.value)} /></label>
@@ -1573,11 +1818,11 @@ export default function App() {
                           </select>
                         </label>}
                         <div className="billing-total"><span>Total</span><strong>{rupiah(billingPlan === 'lifetime' ? billingData.prices.lifetime : billingData.prices.monthly)}</strong></div>
-                        <button className="button primary" disabled={billingBusy || (!billingData.providers.xendit && !billingData.providers.duitku) || (billingProvider === 'duitku' && !paymentMethod)}>
+                        <button className="button primary" disabled={billingBusy || (!billingData.providers.xendit && !billingData.providers.duitku && !billingData.providers.kasera) || (billingProvider === 'duitku' && !paymentMethod)}>
                           {billingBusy ? 'Membuat tagihan…' : 'Lanjutkan pembayaran'}
                         </button>
                       </div>
-                      {!billingData.providers.xendit && !billingData.providers.duitku && <p className="alert warning">Payment gateway belum dikonfigurasi oleh Super Admin.</p>}
+                      {!billingData.providers.xendit && !billingData.providers.duitku && !billingData.providers.kasera && <p className="alert warning">Payment gateway belum dikonfigurasi oleh Super Admin.</p>}
                     </form>
                   )}
                   <div className="panel">

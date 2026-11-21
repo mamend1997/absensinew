@@ -19,6 +19,11 @@ function requireProviderConfig(provider, settings) {
        !settings.credentials.duitku_api_key)) {
     throw fail(503, 'Kredensial Duitku belum dikonfigurasi.', 'PAYMENT_PROVIDER_UNAVAILABLE');
   }
+  if (provider === 'kasera' &&
+      (!settings.kasera.active || !settings.credentials.kasera_api_key ||
+       !settings.credentials.kasera_webhook_secret)) {
+    throw fail(503, 'Kredensial Kasera belum dikonfigurasi.', 'PAYMENT_PROVIDER_UNAVAILABLE');
+  }
 }
 
 async function postJson(url, body, headers = {}) {
@@ -91,6 +96,7 @@ export async function getDuitkuPaymentMethods(amount) {
 export async function createProviderPayment({
   order,
   school,
+  payerName,
   email,
   phone,
 }) {
@@ -135,6 +141,61 @@ export async function createProviderPayment({
         !Number.isNaN(new Date(result.expiry_date).getTime())
         ? new Date(result.expiry_date)
         : new Date(Date.now() + 86400000),
+    };
+  }
+
+  if (order.provider === 'kasera') {
+    if (Number(order.amount) > 1000000) {
+      throw fail(400, 'Kasera mensyaratkan informasi pengiriman untuk nominal di atas Rp1.000.000; gunakan provider lain untuk tagihan ini.', 'PAYMENT_AMOUNT_UNSUPPORTED');
+    }
+    const { kasera_api_key: apiKey } = settings.credentials;
+    const description = `Perpanjangan ${school.name} - ${order.plan === 'lifetime' ? 'Lifetime' : '1 bulan'}`;
+    const result = await postJson(
+      'https://pay.kasera.id/v1/transactions',
+      {
+        amount: Number(order.amount),
+        description,
+        external_id: order.order_id,
+        customer: {
+          name: (payerName || school.name).slice(0, 120),
+          email,
+          ...(phone ? { phone } : {}),
+        },
+        checkout: {
+          is_name_required: true,
+          is_email_required: true,
+          is_phone_required: Boolean(phone),
+        },
+        return_url: returnUrl,
+        expires_in_minutes: 1440,
+      },
+      {
+        authorization: `Bearer ${apiKey}`,
+        'idempotency-key': order.order_id,
+      },
+    );
+    if (typeof result.id !== 'string' || !/^payreq_[0-9a-f-]{36}$/i.test(result.id) ||
+        typeof result.checkout_url !== 'string' ||
+        (result.livemode !== true && result.livemode !== false) ||
+        result.livemode !== apiKey.startsWith('kp_live_')) {
+      throw fail(502, 'Kasera tidak mengembalikan transaksi pembayaran yang valid.', 'PAYMENT_GATEWAY_ERROR');
+    }
+    let checkout;
+    try { checkout = new URL(result.checkout_url); } catch {
+      throw fail(502, 'Kasera mengembalikan link pembayaran yang tidak valid.', 'PAYMENT_GATEWAY_ERROR');
+    }
+    if (checkout.protocol !== 'https:' || checkout.username || checkout.password ||
+        !(checkout.hostname === 'kasera.id' || checkout.hostname.endsWith('.kasera.id'))) {
+      throw fail(502, 'Kasera mengembalikan host pembayaran yang tidak dikenal.', 'PAYMENT_GATEWAY_ERROR');
+    }
+    const expiresAt = new Date(result.expires_at);
+    if (Number.isNaN(expiresAt.getTime())) {
+      throw fail(502, 'Kasera tidak mengembalikan waktu kedaluwarsa yang valid.', 'PAYMENT_GATEWAY_ERROR');
+    }
+    return {
+      checkoutUrl: checkout.toString(),
+      reference: result.id,
+      expiresAt,
     };
   }
 

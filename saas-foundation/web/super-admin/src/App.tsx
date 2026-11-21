@@ -59,12 +59,12 @@ type PasswordResetMode = 'generate' | 'custom';
 interface BillingPrices {
   monthly_price: number;
   lifetime_price: number;
-  providers?: { xendit: boolean; duitku: boolean };
+  providers?: { xendit: boolean; duitku: boolean; kasera: boolean };
 }
 
 interface PaymentGatewaySettings {
   credential_source: 'database' | 'environment';
-  callback_urls: { xendit: string; duitku: string };
+  callback_urls: { xendit: string; duitku: string; kasera: string };
   xendit: {
     configured: boolean;
     enabled: boolean;
@@ -78,6 +78,12 @@ interface PaymentGatewaySettings {
     merchant_code_hint: string;
     api_key_hint: string;
   };
+  kasera: {
+    configured: boolean;
+    enabled: boolean;
+    api_key_hint: string;
+    webhook_secret_hint: string;
+  };
 }
 
 interface PaymentGatewayForm {
@@ -88,6 +94,9 @@ interface PaymentGatewayForm {
   duitku_environment: 'production' | 'sandbox';
   duitku_merchant_code: string;
   duitku_api_key: string;
+  kasera_enabled: boolean;
+  kasera_api_key: string;
+  kasera_webhook_secret: string;
 }
 
 interface PlatformBackupSettings {
@@ -225,7 +234,7 @@ export default function App() {
   const [billingPrices, setBillingPrices] = useState<BillingPrices>({
     monthly_price: 50000,
     lifetime_price: 1000000,
-    providers: { xendit: false, duitku: false },
+    providers: { xendit: false, duitku: false, kasera: false },
   });
   const [billingBusy, setBillingBusy] = useState(false);
   const [paymentGatewaySettings, setPaymentGatewaySettings] = useState<PaymentGatewaySettings | null>(null);
@@ -237,6 +246,9 @@ export default function App() {
     duitku_environment: 'production',
     duitku_merchant_code: '',
     duitku_api_key: '',
+    kasera_enabled: false,
+    kasera_api_key: '',
+    kasera_webhook_secret: '',
   });
   const [paymentGatewayBusy, setPaymentGatewayBusy] = useState(false);
   const [backupSettings, setBackupSettings] = useState<PlatformBackupSettings>({
@@ -385,6 +397,9 @@ export default function App() {
           duitku_environment: settings.duitku.environment,
           duitku_merchant_code: '',
           duitku_api_key: '',
+          kasera_enabled: settings.kasera.enabled,
+          kasera_api_key: '',
+          kasera_webhook_secret: '',
         });
       })
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Pengaturan payment gateway gagal dimuat.'));
@@ -744,6 +759,11 @@ export default function App() {
               merchant_code: paymentGatewayForm.duitku_merchant_code,
               api_key: paymentGatewayForm.duitku_api_key,
             },
+            kasera: {
+              enabled: paymentGatewayForm.kasera_enabled,
+              api_key: paymentGatewayForm.kasera_api_key,
+              webhook_secret: paymentGatewayForm.kasera_webhook_secret,
+            },
           },
         },
       );
@@ -754,12 +774,15 @@ export default function App() {
         xendit_callback_token: '',
         duitku_merchant_code: '',
         duitku_api_key: '',
+        kasera_api_key: '',
+        kasera_webhook_secret: '',
       }));
       setBillingPrices((current) => ({
         ...current,
         providers: {
           xendit: result.settings.xendit.enabled && result.settings.xendit.configured,
           duitku: result.settings.duitku.enabled && result.settings.duitku.configured,
+          kasera: result.settings.kasera.enabled && result.settings.kasera.configured,
         },
       }));
       setNotice('Pengaturan payment gateway berhasil disimpan.');
@@ -1155,7 +1178,7 @@ export default function App() {
         <section id="payment-gateways" className="panel payment-gateways-panel">
           <div>
             <h2>Pengaturan payment gateway</h2>
-            <p className="muted">Atur kredensial Xendit dan Duitku untuk tagihan sekolah. Kredensial dienkripsi saat disimpan dan tidak pernah ditampilkan kembali.</p>
+            <p className="muted">Atur kredensial Xendit, Duitku, dan Kasera untuk tagihan sekolah. Kredensial dienkripsi saat disimpan dan tidak pernah ditampilkan kembali.</p>
             <p className="muted">Kredensial kosong akan mempertahankan nilai tersimpan. Pastikan PUBLIC_WEB_URL dan PUBLIC_API_URL tersedia di environment backend.</p>
             {paymentGatewaySettings && <span className="gateway-status">
               Sumber kredensial: {paymentGatewaySettings.credential_source === 'database' ? 'pengaturan platform' : 'environment backend'}
@@ -1199,6 +1222,24 @@ export default function App() {
               </label>
               <span className={`gateway-status ${paymentGatewaySettings?.duitku.configured && paymentGatewaySettings.duitku.enabled ? 'ready' : ''}`}>
                 {paymentGatewaySettings?.duitku.configured && paymentGatewaySettings.duitku.enabled ? '● Aktif dan siap' : '○ Belum aktif/terkonfigurasi'}
+              </span>
+            </fieldset>
+            <fieldset>
+              <legend>Kasera</legend>
+              <small className="payment-callback-url">Webhook URL: {paymentGatewaySettings?.callback_urls.kasera || 'Atur PUBLIC_API_URL di environment backend'}</small>
+              <p className="muted">Pasang URL ini sebagai webhook Kasera untuk event payment.paid, lalu masukkan signing secret yang diberikan Kasera. Tagihan produksi memerlukan API key live.</p>
+              <label className="gateway-toggle">
+                <input type="checkbox" checked={paymentGatewayForm.kasera_enabled} onChange={(event) => setPaymentGatewayForm((current) => ({ ...current, kasera_enabled: event.target.checked }))} />
+                Aktifkan Kasera
+              </label>
+              <label>API key Kasera
+                <input type="password" autoComplete="new-password" value={paymentGatewayForm.kasera_api_key} onChange={(event) => setPaymentGatewayForm((current) => ({ ...current, kasera_api_key: event.target.value }))} placeholder={paymentGatewaySettings?.kasera.api_key_hint ? `Tersimpan (${paymentGatewaySettings.kasera.api_key_hint}); kosongkan untuk mempertahankan` : 'Masukkan API key kp_live_…'} />
+              </label>
+              <label>Webhook signing secret
+                <input type="password" autoComplete="new-password" value={paymentGatewayForm.kasera_webhook_secret} onChange={(event) => setPaymentGatewayForm((current) => ({ ...current, kasera_webhook_secret: event.target.value }))} placeholder={paymentGatewaySettings?.kasera.webhook_secret_hint ? `Tersimpan (${paymentGatewaySettings.kasera.webhook_secret_hint}); kosongkan untuk mempertahankan` : 'Masukkan signing secret webhook Kasera'} />
+              </label>
+              <span className={`gateway-status ${paymentGatewaySettings?.kasera.configured && paymentGatewaySettings.kasera.enabled ? 'ready' : ''}`}>
+                {paymentGatewaySettings?.kasera.configured && paymentGatewaySettings.kasera.enabled ? '● Aktif dan siap' : '○ Belum aktif/terkonfigurasi'}
               </span>
             </fieldset>
             <button className="button primary" disabled={paymentGatewayBusy || !paymentGatewaySettings}>
