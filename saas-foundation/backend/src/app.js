@@ -9,8 +9,10 @@ export const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
 const allowedOrigins = new Set(
-  (process.env.CORS_ORIGINS ?? 'http://localhost:5174,http://localhost:5173')
-    .split(',')
+  [
+    ...(process.env.CORS_ORIGINS ?? 'http://localhost:5174,http://localhost:5173').split(','),
+    'https://localhost',
+  ]
     .map((origin) => origin.trim())
     .filter(Boolean),
 );
