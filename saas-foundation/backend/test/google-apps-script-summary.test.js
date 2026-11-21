@@ -32,7 +32,7 @@ const sandbox = {
   },
 };
 runInNewContext(
-  `${script}\nthis.buildMonthlySummary = buildMonthlySummary;\nthis.formatDateLabel = formatDateLabel;\nthis.shouldIncludeAfterClear = shouldIncludeAfterClear;`,
+  `${script}\nthis.buildMonthlySummary = buildMonthlySummary;\nthis.formatDateLabel = formatDateLabel;\nthis.shouldIncludeAfterClear = shouldIncludeAfterClear;\nthis.unmergeSummaryHeaders = unmergeSummaryHeaders;`,
   sandbox,
 );
 
@@ -144,4 +144,23 @@ test('Apps Script clear cutoff ignores old backfill but accepts new attendance',
     client_timestamp: '2026-11-21 12:59:59.000',
     server_received_at_ms: cutoff + 1000,
   }, cutoff), true);
+});
+
+test('Apps Script unmerges every complete summary header range before rebuilding', () => {
+  const requestedRange = [];
+  let unmergedRanges = 0;
+  sandbox.unmergeSummaryHeaders({
+    getMaxColumns: () => 120,
+    getRange: (...args) => {
+      requestedRange.push(...args);
+      return {
+        getMergedRanges: () => [
+          { breakApart: () => { unmergedRanges += 1; } },
+          { breakApart: () => { unmergedRanges += 1; } },
+        ],
+      };
+    },
+  });
+  assert.deepEqual(requestedRange, [1, 1, 2, 120]);
+  assert.equal(unmergedRanges, 2);
 });

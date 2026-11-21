@@ -217,12 +217,7 @@ function renderMonthlySummary(spreadsheet, dataSheet, summarySheet) {
 
   const filter = summarySheet.getFilter();
   if (filter) filter.remove();
-  summarySheet.getRange(
-    1,
-    1,
-    Math.max(summarySheet.getLastRow(), 1),
-    Math.max(summarySheet.getLastColumn(), lastColumn),
-  ).breakApart();
+  unmergeSummaryHeaders(summarySheet);
   summarySheet.clear();
 
   summarySheet.getRange(1, 1, 2, 1).merge().setValue('No');
@@ -266,6 +261,11 @@ function renderMonthlySummary(spreadsheet, dataSheet, summarySheet) {
   summarySheet.setRowHeight(2, 26);
   summarySheet.setFrozenRows(2);
   summarySheet.setFrozenColumns(2);
+}
+
+function unmergeSummaryHeaders(summarySheet) {
+  const headerRange = summarySheet.getRange(1, 1, 2, summarySheet.getMaxColumns());
+  headerRange.getMergedRanges().forEach((range) => range.breakApart());
 }
 
 function buildMonthlySummary(records, timeZone, monthKey) {
