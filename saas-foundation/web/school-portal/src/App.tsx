@@ -2166,7 +2166,7 @@ export default function App() {
               {can('settings.operational.view') && <section className="panel google-sheets-panel">
                 <div>
                   <h2>Sinkronisasi Google Sheets</h2>
-                  <p className="muted">Absensi yang diterima server akan diteruskan otomatis satu arah ke Google Sheets melalui Apps Script.</p>
+                  <p className="muted">Tab Rekap Bulanan menampilkan bulan berjalan dan diperbarui otomatis setiap sinkronisasi absensi. Data scan offline masuk setelah perangkat kembali online.</p>
                   <span className={`gateway-status ${googleSheetsSettings.is_enabled && googleSheetsSettings.is_configured ? 'ready' : ''}`}>
                     {googleSheetsSettings.is_enabled && googleSheetsSettings.is_configured ? '● Aktif' : '○ Belum aktif'}
                   </span>
