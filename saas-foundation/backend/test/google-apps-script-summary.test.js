@@ -32,7 +32,7 @@ const sandbox = {
   },
 };
 runInNewContext(
-  `${script}\nthis.buildMonthlySummary = buildMonthlySummary;\nthis.updateParticipantOrderSheet = updateParticipantOrderSheet;\nthis.readAttendanceCorrections = readAttendanceCorrections;\nthis.formatDateLabel = formatDateLabel;\nthis.shouldIncludeAfterClear = shouldIncludeAfterClear;\nthis.unmergeSummaryHeaders = unmergeSummaryHeaders;\nthis.isValidResetPin = isValidResetPin;`,
+  `${script}\nthis.buildMonthlySummary = buildMonthlySummary;\nthis.updateParticipantOrderSheet = updateParticipantOrderSheet;\nthis.readAttendanceCorrections = readAttendanceCorrections;\nthis.buildSummaryEditCorrections = buildSummaryEditCorrections;\nthis.saveAttendanceCorrections = saveAttendanceCorrections;\nthis.formatDateLabel = formatDateLabel;\nthis.shouldIncludeAfterClear = shouldIncludeAfterClear;\nthis.unmergeSummaryHeaders = unmergeSummaryHeaders;\nthis.isValidResetPin = isValidResetPin;`,
   sandbox,
 );
 
@@ -240,6 +240,92 @@ test('Apps Script parses set and clear attendance correction rows', () => {
       ['17', 'Zahra', '2026-11-01', 'check_in', 'set', '25:00'],
     ] }),
   }, 'Asia/Jakarta'), /bukan waktu yang valid/);
+});
+
+test('Apps Script captures direct edits and deletions from the summary', () => {
+  const dateColumns = new Map([[3, '2026-11-21']]);
+  const deletedTimes = sandbox.buildSummaryEditCorrections(
+    [['', '', '']],
+    3,
+    3,
+    3,
+    ['17'],
+    ['Zahra'],
+    dateColumns,
+    'Asia/Jakarta',
+  );
+  assert.deepEqual(Array.from(deletedTimes.corrections, (correction) => ({
+    participantId: correction.participantId,
+    date: correction.date,
+    eventType: correction.eventType,
+    action: correction.action,
+  })), [
+    { participantId: '17', date: '2026-11-21', eventType: 'check_in', action: 'clear' },
+    { participantId: '17', date: '2026-11-21', eventType: 'check_out', action: 'clear' },
+  ]);
+
+  const correctedTime = sandbox.buildSummaryEditCorrections(
+    [['08:15:00']],
+    3,
+    3,
+    3,
+    ['17'],
+    ['Zahra'],
+    dateColumns,
+    'Asia/Jakarta',
+  );
+  assert.equal(correctedTime.corrections[0].action, 'set');
+  assert.equal(correctedTime.corrections[0].time, '08:15:00');
+});
+
+test('Apps Script does not restore a directly deleted time after a new scan', () => {
+  const rows = [[
+    'participant_id',
+    'Nama Peserta',
+    'Tanggal',
+    'Jenis',
+    'Aksi',
+    'Waktu Koreksi',
+  ]];
+  const correctionsSheet = {
+    getLastRow: () => rows.length,
+    getParent: () => ({ getSpreadsheetTimeZone: () => 'Asia/Jakarta' }),
+    getRange(row, column, rowCount, columnCount) {
+      return {
+        getValues: () => Array.from({ length: rowCount }, (_, rowIndex) =>
+          Array.from({ length: columnCount }, (_, columnIndex) =>
+            rows[row - 1 + rowIndex]?.[column - 1 + columnIndex] ?? '')),
+        setValues(values) {
+          values.forEach((value, rowIndex) => {
+            rows[row - 1 + rowIndex] = value.slice();
+          });
+        },
+      };
+    },
+  };
+  const edit = sandbox.buildSummaryEditCorrections(
+    [['']],
+    3,
+    3,
+    3,
+    ['17'],
+    ['Zahra'],
+    new Map([[3, '2026-11-21']]),
+    'Asia/Jakarta',
+  );
+  sandbox.saveAttendanceCorrections(correctionsSheet, edit.corrections);
+  const corrections = sandbox.readAttendanceCorrections(correctionsSheet, 'Asia/Jakarta');
+  const summary = sandbox.buildMonthlySummary([{
+    participant_id: '17',
+    participant_code: 'P17',
+    participant_name: 'Zahra',
+    attendance_date: '2026-11-21',
+    event_type: 'check_in',
+    client_timestamp: '2026-11-21 13:48:54.000',
+    late_minutes: 0,
+  }], 'Asia/Jakarta', '2026-11', new Map([['17', 0]]), corrections);
+
+  assert.equal(summary.rows[0][2], '');
 });
 
 test('Apps Script clear cutoff ignores old backfill but accepts new attendance', () => {

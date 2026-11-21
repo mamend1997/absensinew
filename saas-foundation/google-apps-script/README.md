@@ -18,9 +18,10 @@ tab ini untuk mengatur urutannya. Baris peserta baru ditambahkan di bagian
 bawah (urut ID peserta), tanpa mengubah urutan yang sudah Anda atur. Jangan
 mengedit kolom `participant_id`; nama dan kode diperbarui dari data aplikasi.
 
-Jangan mengedit langsung waktu di **Rekap Bulanan**, karena rekap dibuat ulang
-saat data baru masuk. Untuk koreksi permanen, tambahkan satu baris di
-**Koreksi Absensi**:
+Pengubahan atau penghapusan langsung pada sel **Masuk/Keluar** di
+**Rekap Bulanan** otomatis dicatat sebagai koreksi, sehingga scan baru tidak
+mengembalikan waktu yang sudah dihapus. Koreksi juga dapat dimasukkan langsung
+melalui satu baris di **Koreksi Absensi**:
 
 | Kolom | Isi |
 | --- | --- |
