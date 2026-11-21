@@ -1,4 +1,23 @@
 export async function ensureRuntimeMigrations(pool) {
+  const [superAdminColumns] = await pool.execute(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'super_admins'`,
+  );
+  const superAdminColumnNames = new Set(superAdminColumns.map((column) => column.COLUMN_NAME));
+  if (superAdminColumnNames.size && !superAdminColumnNames.has('whatsapp_phone')) {
+    await pool.execute('ALTER TABLE super_admins ADD COLUMN whatsapp_phone VARCHAR(20) NULL AFTER password_hash');
+  }
+  if (superAdminColumnNames.size && !superAdminColumnNames.has('auth_version')) {
+    await pool.execute('ALTER TABLE super_admins ADD COLUMN auth_version INT UNSIGNED NOT NULL DEFAULT 0 AFTER whatsapp_phone');
+  }
+  const [superAdminIndexes] = await pool.execute(
+    `SELECT INDEX_NAME FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'super_admins'`,
+  );
+  if (superAdminColumnNames.size && !superAdminIndexes.some((index) => index.INDEX_NAME === 'uq_super_admin_whatsapp')) {
+    await pool.execute('ALTER TABLE super_admins ADD UNIQUE KEY uq_super_admin_whatsapp (whatsapp_phone)');
+  }
+
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS platform_branding (
       id TINYINT UNSIGNED NOT NULL,
@@ -111,6 +130,28 @@ export async function ensureRuntimeMigrations(pool) {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
   await pool.execute('INSERT IGNORE INTO platform_backup_settings (id) VALUES (1)');
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS super_admin_password_reset_challenges (
+      id CHAR(36) NOT NULL,
+      super_admin_id BIGINT UNSIGNED NULL,
+      username VARCHAR(80) NOT NULL,
+      whatsapp_phone VARCHAR(20) NOT NULL,
+      otp_hash BINARY(32) NOT NULL,
+      expires_at DATETIME NOT NULL,
+      attempt_count TINYINT UNSIGNED NOT NULL DEFAULT 0,
+      request_ip_hash CHAR(64) NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      completed_at DATETIME NULL,
+      PRIMARY KEY (id),
+      KEY idx_super_admin_reset_phone_created (whatsapp_phone, created_at),
+      KEY idx_super_admin_reset_ip_created (request_ip_hash, created_at),
+      KEY idx_super_admin_reset_admin_created (super_admin_id, created_at),
+      KEY idx_super_admin_reset_expiry (expires_at),
+      CONSTRAINT fk_super_admin_reset_admin FOREIGN KEY (super_admin_id)
+        REFERENCES super_admins (id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
 
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS subscription_payment_orders (

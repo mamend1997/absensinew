@@ -7,11 +7,34 @@ CREATE TABLE IF NOT EXISTS super_admins (
     username VARCHAR(80) NOT NULL,
     display_name VARCHAR(150) NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
+    whatsapp_phone VARCHAR(20) NULL,
+    auth_version INT UNSIGNED NOT NULL DEFAULT 0,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
-    UNIQUE KEY uq_super_admin_username (username)
+    UNIQUE KEY uq_super_admin_username (username),
+    UNIQUE KEY uq_super_admin_whatsapp (whatsapp_phone)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS super_admin_password_reset_challenges (
+    id CHAR(36) NOT NULL,
+    super_admin_id BIGINT UNSIGNED NULL,
+    username VARCHAR(80) NOT NULL,
+    whatsapp_phone VARCHAR(20) NOT NULL,
+    otp_hash BINARY(32) NOT NULL,
+    expires_at DATETIME NOT NULL,
+    attempt_count TINYINT UNSIGNED NOT NULL DEFAULT 0,
+    request_ip_hash CHAR(64) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at DATETIME NULL,
+    PRIMARY KEY (id),
+    KEY idx_super_admin_reset_phone_created (whatsapp_phone, created_at),
+    KEY idx_super_admin_reset_ip_created (request_ip_hash, created_at),
+    KEY idx_super_admin_reset_admin_created (super_admin_id, created_at),
+    KEY idx_super_admin_reset_expiry (expires_at),
+    CONSTRAINT fk_super_admin_reset_admin FOREIGN KEY (super_admin_id)
+        REFERENCES super_admins (id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS platform_branding (

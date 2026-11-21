@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { config } from '../config.js';
@@ -18,6 +18,14 @@ import { inTransaction, pool } from '../db.js';
 import { asyncRoute, fail, requireFields } from '../http.js';
 import { requireSuperAdmin } from '../middleware/auth.js';
 import { hashPassword, signToken, verifyPassword } from '../security.js';
+import {
+  createRegistrationOtp,
+  equalOtpHash,
+  hashRegistrationIp,
+  hashRegistrationOtp,
+  normalizeWhatsappPhone,
+  validateRegistrationPassword,
+} from '../core/school-registration.js';
 
 const router = Router();
 function validateString(value, name, maxLength) {
@@ -65,7 +73,7 @@ router.post('/auth/login', asyncRoute(async (req, res) => {
   requireFields(req.body, ['username', 'password']);
   const username = validateString(req.body.username, 'username', 80);
   const [rows] = await pool.execute(
-    'SELECT id, username, display_name, password_hash, is_active FROM super_admins WHERE username = ?',
+    'SELECT id, username, display_name, password_hash, auth_version, is_active FROM super_admins WHERE username = ?',
     [username],
   );
   const admin = rows[0];
@@ -74,11 +82,143 @@ router.post('/auth/login', asyncRoute(async (req, res) => {
     throw fail(401, 'Username atau password tidak benar.', 'INVALID_CREDENTIALS');
   }
   res.json({
-    access_token: signToken({ kind: 'super_admin', sub: String(admin.id) }),
+    access_token: signToken({
+      kind: 'super_admin',
+      sub: String(admin.id),
+      authVersion: Number(admin.auth_version ?? 0),
+    }),
     token_type: 'Bearer',
     expires_in: process.env.JWT_TTL ?? '8h',
     admin: { id: String(admin.id), username: admin.username, display_name: admin.display_name },
   });
+}));
+
+router.post('/auth/password-reset/start', asyncRoute(async (req, res) => {
+  requireFields(req.body, ['username', 'whatsapp_phone']);
+  const username = validateString(req.body.username, 'username', 80);
+  const phone = normalizeWhatsappPhone(req.body.whatsapp_phone);
+  if (!phone) throw fail(400, 'Nomor WhatsApp tidak valid.', 'VALIDATION_ERROR');
+  const [[gateway]] = await pool.execute(
+    `SELECT endpoint_url, token_ciphertext, token_iv, token_auth_tag, is_enabled
+       FROM whatsapp_gateway_config WHERE id = 1`,
+  );
+  if (!gateway?.is_enabled || !gateway.endpoint_url || !gateway.token_ciphertext) {
+    throw fail(503, 'Reset kata sandi belum tersedia karena gateway WhatsApp belum diaktifkan.', 'RESET_UNAVAILABLE');
+  }
+
+  const ipHash = hashRegistrationIp(req.ip ?? req.socket.remoteAddress ?? 'unknown', config.jwtSecret);
+  await pool.execute(
+    'DELETE FROM super_admin_password_reset_challenges WHERE created_at < UTC_TIMESTAMP() - INTERVAL 1 DAY',
+  );
+  const [[limits]] = await pool.execute(
+    `SELECT
+       SUM(whatsapp_phone = ? AND created_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR) AS phone_requests,
+       SUM(request_ip_hash = ? AND created_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR) AS ip_requests
+     FROM super_admin_password_reset_challenges
+     WHERE created_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR`,
+    [phone, ipHash],
+  );
+  if (Number(limits.phone_requests ?? 0) >= 3 || Number(limits.ip_requests ?? 0) >= 20) {
+    throw fail(429, 'Batas permintaan reset tercapai. Coba kembali beberapa saat lagi.', 'RESET_RATE_LIMITED');
+  }
+
+  const [admins] = await pool.execute(
+    `SELECT id FROM super_admins
+      WHERE username = ? AND whatsapp_phone = ? AND is_active = TRUE
+      LIMIT 1`,
+    [username, phone],
+  );
+  const admin = admins[0];
+  const challengeId = randomUUID();
+  const otp = createRegistrationOtp();
+  await pool.execute(
+    `INSERT INTO super_admin_password_reset_challenges
+      (id, super_admin_id, username, whatsapp_phone, otp_hash, expires_at, request_ip_hash)
+     VALUES (?, ?, ?, ?, ?, UTC_TIMESTAMP() + INTERVAL 5 MINUTE, ?)`,
+    [challengeId, admin?.id ?? null, username, phone,
+      hashRegistrationOtp(challengeId, otp, config.jwtSecret), ipHash],
+  );
+
+  if (admin) {
+    try {
+      await sendWhatsappMessage(
+        gateway.endpoint_url,
+        decryptGatewayToken(gateway),
+        phone,
+        `Kode reset Super Admin Ruang Hadir: ${otp}. Berlaku 5 menit. Jangan bagikan kode ini kepada siapa pun.`,
+      );
+    } catch (error) {
+      await pool.execute(
+        'UPDATE super_admin_password_reset_challenges SET attempt_count = 5 WHERE id = ?',
+        [challengeId],
+      );
+      throw error;
+    }
+  }
+
+  res.status(202).json({
+    challenge_id: challengeId,
+    expires_in_seconds: 300,
+    message: 'Jika username dan nomor WhatsApp cocok dengan akun aktif, kode verifikasi akan dikirim.',
+  });
+}));
+
+router.post('/auth/password-reset/verify', asyncRoute(async (req, res) => {
+  requireFields(req.body, ['challenge_id', 'otp', 'password']);
+  if (typeof req.body.challenge_id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(req.body.challenge_id) ||
+      typeof req.body.otp !== 'string' || !/^\d{6}$/.test(req.body.otp)) {
+    throw fail(400, 'ID permintaan atau OTP tidak valid.', 'VALIDATION_ERROR');
+  }
+  if (!validateRegistrationPassword(req.body.password)) {
+    throw fail(400, 'Kata sandi minimal 8 karakter dan wajib memiliki huruf besar, angka, serta simbol.', 'VALIDATION_ERROR');
+  }
+
+  const result = await inTransaction(async (connection) => {
+    const [[challenge]] = await connection.execute(
+      `SELECT id, super_admin_id, otp_hash,
+              expires_at > UTC_TIMESTAMP() AS otp_is_valid,
+              attempt_count, completed_at
+         FROM super_admin_password_reset_challenges WHERE id = ? FOR UPDATE`,
+      [req.body.challenge_id],
+    );
+    if (!challenge || challenge.completed_at ||
+        !challenge.otp_is_valid ||
+        Number(challenge.attempt_count) >= 5) {
+      return { error: 'Kode verifikasi tidak valid atau sudah kedaluwarsa.' };
+    }
+    if (!equalOtpHash(
+      hashRegistrationOtp(challenge.id, req.body.otp, config.jwtSecret),
+      challenge.otp_hash,
+    )) {
+      await connection.execute(
+        'UPDATE super_admin_password_reset_challenges SET attempt_count = attempt_count + 1 WHERE id = ?',
+        [challenge.id],
+      );
+      return { error: 'Kode verifikasi tidak valid atau sudah kedaluwarsa.' };
+    }
+    if (!challenge.super_admin_id) {
+      return { error: 'Kode verifikasi tidak valid atau sudah kedaluwarsa.' };
+    }
+
+    const passwordHash = await hashPassword(req.body.password);
+    const [update] = await connection.execute(
+      `UPDATE super_admins SET password_hash = ?, auth_version = auth_version + 1
+        WHERE id = ? AND is_active = TRUE`,
+      [passwordHash, challenge.super_admin_id],
+    );
+    if (update.affectedRows !== 1) {
+      return { error: 'Kode verifikasi tidak valid atau sudah kedaluwarsa.' };
+    }
+    await connection.execute(
+      `UPDATE super_admin_password_reset_challenges
+          SET completed_at = UTC_TIMESTAMP()
+        WHERE super_admin_id = ? AND completed_at IS NULL`,
+      [challenge.super_admin_id],
+    );
+    return { success: true };
+  });
+  if (result.error) throw fail(400, result.error, 'INVALID_OTP');
+  res.json({ message: 'Kata sandi Super Admin berhasil direset. Silakan masuk kembali.' });
 }));
 
 router.put('/branding/logo', requireSuperAdmin, asyncRoute(async (req, res) => {
@@ -189,6 +329,32 @@ router.put('/settings/apk-download', requireSuperAdmin, asyncRoute(async (req, r
 }));
 
 router.use(requireSuperAdmin);
+
+router.get('/settings/recovery-phone', asyncRoute(async (req, res) => {
+  const [[admin]] = await pool.execute(
+    'SELECT whatsapp_phone FROM super_admins WHERE id = ?',
+    [req.superAdmin.id],
+  );
+  res.json({ whatsapp_phone: admin?.whatsapp_phone ?? '' });
+}));
+
+router.put('/settings/recovery-phone', asyncRoute(async (req, res) => {
+  requireFields(req.body, ['whatsapp_phone', 'current_password']);
+  const phone = normalizeWhatsappPhone(req.body.whatsapp_phone);
+  if (!phone) throw fail(400, 'Nomor WhatsApp tidak valid.', 'VALIDATION_ERROR');
+  const [[admin]] = await pool.execute(
+    'SELECT password_hash FROM super_admins WHERE id = ? AND is_active = TRUE',
+    [req.superAdmin.id],
+  );
+  if (!await verifyPassword(req.body.current_password, admin?.password_hash)) {
+    throw fail(401, 'Kata sandi saat ini tidak benar.', 'INVALID_CREDENTIALS');
+  }
+  await pool.execute(
+    'UPDATE super_admins SET whatsapp_phone = ? WHERE id = ? AND is_active = TRUE',
+    [phone, req.superAdmin.id],
+  );
+  res.json({ whatsapp_phone: phone, message: 'Nomor WhatsApp pemulihan berhasil disimpan.' });
+}));
 
 router.get('/settings/billing-prices', asyncRoute(async (req, res) => {
   const [[settings]] = await pool.execute(

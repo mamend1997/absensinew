@@ -14,10 +14,14 @@ export const requireSuperAdmin = asyncRoute(async (req, res, next) => {
     throw fail(401, 'Autentikasi Super Admin wajib.', 'UNAUTHENTICATED');
   }
   const [rows] = await pool.execute(
-    'SELECT id, username, display_name FROM super_admins WHERE id = ? AND is_active = TRUE',
+    `SELECT id, username, display_name, whatsapp_phone, auth_version
+       FROM super_admins WHERE id = ? AND is_active = TRUE`,
     [claims.sub],
   );
   if (!rows.length) throw fail(401, 'Sesi Super Admin tidak lagi aktif.', 'UNAUTHENTICATED');
+  if (Number(rows[0].auth_version ?? 0) !== Number(claims.authVersion ?? 0)) {
+    throw fail(401, 'Sesi Super Admin telah berakhir. Silakan masuk kembali.', 'UNAUTHENTICATED');
+  }
   req.superAdmin = rows[0];
   next();
 });

@@ -64,6 +64,8 @@ interface PlatformBackupSettings {
   last_error: string | null;
 }
 
+type LoginView = 'login' | 'forgot-password' | 'reset-password';
+
 const emptyForm: SchoolForm = {
   name: '',
   slug: '',
@@ -71,6 +73,22 @@ const emptyForm: SchoolForm = {
   participant_quota: 500,
   initial_admin: { username: '', display_name: '', password: '' },
 };
+
+function PasswordEye({ visible }: { visible: boolean }) {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M2.5 12s3.2-6 9.5-6 9.5 6 9.5 6-3.2 6-9.5 6-9.5-6-9.5-6Z" />
+      <circle cx="12" cy="12" r="2.7" />
+      {!visible && <path d="m4 4 16 16" />}
+    </svg>
+  );
+}
+
+function phoneNationalDigits(value: string) {
+  const digits = value.replace(/\D/g, '');
+  const national = digits.startsWith('62') ? digits.slice(2) : digits.replace(/^0+/, '');
+  return national.slice(0, 13);
+}
 
 async function request<T>(
   path: string,
@@ -124,6 +142,18 @@ export default function App() {
   const [schools, setSchools] = useState<School[]>([]);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [loginView, setLoginView] = useState<LoginView>('login');
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [forgotPhone, setForgotPhone] = useState('');
+  const [resetChallengeId, setResetChallengeId] = useState('');
+  const [resetOtp, setResetOtp] = useState('');
+  const [resetPassword, setResetPassword] = useState('');
+  const [resetPasswordConfirmation, setResetPasswordConfirmation] = useState('');
+  const [showResetPassword, setShowResetPassword] = useState(false);
+  const [recoveryPhone, setRecoveryPhone] = useState('');
+  const [recoveryPhoneInput, setRecoveryPhoneInput] = useState('');
+  const [recoveryCurrentPassword, setRecoveryCurrentPassword] = useState('');
+  const [recoveryPhoneBusy, setRecoveryPhoneBusy] = useState(false);
   const [form, setForm] = useState<SchoolForm>(emptyForm);
   const [manualCodes, setManualCodes] = useState<Record<number, string>>({});
   const [busy, setBusy] = useState(false);
@@ -273,6 +303,16 @@ export default function App() {
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Pengaturan backup platform gagal dimuat.'));
   }, [token]);
 
+  useEffect(() => {
+    if (!token) return;
+    request<{ whatsapp_phone: string }>('/super-admin/settings/recovery-phone', token)
+      .then((result) => {
+        setRecoveryPhone(result.whatsapp_phone);
+        setRecoveryPhoneInput(phoneNationalDigits(result.whatsapp_phone));
+      })
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Nomor WhatsApp pemulihan gagal dimuat.'));
+  }, [token]);
+
   async function login(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
@@ -285,10 +325,99 @@ export default function App() {
       sessionStorage.setItem(TOKEN_KEY, result.access_token);
       setToken(result.access_token);
       setPassword('');
+      setLoginView('login');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Login Super Admin gagal.');
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function startPasswordReset(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await request<{ challenge_id: string; message: string }>(
+        '/super-admin/auth/password-reset/start',
+        '',
+        { method: 'POST', body: { username, whatsapp_phone: forgotPhone } },
+      );
+      setResetChallengeId(result.challenge_id);
+      setResetOtp('');
+      setLoginView('reset-password');
+      setNotice(result.message);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Permintaan reset kata sandi gagal.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function verifyPasswordReset(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError('');
+    setNotice('');
+    if (resetPassword !== resetPasswordConfirmation) {
+      setError('Konfirmasi kata sandi tidak sama.');
+      return;
+    }
+    if (resetPassword.length < 8 || new TextEncoder().encode(resetPassword).length > 72 ||
+        !/[A-Z]/.test(resetPassword) || !/\d/.test(resetPassword) ||
+        !/[^A-Za-z0-9\s]/.test(resetPassword)) {
+      setError('Kata sandi minimal 8 karakter dan wajib memiliki huruf besar, angka, serta simbol.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await request<{ message: string }>(
+        '/super-admin/auth/password-reset/verify',
+        '',
+        {
+          method: 'POST',
+          body: { challenge_id: resetChallengeId, otp: resetOtp, password: resetPassword },
+        },
+      );
+      setPassword('');
+      setResetPassword('');
+      setResetPasswordConfirmation('');
+      setResetChallengeId('');
+      setShowResetPassword(false);
+      setLoginView('login');
+      setNotice(result.message);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Kode verifikasi atau reset kata sandi tidak valid.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveRecoveryPhone(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setRecoveryPhoneBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await request<{ whatsapp_phone: string; message: string }>(
+        '/super-admin/settings/recovery-phone',
+        token,
+        {
+          method: 'PUT',
+          body: {
+            whatsapp_phone: recoveryPhoneInput,
+            current_password: recoveryCurrentPassword,
+          },
+        },
+      );
+      setRecoveryPhone(result.whatsapp_phone);
+      setRecoveryPhoneInput(phoneNationalDigits(result.whatsapp_phone));
+      setRecoveryCurrentPassword('');
+      setNotice(result.message);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Nomor WhatsApp pemulihan gagal disimpan.');
+    } finally {
+      setRecoveryPhoneBusy(false);
     }
   }
 
@@ -673,17 +802,58 @@ export default function App() {
   if (!token) {
     return (
       <main className="login-shell">
-        <form className="login-card" onSubmit={(event) => void login(event)}>
+        {loginView === 'login' && <form className="login-card" onSubmit={(event) => void login(event)}>
           <div className="brand-mark">RH</div>
           <p className="eyebrow">{applicationName.toLocaleUpperCase('id-ID')} · PLATFORM</p>
           <h1>Super Admin SaaS</h1>
           <p className="muted">Kelola tenant sekolah dan status langganan platform.</p>
           {error && <div className="alert error">{error}</div>}
+          {notice && <div className="alert success">{notice}</div>}
           <label>Username<input autoComplete="username" required value={username} onChange={(event) => setUsername(event.target.value)} /></label>
-          <label>Password<input type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+          <label>Password
+            <span className="password-input-wrap">
+              <input type={showLoginPassword ? 'text' : 'password'} autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} />
+              <button className="password-eye" type="button" onClick={() => setShowLoginPassword((visible) => !visible)} aria-label={showLoginPassword ? 'Sembunyikan kata sandi' : 'Tampilkan kata sandi'}><PasswordEye visible={showLoginPassword} /></button>
+            </span>
+          </label>
           <button className="button primary" disabled={busy}>{busy ? 'Memeriksa…' : 'Masuk sebagai Super Admin'}</button>
-          <small className="muted">Portal ini terpisah dari login sekolah.</small>
-        </form>
+          <button className="text-button forgot-password-button" type="button" onClick={() => { setForgotPhone(''); setError(''); setNotice(''); setLoginView('forgot-password'); }}>Lupa kata sandi?</button>
+        </form>}
+        {loginView === 'forgot-password' && <form className="login-card" onSubmit={(event) => void startPasswordReset(event)}>
+          <button className="text-button back-link" type="button" onClick={() => { setLoginView('login'); setError(''); setNotice(''); }}>← Kembali ke login</button>
+          <div className="brand-mark">RH</div>
+          <p className="eyebrow">PEMULIHAN AKUN</p>
+          <h1>Lupa kata sandi?</h1>
+          <p className="muted">Jika username dan nomor WhatsApp cocok dengan akun Super Admin aktif, OTP akan dikirim ke nomor tersebut.</p>
+          {error && <div className="alert error">{error}</div>}
+          {notice && <div className="alert success">{notice}</div>}
+          <label>Username<input autoComplete="username" required value={username} onChange={(event) => setUsername(event.target.value)} /></label>
+          <label>Nomor WhatsApp pemulihan
+            <span className="phone-input-wrap">
+              <span className="phone-prefix">+62</span>
+              <input type="text" inputMode="numeric" autoComplete="off" maxLength={13} pattern="8[0-9]{6,12}" required value={forgotPhone} onChange={(event) => setForgotPhone(phoneNationalDigits(event.target.value))} />
+            </span>
+          </label>
+          <button className="button primary" disabled={busy}>{busy ? 'Mengirim OTP…' : 'Kirim kode OTP'}</button>
+        </form>}
+        {loginView === 'reset-password' && <form className="login-card" onSubmit={(event) => void verifyPasswordReset(event)}>
+          <button className="text-button back-link" type="button" onClick={() => { setLoginView('forgot-password'); setError(''); setNotice(''); }}>← Kembali</button>
+          <div className="brand-mark">RH</div>
+          <p className="eyebrow">PEMULIHAN AKUN</p>
+          <h1>Buat kata sandi baru</h1>
+          {error && <div className="alert error">{error}</div>}
+          {notice && <div className="alert success">{notice}</div>}
+          <label>Kode OTP<input autoComplete="one-time-code" inputMode="numeric" pattern="\d{6}" maxLength={6} required value={resetOtp} onChange={(event) => setResetOtp(event.target.value.replace(/\D/g, '').slice(0, 6))} /></label>
+          <label>Kata sandi baru
+            <span className="password-input-wrap">
+              <input type={showResetPassword ? 'text' : 'password'} autoComplete="new-password" required value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} />
+              <button className="password-eye" type="button" onClick={() => setShowResetPassword((visible) => !visible)} aria-label={showResetPassword ? 'Sembunyikan kata sandi' : 'Tampilkan kata sandi'}><PasswordEye visible={showResetPassword} /></button>
+            </span>
+          </label>
+          <label>Ulangi kata sandi baru<input type="password" autoComplete="new-password" required value={resetPasswordConfirmation} onChange={(event) => setResetPasswordConfirmation(event.target.value)} /></label>
+          <button className="button primary" disabled={busy || resetOtp.length !== 6}>{busy ? 'Mengatur ulang…' : 'Atur ulang kata sandi'}</button>
+          <button className="text-button register-link" type="button" disabled={busy} onClick={() => void startPasswordReset()}>{busy ? 'Mengirim…' : 'Kirim ulang OTP'}</button>
+        </form>}
       </main>
     );
   }
@@ -699,6 +869,11 @@ export default function App() {
           <div><p className="eyebrow">KONSOL PLATFORM</p><h1>Manajemen sekolah</h1><p className="muted">Kelola tenant, kode sekolah, kuota peserta, dan masa langganan.</p></div>
           <div className="metric"><strong>{schools.length}</strong><span>Tenant terdaftar</span></div>
         </section>
+        <nav className="section-menu" aria-label="Menu Super Admin">
+          <a href="#account-recovery">Nomor pemulihan</a>
+          <a href="#automatic-backup">Backup otomatis</a>
+          <a href="#school-tenants">Akun sekolah</a>
+        </nav>
         {error && <div className="alert error">{error}</div>}
         {notice && <div className="alert success">{notice}</div>}
         <section className="panel branding-panel">
@@ -748,7 +923,26 @@ export default function App() {
             <button className="button primary" disabled={billingBusy}>{billingBusy ? 'Menyimpan…' : 'Simpan harga'}</button>
           </form>
         </section>
-        <section className="panel platform-backup-panel">
+        <section id="account-recovery" className="panel recovery-phone-panel">
+          <div>
+            <h2>Nomor WhatsApp pemulihan Super Admin</h2>
+            <p className="muted">Nomor ini digunakan untuk mengirim OTP saat lupa kata sandi. Pastikan akses ke nomor tetap aktif.</p>
+            <span className={`gateway-status ${recoveryPhone ? 'ready' : ''}`}>
+              {recoveryPhone ? `● Terdaftar: ${recoveryPhone}` : '○ Nomor pemulihan belum didaftarkan'}
+            </span>
+          </div>
+          <form className="recovery-phone-form" onSubmit={(event) => void saveRecoveryPhone(event)}>
+            <label>Nomor WhatsApp
+              <span className="phone-input-wrap">
+                <span className="phone-prefix">+62</span>
+                <input type="text" inputMode="numeric" autoComplete="off" maxLength={13} pattern="8[0-9]{6,12}" required value={recoveryPhoneInput} onChange={(event) => setRecoveryPhoneInput(phoneNationalDigits(event.target.value))} />
+              </span>
+            </label>
+            <label>Password saat ini<input type="password" autoComplete="current-password" required value={recoveryCurrentPassword} onChange={(event) => setRecoveryCurrentPassword(event.target.value)} /></label>
+            <button className="button primary" disabled={recoveryPhoneBusy}>{recoveryPhoneBusy ? 'Menyimpan…' : 'Simpan nomor pemulihan'}</button>
+          </form>
+        </section>
+        <section id="automatic-backup" className="panel platform-backup-panel">
           <div>
             <h2>Backup otomatis platform</h2>
             <p className="muted">Backup mencakup database seluruh sekolah. File terenkripsi disimpan pada volume privat; Telegram hanya menerima notifikasi status.</p>
@@ -831,7 +1025,7 @@ export default function App() {
             <button className="button primary" disabled={busy}>Buat tenant</button>
           </form>
         </section>
-        <section className="panel">
+        <section id="school-tenants" className="panel">
           <div className="section-title"><div><h2>Daftar tenant</h2><p className="muted">{schools.length} sekolah</p></div><button className="button secondary" onClick={() => void loadSchools()}>Muat ulang</button></div>
           <div className="table-scroll">
             <table className="tenant-table">
