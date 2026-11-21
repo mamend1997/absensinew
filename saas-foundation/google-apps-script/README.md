@@ -13,8 +13,9 @@ data tanggal baru diterima, grup tiga kolomnya dibuat otomatis sebelum
 keterlambatan, sedangkan total hadir menghitung tanggal dengan check-in.
 
 Tab **Absensi** disembunyikan; tab itu menyimpan semua catatan sumber dan ID
-sinkronisasi agar kiriman ulang tidak membuat data ganda. Rekap dibentuk dari
-catatan bulan berjalan dan diperbarui setiap batch absensi diterima.
+sinkronisasi beserta ID peserta yang stabil agar kiriman ulang dan perubahan
+kode peserta tidak membuat baris rekap ganda. Rekap dibentuk dari catatan bulan
+berjalan dan diperbarui setiap batch absensi diterima.
 
 ## Pemasangan
 
@@ -46,17 +47,27 @@ catatan bulan berjalan dan diperbarui setiap batch absensi diterima.
 7. Lakukan scan percobaan saat perangkat online. Pastikan nama peserta muncul
    satu kali dan jam masuk/keluar berada pada baris nama yang benar di tab
    **Rekap Bulanan**.
+8. Muat ulang spreadsheet setelah deployment. Untuk menghapus riwayat secara
+   permanen, pilih **Absensi → Hapus seluruh riwayat absensi...** dan konfirmasi.
+   Menu ini menghapus tab sumber serta rekap, dan menandai waktu penghapusan
+   agar backfill lama dari backend tidak mengembalikan catatan tersebut.
 
 ## Perubahan dan batasan
 
 - Setelah mengubah `Code.gs`, pilih **Deploy → Manage deployments**, edit
   deployment Web app, pilih versi baru, lalu deploy. URL deployment biasanya
   tetap sama.
+- Setelah deployment Apps Script dan backend versi terbaru, pilih **Kirim ulang
+  riwayat** satu kali dari pengaturan Portal Sekolah. Ini mengisi ID peserta
+  stabil pada baris lama tanpa menambah ulang catatan dengan ID unik yang sama,
+  sehingga rekap lama dengan kode peserta yang pernah berubah ikut tergabung.
 - Sheet menampilkan bulan berjalan saja; saat bulan berganti, tab rekap akan
   menampilkan bulan baru setelah penyegaran harian atau batch absensi berikutnya.
-- Jangan menambahkan atau menggeser kolom secara manual di **Absensi**. Header
-  sumber harus tetap sama persis seperti yang dibuat script. Tab **Rekap Bulanan**
-  boleh dibuka dan dibaca, tetapi formatnya dibangun ulang oleh script.
+- Jangan menambahkan atau menggeser kolom secara manual di **Absensi**. Script
+  otomatis menambahkan kolom ID peserta saat memperbarui tab sumber lama.
+  Menghapus isi tab **Rekap Bulanan** saja tidak menghapus sumbernya; rekap akan
+  dibangun kembali. Gunakan menu **Absensi → Hapus seluruh riwayat absensi...**
+  untuk menghapus keduanya tanpa memunculkan kembali backfill lama.
 - Setelah integrasi diaktifkan dan disimpan, backend otomatis mengirim riwayat
   absensi lama secara bertahap serta meneruskan absensi baru. Tidak diperlukan
   tombol kirim riwayat. Jika Google sementara tidak dapat dijangkau, backend

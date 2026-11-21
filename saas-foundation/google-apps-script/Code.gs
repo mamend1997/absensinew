@@ -1,5 +1,6 @@
 const DATA_SHEET_NAME = 'Absensi';
 const SUMMARY_SHEET_NAME = 'Rekap Bulanan';
+const CLEAR_CUTOFF_PROPERTY = 'ATTENDANCE_CLEAR_CUTOFF_MS';
 const DATA_HEADERS = [
   'id_unik',
   'participant_code',
@@ -11,9 +12,48 @@ const DATA_HEADERS = [
   'attendance_status',
   'late_minutes',
   'scan_method',
+  'participant_id',
 ];
+const LEGACY_DATA_HEADERS = DATA_HEADERS.slice(0, -1);
 const DATE_HEADERS = ['Masuk', 'Terlambat', 'Keluar'];
 const TOTAL_HEADERS = ['Total Terlambat', 'Total Hadir'];
+
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('Absensi')
+    .addItem('Hapus seluruh riwayat absensi...', 'clearAllAttendanceHistory')
+    .addToUi();
+}
+
+function clearAllAttendanceHistory() {
+  const ui = SpreadsheetApp.getUi();
+  const confirmation = ui.alert(
+    'Hapus seluruh riwayat absensi?',
+    'Data sumber dan rekap akan dihapus. Riwayat lama yang dikirim ulang dari backend juga akan diabaikan; scan baru setelah penghapusan tetap diterima.',
+    ui.ButtonSet.YES_NO,
+  );
+  if (confirmation !== ui.Button.YES) return;
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    const dataSheet = getDataSheet(spreadsheet);
+    const summarySheet = getSummarySheet(spreadsheet);
+    dataSheet.clearContents();
+    dataSheet.getRange(1, 1, 1, DATA_HEADERS.length).setValues([DATA_HEADERS]);
+    summarySheet.clear();
+    PropertiesService.getScriptProperties().setProperty(
+      CLEAR_CUTOFF_PROPERTY,
+      String(Date.now()),
+    );
+    renderMonthlySummary(spreadsheet, dataSheet, summarySheet);
+    dataSheet.hideSheet();
+  } finally {
+    if (lock.hasLock()) lock.releaseLock();
+  }
+  ui.alert('Riwayat absensi berhasil dihapus.');
+}
 
 function doPost(event) {
   const lock = LockService.getScriptLock();
@@ -32,21 +72,41 @@ function doPost(event) {
     const dataSheet = getDataSheet(spreadsheet);
     const summarySheet = getSummarySheet(spreadsheet);
     const lastRow = dataSheet.getLastRow();
-    const existing = new Set(lastRow > 1
-      ? dataSheet.getRange(2, 1, lastRow - 1, 1).getDisplayValues().flat()
-      : []);
+    const existingRows = lastRow > 1
+      ? dataSheet.getRange(2, 1, lastRow - 1, DATA_HEADERS.length).getDisplayValues()
+      : [];
+    const existing = new Map(existingRows.map((row, index) => [
+      row[0],
+      { rowNumber: index + 2, participantId: String(row[DATA_HEADERS.length - 1] || '') },
+    ]));
+    const clearCutoff = Number(
+      PropertiesService.getScriptProperties().getProperty(CLEAR_CUTOFF_PROPERTY),
+    ) || 0;
     const acceptedIds = [];
     const newRows = [];
     for (const record of request.records) {
       if (!record || typeof record.id_unik !== 'string' || !record.id_unik ||
           !/^\d{4}-\d{2}-\d{2}$/.test(String(record.attendance_date || '')) ||
           !['check_in', 'check_out'].includes(record.event_type) ||
-          !record.client_timestamp) {
+          !parseTimestamp(record.client_timestamp) ||
+          (record.participant_id != null && !/^[1-9]\d*$/.test(String(record.participant_id)))) {
         return jsonResponse({ ok: false, error: 'invalid_record', accepted_ids: acceptedIds });
       }
-      if (!existing.has(record.id_unik)) {
+      if (!shouldIncludeAfterClear(record, clearCutoff)) {
+        acceptedIds.push(record.id_unik);
+        continue;
+      }
+      const existingRecord = existing.get(record.id_unik);
+      if (!existingRecord) {
         newRows.push(DATA_HEADERS.map((header) => safeCell(record[header])));
-        existing.add(record.id_unik);
+        existing.set(record.id_unik, {
+          rowNumber: lastRow + newRows.length,
+          participantId: String(record.participant_id || ''),
+        });
+      } else if (record.participant_id != null && !existingRecord.participantId) {
+        dataSheet.getRange(existingRecord.rowNumber, DATA_HEADERS.length)
+          .setValue(safeCell(record.participant_id));
+        existingRecord.participantId = String(record.participant_id);
       }
       acceptedIds.push(record.id_unik);
     }
@@ -71,6 +131,13 @@ function doPost(event) {
   } finally {
     if (lock.hasLock()) lock.releaseLock();
   }
+}
+
+function shouldIncludeAfterClear(record, clearCutoffMs) {
+  const cutoff = Number(clearCutoffMs) || 0;
+  if (!cutoff) return true;
+  const timestamp = parseTimestamp(record.client_timestamp);
+  return Boolean(timestamp && timestamp.getTime() > cutoff);
 }
 
 function installDailyRefreshTrigger() {
@@ -107,9 +174,18 @@ function getDataSheet(spreadsheet) {
   if (sheet.getLastRow() === 0) {
     sheet.getRange(1, 1, 1, DATA_HEADERS.length).setValues([DATA_HEADERS]);
   } else {
-    const headers = sheet.getRange(1, 1, 1, DATA_HEADERS.length).getDisplayValues()[0];
-    if (DATA_HEADERS.some((header, index) => headers[index] !== header)) {
-      throw new Error('Invalid data sheet headers');
+    const columnCount = Math.max(sheet.getLastColumn(), DATA_HEADERS.length);
+    const headers = sheet.getRange(1, 1, 1, columnCount).getDisplayValues()[0];
+    const hasCurrentHeaders = DATA_HEADERS.every((header, index) => headers[index] === header);
+    if (!hasCurrentHeaders) {
+      const hasLegacyHeaders = LEGACY_DATA_HEADERS.every((header, index) =>
+        headers[index] === header);
+      const unexpectedHeaders = headers.slice(LEGACY_DATA_HEADERS.length)
+        .some((header) => String(header || '').trim() !== '');
+      if (!hasLegacyHeaders || unexpectedHeaders) {
+        throw new Error('Invalid data sheet headers');
+      }
+      sheet.getRange(1, DATA_HEADERS.length).setValue(DATA_HEADERS[DATA_HEADERS.length - 1]);
     }
   }
   return sheet;
@@ -196,11 +272,16 @@ function buildMonthlySummary(records, timeZone, monthKey) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date.slice(0, 7) !== monthKey) continue;
     if (!['check_in', 'check_out'].includes(record.event_type)) continue;
 
-    const participantCode = String(record.participant_code || '');
+    const participantId = String(record.participant_id || '').trim();
+    const participantCode = String(record.participant_code || '').trim();
     const name = String(record.participant_name || '');
     const classroom = String(record.classroom_name || '');
     if (!participantCode && !name) continue;
-    const participantKey = participantCode || `${name}\u0000${classroom}`;
+    const participantKey = participantId
+      ? `id:${participantId}`
+      : participantCode
+        ? `code:${participantCode}`
+        : `name:${name}\u0000${classroom}`;
 
     let participant = participants.get(participantKey);
     if (!participant) {

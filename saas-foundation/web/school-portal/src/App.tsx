@@ -571,6 +571,18 @@ function unwrapArray<T>(payload: unknown, key: string): T[] {
   return [];
 }
 
+function operationalSettingsFromResponse(result: unknown): OperationalSettings {
+  const payload = result && typeof result === 'object'
+    ? (result as Record<string, unknown>).settings ?? result
+    : {};
+  return {
+    ...initialSettings,
+    ...(payload as Partial<OperationalSettings>),
+    participant_overrides: unwrapArray<ParticipantSchedule>(payload, 'participant_overrides')
+      .map((item) => ({ ...item, participant_id: String(item.participant_id) })),
+  };
+}
+
 function PasswordEye({ visible }: { visible: boolean }) {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -1166,15 +1178,7 @@ export default function App() {
         setClassrooms(unwrapArray<Classroom>(classroomResult, 'classrooms'));
       }
       if (settingResult) {
-        const settingsPayload = settingResult && typeof settingResult === 'object'
-          ? (settingResult as Record<string, unknown>).settings ?? settingResult
-          : {};
-        const nextSettings = {
-          ...initialSettings,
-          ...(settingsPayload as Partial<OperationalSettings>),
-          participant_overrides: unwrapArray<ParticipantSchedule>(settingsPayload, 'participant_overrides')
-            .map((item) => ({ ...item, participant_id: String(item.participant_id) })),
-        };
+        const nextSettings = operationalSettingsFromResponse(settingResult);
         setSettings(nextSettings);
         setOperationalForm(nextSettings);
         await db.put('settings', nextSettings, 'operational');
@@ -1475,6 +1479,7 @@ export default function App() {
 
   async function handleScan(rawValue: string, scanMethod: 'SCAN_QR' | 'MANUAL_INPUT' = 'SCAN_QR'): Promise<boolean> {
     if (!session) return false;
+    let scanSettings = settings;
     if (session.school.subscription_expired) {
       setPage('billing');
       return false;
@@ -1504,12 +1509,25 @@ export default function App() {
       const matchedParticipant = participant;
       const db = await database(session.school.id);
       const allScans = await db.getAll('queue');
-      const initialCalculation = calculateAttendance({
+      let initialCalculation = calculateAttendance({
         eventType: 'check_in',
         clientTimestamp: new Date().toISOString(),
         participantId: matchedParticipant.id,
-        settings,
+        settings: scanSettings,
       }) as ScanResult;
+      if (initialCalculation.reason === 'non_working_day' && online) {
+        scanSettings = operationalSettingsFromResponse(
+          await request<unknown>('/school/settings', session.token),
+        );
+        setSettings(scanSettings);
+        await db.put('settings', scanSettings, 'operational');
+        initialCalculation = calculateAttendance({
+          eventType: 'check_in',
+          clientTimestamp: new Date().toISOString(),
+          participantId: matchedParticipant.id,
+          settings: scanSettings,
+        }) as ScanResult;
+      }
       const hasCheckIn = allScans.some((record) =>
         record.id_peserta === matchedParticipant.id &&
         record.attendance_date === initialCalculation.date &&
@@ -1529,7 +1547,7 @@ export default function App() {
           eventType,
           clientTimestamp: new Date().toISOString(),
           participantId: matchedParticipant.id,
-          settings,
+          settings: scanSettings,
         }) as ScanResult;
       if (calculation.reason) {
         throw new Error(calculation.reason === 'checkout_too_early'
@@ -1551,7 +1569,7 @@ export default function App() {
         : calculation.status === 'terlambat'
           ? `terlambat${calculation.lateMinutes ? ` ${calculation.lateMinutes} menit` : ''}`
           : 'hadir tepat waktu';
-      const successMessage = attendanceMessage(settings.scan_success_message, {
+      const successMessage = attendanceMessage(scanSettings.scan_success_message, {
         name: matchedParticipant.full_name,
         status: attendanceStatus,
         reason: '',
@@ -1578,7 +1596,7 @@ export default function App() {
       return true;
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : 'Scan gagal diproses.';
-      const failureMessage = attendanceMessage(settings.scan_failure_message, {
+      const failureMessage = attendanceMessage(scanSettings.scan_failure_message, {
         name: participant?.full_name ?? 'Peserta tidak dikenal',
         status: '',
         reason: message,

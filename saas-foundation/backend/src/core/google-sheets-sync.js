@@ -29,7 +29,7 @@ export async function sendAttendanceToGoogleSheets({ schoolId, ids, connection =
 
   const placeholders = ids.map(() => '?').join(', ');
   const [rows] = await connection.execute(
-    `SELECT id_unik, participant_code_snapshot AS participant_code,
+    `SELECT id_unik, participant_id, participant_code_snapshot AS participant_code,
             participant_name_snapshot AS participant_name,
             classroom_name_snapshot AS classroom_name, attendance_date, event_type,
             client_timestamp_utc, attendance_status, late_minutes, scan_method

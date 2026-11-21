@@ -31,7 +31,10 @@ const sandbox = {
     },
   },
 };
-runInNewContext(`${script}\nthis.buildMonthlySummary = buildMonthlySummary;\nthis.formatDateLabel = formatDateLabel;`, sandbox);
+runInNewContext(
+  `${script}\nthis.buildMonthlySummary = buildMonthlySummary;\nthis.formatDateLabel = formatDateLabel;\nthis.shouldIncludeAfterClear = shouldIncludeAfterClear;`,
+  sandbox,
+);
 
 test('Apps Script groups attendance by participant across dynamic date columns', () => {
   const { dates, rows } = sandbox.buildMonthlySummary([
@@ -83,4 +86,58 @@ test('Apps Script groups attendance by participant across dynamic date columns',
     [1, 'Agung', '07:54:09', 5, '15:11:17', '07:49:58', 0, '', 5, 2],
     [2, 'Budi', '', '', '', '07:50:00', 2, '', 2, 1],
   ]);
+});
+
+test('Apps Script merges code changes by stable participant ID', () => {
+  const { rows } = sandbox.buildMonthlySummary([
+    {
+      participant_id: '17',
+      participant_code: 'OLD-CODE',
+      participant_name: 'Siti',
+      classroom_name: 'Kelas 1',
+      attendance_date: '2026-11-01',
+      event_type: 'check_in',
+      client_timestamp: '2026-11-01 00:54:09.000',
+      late_minutes: 5,
+    },
+    {
+      participant_id: '17',
+      participant_code: 'NEW-CODE',
+      participant_name: 'Siti',
+      classroom_name: 'Kelas 1',
+      attendance_date: '2026-11-01',
+      event_type: 'check_out',
+      client_timestamp: '2026-11-01 08:11:17.000',
+      late_minutes: 0,
+    },
+    {
+      participant_id: '18',
+      participant_code: 'OTHER-CODE',
+      participant_name: 'Siti',
+      classroom_name: 'Kelas 1',
+      attendance_date: '2026-11-01',
+      event_type: 'check_in',
+      client_timestamp: '2026-11-01 01:00:00.000',
+      late_minutes: 0,
+    },
+  ], 'Asia/Jakarta', '2026-11');
+
+  assert.equal(rows.length, 2);
+  assert.deepEqual(Array.from(rows, (row) => Array.from(row)), [
+    [1, 'Siti', '07:54:09', 5, '15:11:17', 5, 1],
+    [2, 'Siti', '08:00:00', 0, '', 0, 1],
+  ]);
+});
+
+test('Apps Script clear cutoff ignores old backfill but accepts new attendance', () => {
+  const cutoff = Date.parse('2026-11-21T13:00:00.000Z');
+  assert.equal(sandbox.shouldIncludeAfterClear({
+    client_timestamp: '2026-11-21 12:59:59.000',
+  }, cutoff), false);
+  assert.equal(sandbox.shouldIncludeAfterClear({
+    client_timestamp: '2026-11-21 13:00:01.000',
+  }, cutoff), true);
+  assert.equal(sandbox.shouldIncludeAfterClear({
+    client_timestamp: '2026-11-21 12:00:00.000',
+  }, 0), true);
 });
