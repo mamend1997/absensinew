@@ -12,17 +12,8 @@ const DATA_HEADERS = [
   'late_minutes',
   'scan_method',
 ];
-const SUMMARY_HEADERS = [
-  'No',
-  'Nama',
-  'Kelas',
-  'Tanggal',
-  'Masuk',
-  'Menit telat',
-  'Keluar',
-  'Total kehadiran bulanan',
-  'Total menit telat bulanan',
-];
+const DATE_HEADERS = ['Masuk', 'Terlambat', 'Keluar'];
+const TOTAL_HEADERS = ['Total Terlambat', 'Total Hadir'];
 
 function doPost(event) {
   const lock = LockService.getScriptLock();
@@ -133,87 +124,166 @@ function getSummarySheet(spreadsheet) {
 
 function renderMonthlySummary(spreadsheet, dataSheet, summarySheet) {
   const timeZone = spreadsheet.getSpreadsheetTimeZone() || 'Asia/Jakarta';
-  const records = dataSheet.getLastRow() > 1
+  const rawRows = dataSheet.getLastRow() > 1
     ? dataSheet.getRange(2, 1, dataSheet.getLastRow() - 1, DATA_HEADERS.length).getValues()
     : [];
-  const columns = Object.fromEntries(DATA_HEADERS.map((header, index) => [header, index]));
-  const days = new Map();
-
-  for (const row of records) {
-    const date = String(row[columns.attendance_date] || '').slice(0, 10);
-    const participantCode = String(row[columns.participant_code] || '');
-    const key = `${date}\u0000${participantCode}`;
-    let day = days.get(key);
-    if (!day) {
-      day = {
-        date,
-        participantCode,
-        name: String(row[columns.participant_name] || ''),
-        classroom: String(row[columns.classroom_name] || ''),
-        checkIn: '',
-        checkInTime: null,
-        checkOut: '',
-        checkOutTime: null,
-        status: '',
-        lateMinutes: 0,
-      };
-      days.set(key, day);
-    }
-    const timestamp = parseTimestamp(row[columns.client_timestamp]);
-    if (row[columns.event_type] === 'check_in') {
-      if (!day.checkInTime || (timestamp && timestamp < day.checkInTime)) {
-        day.checkInTime = timestamp;
-        day.checkIn = formatClock(row[columns.client_timestamp], timeZone);
-      }
-      day.status = String(row[columns.attendance_status] || day.status);
-      day.lateMinutes = Math.max(day.lateMinutes, Number(row[columns.late_minutes]) || 0);
-    } else if (row[columns.event_type] === 'check_out' &&
-        (!day.checkOutTime || (timestamp && timestamp > day.checkOutTime))) {
-      day.checkOutTime = timestamp;
-      day.checkOut = formatClock(row[columns.client_timestamp], timeZone);
-      if (!day.status) day.status = 'pulang';
-    }
-  }
-
-  const sortedDays = Array.from(days.values())
-    .sort((left, right) => left.date.localeCompare(right.date) ||
-      left.classroom.localeCompare(right.classroom) || left.name.localeCompare(right.name));
-  const participantTotals = new Map();
-  for (const day of sortedDays) {
-    const monthlyKey = `${day.date.slice(0, 7)}\u0000${day.participantCode}`;
-    const total = participantTotals.get(monthlyKey) || { attendanceCount: 0, lateMinutes: 0 };
-    if (day.checkIn) total.attendanceCount += 1;
-    total.lateMinutes += day.lateMinutes;
-    participantTotals.set(monthlyKey, total);
-  }
-  const rows = sortedDays.map((day, index) => {
-    const total = participantTotals.get(`${day.date.slice(0, 7)}\u0000${day.participantCode}`);
-    return [
-      index + 1,
-      day.name,
-      day.classroom,
-      day.date,
-      day.checkIn,
-      day.lateMinutes,
-      day.checkOut,
-      total.attendanceCount,
-      total.lateMinutes,
-    ];
-  });
+  const records = rawRows.map((row) =>
+    Object.fromEntries(DATA_HEADERS.map((header, index) => [header, row[index]])));
+  const monthKey = Utilities.formatDate(new Date(), timeZone, 'yyyy-MM');
+  const summary = buildMonthlySummary(records, timeZone, monthKey);
+  const firstTotalColumn = 3 + summary.dates.length * DATE_HEADERS.length;
+  const lastColumn = firstTotalColumn + TOTAL_HEADERS.length - 1;
 
   const filter = summarySheet.getFilter();
   if (filter) filter.remove();
-  summarySheet.clearContents();
-  summarySheet.getRange(1, 1).setValue('Rekap Absensi Bulanan');
-  summarySheet.getRange(2, 1, 1, SUMMARY_HEADERS.length).setValues([SUMMARY_HEADERS]);
-  if (rows.length) summarySheet.getRange(3, 1, rows.length, SUMMARY_HEADERS.length).setValues(rows);
+  summarySheet.getRange(
+    1,
+    1,
+    Math.max(summarySheet.getLastRow(), 1),
+    Math.max(summarySheet.getLastColumn(), lastColumn),
+  ).breakApart();
+  summarySheet.clear();
+
+  summarySheet.getRange(1, 1, 2, 1).merge().setValue('No');
+  summarySheet.getRange(1, 2, 2, 1).merge().setValue('Nama');
+  summary.dates.forEach((date, index) => {
+    const firstDateColumn = 3 + index * DATE_HEADERS.length;
+    summarySheet.getRange(1, firstDateColumn, 1, DATE_HEADERS.length)
+      .merge()
+      .setValue(formatDateLabel(date));
+    summarySheet.getRange(2, firstDateColumn, 1, DATE_HEADERS.length)
+      .setValues([DATE_HEADERS]);
+  });
+  summarySheet.getRange(1, firstTotalColumn, 2, 1).merge().setValue(TOTAL_HEADERS[0]);
+  summarySheet.getRange(1, firstTotalColumn + 1, 2, 1).merge().setValue(TOTAL_HEADERS[1]);
+  if (summary.rows.length) {
+    summarySheet.getRange(3, 1, summary.rows.length, lastColumn).setValues(summary.rows);
+    summarySheet.getRange(3, 1, summary.rows.length, lastColumn)
+      .setVerticalAlignment('middle')
+      .setBorder(true, true, true, true, true, true, '#000000', SpreadsheetApp.BorderStyle.SOLID);
+    summarySheet.getRange(3, 2, summary.rows.length, 1).setHorizontalAlignment('left');
+  }
+  summarySheet.getRange(1, 1, 2, lastColumn)
+    .setBackground('#ffff00')
+    .setFontWeight('bold')
+    .setHorizontalAlignment('center')
+    .setVerticalAlignment('middle')
+    .setBorder(true, true, true, true, true, true, '#000000', SpreadsheetApp.BorderStyle.SOLID);
+  summarySheet.getRange(3, 1, Math.max(summary.rows.length, 1), lastColumn)
+    .setHorizontalAlignment('center');
+  summarySheet.setColumnWidth(1, 42);
+  summarySheet.setColumnWidth(2, 250);
+  summary.dates.forEach((date, index) => {
+    const firstDateColumn = 3 + index * DATE_HEADERS.length;
+    summarySheet.setColumnWidth(firstDateColumn, 85);
+    summarySheet.setColumnWidth(firstDateColumn + 1, 85);
+    summarySheet.setColumnWidth(firstDateColumn + 2, 85);
+  });
+  summarySheet.setColumnWidth(firstTotalColumn, 120);
+  summarySheet.setColumnWidth(firstTotalColumn + 1, 100);
+  summarySheet.setRowHeight(1, 28);
+  summarySheet.setRowHeight(2, 26);
   summarySheet.setFrozenRows(2);
-  summarySheet.getRange(2, 1, Math.max(rows.length + 1, 1), SUMMARY_HEADERS.length).createFilter();
-  summarySheet.autoResizeColumns(1, SUMMARY_HEADERS.length);
+  summarySheet.setFrozenColumns(2);
+}
+
+function buildMonthlySummary(records, timeZone, monthKey) {
+  const dates = new Set();
+  const participants = new Map();
+
+  for (const record of records) {
+    const date = attendanceDateKey(record.attendance_date, timeZone);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date.slice(0, 7) !== monthKey) continue;
+    if (!['check_in', 'check_out'].includes(record.event_type)) continue;
+
+    const participantCode = String(record.participant_code || '');
+    const name = String(record.participant_name || '');
+    const classroom = String(record.classroom_name || '');
+    if (!participantCode && !name) continue;
+    const participantKey = participantCode || `${name}\u0000${classroom}`;
+
+    let participant = participants.get(participantKey);
+    if (!participant) {
+      participant = { name, days: new Map() };
+      participants.set(participantKey, participant);
+    } else if (!participant.name && name) {
+      participant.name = name;
+    }
+
+    let day = participant.days.get(date);
+    if (!day) {
+      day = {
+        checkedIn: false,
+        checkIn: '',
+        checkInTimestamp: null,
+        checkOut: '',
+        checkOutTimestamp: null,
+        lateMinutes: 0,
+      };
+      participant.days.set(date, day);
+    }
+
+    const timestamp = parseTimestamp(record.client_timestamp);
+    if (record.event_type === 'check_in') {
+      day.checkedIn = true;
+      day.lateMinutes = Math.max(day.lateMinutes, Number(record.late_minutes) || 0);
+      if (timestamp && (!day.checkInTimestamp || timestamp < day.checkInTimestamp)) {
+        day.checkInTimestamp = timestamp;
+        day.checkIn = formatClock(record.client_timestamp, timeZone);
+      }
+    } else if (timestamp && (!day.checkOutTimestamp || timestamp > day.checkOutTimestamp)) {
+      day.checkOutTimestamp = timestamp;
+      day.checkOut = formatClock(record.client_timestamp, timeZone);
+    }
+    dates.add(date);
+  }
+
+  const sortedDates = Array.from(dates).sort();
+  const sortedParticipants = Array.from(participants.values())
+    .sort((left, right) => left.name.localeCompare(right.name));
+  const rows = sortedParticipants.map((participant, index) => {
+    let totalLateMinutes = 0;
+    let totalAttendance = 0;
+    const row = [index + 1, participant.name];
+    for (const date of sortedDates) {
+      const day = participant.days.get(date);
+      if (day && day.checkedIn) {
+        totalAttendance += 1;
+        totalLateMinutes += day.lateMinutes;
+      }
+      row.push(
+        day?.checkIn || '',
+        day && day.checkedIn ? day.lateMinutes : '',
+        day?.checkOut || '',
+      );
+    }
+    row.push(totalLateMinutes, totalAttendance);
+    return row;
+  });
+  return { dates: sortedDates, rows };
+}
+
+function formatDateLabel(value) {
+  const [year, month, day] = value.split('-');
+  return `${day}-${month}-${year}`;
+}
+
+function attendanceDateKey(value, timeZone) {
+  if (value instanceof Date) return Utilities.formatDate(value, timeZone, 'yyyy-MM-dd');
+  const text = String(value || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const date = new Date(text);
+  return Number.isNaN(date.getTime())
+    ? ''
+    : Utilities.formatDate(date, timeZone, 'yyyy-MM-dd');
 }
 
 function parseTimestamp(value) {
-  const timestamp = value instanceof Date ? value : new Date(String(value));
+  const text = String(value || '').trim();
+  const utcDateTime = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(text)
+    ? `${text.replace(' ', 'T')}Z`
+    : text;
+  const timestamp = value instanceof Date ? value : new Date(utcDateTime);
   return Number.isNaN(timestamp.getTime()) ? null : timestamp;
 }
 
