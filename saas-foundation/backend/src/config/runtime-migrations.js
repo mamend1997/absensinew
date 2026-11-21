@@ -259,6 +259,7 @@ export async function ensureRuntimeMigrations(pool) {
       backup_time CHAR(5) NOT NULL DEFAULT '02:00',
       encrypted_credentials TEXT NULL,
       last_run_date CHAR(10) NULL,
+      last_run_file VARCHAR(255) NULL,
       last_status VARCHAR(24) NOT NULL DEFAULT 'never',
       last_run_at TIMESTAMP NULL,
       last_error VARCHAR(500) NULL,
@@ -267,6 +268,13 @@ export async function ensureRuntimeMigrations(pool) {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
   await pool.execute('INSERT IGNORE INTO platform_backup_settings (id) VALUES (1)');
+  const [backupColumns] = await pool.execute(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'platform_backup_settings'`,
+  );
+  if (!backupColumns.some((column) => column.COLUMN_NAME === 'last_run_file')) {
+    await pool.execute('ALTER TABLE platform_backup_settings ADD COLUMN last_run_file VARCHAR(255) NULL AFTER last_run_date');
+  }
 
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS platform_otp_rate_limit_settings (

@@ -174,7 +174,6 @@ router.post('/auth/register/start', asyncRoute(async (req, res) => {
       decryptGatewayToken(gateway),
       phone,
       `Kode verifikasi Ruang Hadir: ${otp}. Berlaku 5 menit. Jangan bagikan kode ini kepada siapa pun.`,
-      'registration_otp',
     );
   } catch (error) {
     await pool.execute(
@@ -308,7 +307,6 @@ router.post('/auth/password-reset/start', asyncRoute(async (req, res) => {
         decryptGatewayToken(gateway),
         phone,
         `Kode reset kata sandi Ruang Hadir: ${otp}. Berlaku 5 menit. Jangan bagikan kode ini kepada siapa pun.`,
-        'password_reset',
       );
     } catch (error) {
       await pool.execute(
@@ -1260,7 +1258,6 @@ router.post('/settings/whatsapp-gateway/test', requireSchoolUser, requirePermiss
         decryptGatewayToken(gateway),
         phone,
         'Uji koneksi gateway WhatsApp sekolah. Jika pesan ini diterima, gateway siap digunakan.',
-        'gateway_test',
       );
       status = 'success';
       message = 'Gateway menerima permintaan (HTTP 2xx). Periksa WhatsApp penerima untuk memastikan pesan diterima.';

@@ -18,6 +18,7 @@ const {
   decryptGatewayToken,
   createWhatsappGatewayPayload,
   encryptGatewayToken,
+  extractGatewayResponseDetail,
   validateGatewayUrl,
 } = await import('../src/core/whatsapp-gateway.js');
 
@@ -85,10 +86,26 @@ test('WhatsApp gateway tokens are encrypted and gateway URLs must be public HTTP
   assert.throws(() => validateGatewayUrl('https://mysql.railway.internal/send'), { statusCode: 400 });
 });
 
-test('WhatsApp gateway payload matches the configured send-message API contract', () => {
+test('WhatsApp gateway payload matches the send-message API contract', () => {
   assert.deepEqual(
-    createWhatsappGatewayPayload('+628123456789', 'Pesan uji', 'gateway_test'),
-    { to: '+628123456789', message: 'Pesan uji', event: 'gateway_test' },
+    createWhatsappGatewayPayload('+628123456789', 'Pesan uji'),
+    { phone: '+628123456789', message: 'Pesan uji' },
+  );
+});
+
+test('WhatsApp gateway diagnostics redact secrets and bound error details', () => {
+  assert.equal(
+    extractGatewayResponseDetail(
+      JSON.stringify({ message: 'Invalid +628123456789 token private-test-token' }),
+      'private-test-token',
+      '+628123456789',
+    ),
+    'Invalid [redacted] token [redacted]',
+  );
+  assert.equal(extractGatewayResponseDetail('not JSON', 'token', 'phone'), '');
+  assert.equal(
+    extractGatewayResponseDetail(JSON.stringify({ message: 'x'.repeat(500) }), 'token', 'phone').length,
+    240,
   );
 });
 

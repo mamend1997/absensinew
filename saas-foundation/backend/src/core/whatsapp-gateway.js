@@ -22,8 +22,8 @@ export function validateGatewayUrl(value) {
   return url;
 }
 
-export function createWhatsappGatewayPayload(phone, message, event) {
-  return { to: phone, message, event };
+export function createWhatsappGatewayPayload(phone, message) {
+  return { phone, message };
 }
 
 export function encryptGatewayToken(token) {
@@ -74,7 +74,26 @@ export function createPinnedGatewayLookup(addresses) {
   };
 }
 
-export async function sendWhatsappMessage(urlValue, token, phone, message, event = 'notification') {
+export function extractGatewayResponseDetail(body, token, phone) {
+  let payload;
+  try { payload = JSON.parse(body); } catch { return ''; }
+  if (!payload || typeof payload !== 'object') return '';
+  const detail = typeof payload.message === 'string'
+    ? payload.message
+    : typeof payload.error === 'string'
+      ? payload.error
+      : payload.error && typeof payload.error.message === 'string'
+        ? payload.error.message
+        : '';
+  if (!detail) return '';
+  let safeDetail = detail.replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
+  for (const secret of [token, phone]) {
+    if (secret) safeDetail = safeDetail.split(secret).join('[redacted]');
+  }
+  return safeDetail.slice(0, 240);
+}
+
+export async function sendWhatsappMessage(urlValue, token, phone, message) {
   const url = validateGatewayUrl(urlValue);
   let addresses;
   try {
@@ -86,7 +105,7 @@ export async function sendWhatsappMessage(urlValue, token, phone, message, event
   if (!addresses.length || addresses.some(({ address }) => !isPublicAddress(address))) {
     throw fail(503, 'Host gateway tidak dapat digunakan.', 'GATEWAY_UNAVAILABLE');
   }
-  const body = JSON.stringify(createWhatsappGatewayPayload(phone, message, event));
+  const body = JSON.stringify(createWhatsappGatewayPayload(phone, message));
   const address = addresses[0];
   await new Promise((resolve, reject) => {
     const request = httpsRequest({
@@ -104,21 +123,36 @@ export async function sendWhatsappMessage(urlValue, token, phone, message, event
       },
       timeout: 10000,
     }, (response) => {
-      response.resume();
+      const responseChunks = [];
+      let responseBytes = 0;
+      response.on('data', (chunk) => {
+        if (responseBytes >= 4096) return;
+        const remainingBytes = 4096 - responseBytes;
+        const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        const boundedData = data.subarray(0, remainingBytes);
+        responseChunks.push(boundedData);
+        responseBytes += boundedData.length;
+      });
       response.on('end', () => {
         if (response.statusCode >= 200 && response.statusCode < 300) resolve();
         else {
           const status = response.statusCode ?? 0;
+          const detail = extractGatewayResponseDetail(
+            Buffer.concat(responseChunks).toString('utf8'),
+            token,
+            phone,
+          );
+          const diagnostic = detail ? ` Detail: ${detail}` : '';
           const hint = status === 401 || status === 403
             ? ' Periksa Bearer token gateway.'
             : status === 404
               ? ' Pastikan URL berakhir dengan /api/send-message.'
               : status === 400
-                ? ' Periksa format nomor dan konfigurasi gateway.'
+                ? ' Periksa format nomor dan payload gateway (phone, message).'
                 : '';
           reject(fail(
             502,
-            `Gateway menolak permintaan (HTTP ${status}).${hint}`,
+            `Gateway menolak permintaan (HTTP ${status}).${diagnostic}${hint}`,
             'GATEWAY_DELIVERY_FAILED',
           ));
         }

@@ -263,6 +263,7 @@ export default function App() {
   const [backupBotToken, setBackupBotToken] = useState('');
   const [backupChatId, setBackupChatId] = useState('');
   const [backupBusy, setBackupBusy] = useState(false);
+  const [backupAction, setBackupAction] = useState<'save' | 'run' | 'download' | null>(null);
   const [otpRateLimit, setOtpRateLimit] = useState<OtpRateLimitSettings>({
     max_requests_per_phone: 10,
     window_minutes: 30,
@@ -801,6 +802,7 @@ export default function App() {
   async function savePlatformBackup(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBackupBusy(true);
+    setBackupAction('save');
     setError('');
     setNotice('');
     try {
@@ -821,6 +823,34 @@ export default function App() {
       setError(reason instanceof Error ? reason.message : 'Pengaturan backup platform gagal disimpan.');
     } finally {
       setBackupBusy(false);
+      setBackupAction(null);
+    }
+  }
+
+  async function runBackupNow() {
+    setBackupBusy(true);
+    setBackupAction('run');
+    setError('');
+    setNotice('');
+    try {
+      const result = await request<Pick<PlatformBackupSettings, 'last_status' | 'last_run_at' | 'last_error'>>(
+        '/super-admin/settings/backup/run',
+        token,
+        { method: 'POST' },
+      );
+      setBackupSettings((current) => ({ ...current, ...result }));
+      if (result.last_status === 'success') {
+        setNotice('Backup sekarang berhasil dibuat. File terenkripsi tersedia untuk diunduh.');
+      } else if (result.last_status === 'notification_failed') {
+        setError(`Backup berhasil disimpan, tetapi notifikasi Telegram gagal: ${result.last_error ?? 'Periksa konfigurasi Telegram.'}`);
+      } else {
+        setError(`Backup gagal: ${result.last_error ?? 'Status backup tidak tersedia.'}`);
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Backup platform gagal dijalankan.');
+    } finally {
+      setBackupBusy(false);
+      setBackupAction(null);
     }
   }
 
@@ -848,6 +878,7 @@ export default function App() {
 
   async function downloadPlatformBackup() {
     setBackupBusy(true);
+    setBackupAction('download');
     setError('');
     try {
       const response = await fetch(`${API_BASE}/super-admin/settings/backup/latest`, {
@@ -873,6 +904,7 @@ export default function App() {
       setError(reason instanceof Error ? reason.message : 'Backup platform gagal diunduh.');
     } finally {
       setBackupBusy(false);
+      setBackupAction(null);
     }
   }
 
@@ -1292,10 +1324,11 @@ export default function App() {
             <label>Waktu backup<input type="time" required value={backupSettings.backup_time} onChange={(event) => setBackupSettings((current) => ({ ...current, backup_time: event.target.value }))} /></label>
             <label>Token Telegram Bot<input type="password" autoComplete="new-password" value={backupBotToken} onChange={(event) => setBackupBotToken(event.target.value)} placeholder={backupSettings.bot_configured ? 'Tersimpan terenkripsi; kosongkan untuk mempertahankan' : 'Token dari BotFather'} /></label>
             <label>Chat ID / channel<input value={backupChatId} onChange={(event) => setBackupChatId(event.target.value)} placeholder={backupSettings.chat_id_hint || 'Chat ID tujuan notifikasi'} /></label>
-            <p className="muted">Waktu mengikuti zona waktu BACKUP_TIMEZONE yang ditetapkan pada environment backend.</p>
+            <p className="muted">Waktu mengikuti zona waktu BACKUP_TIMEZONE pada backend. Backup manual berjalan langsung di luar jadwal; file terenkripsi disimpan pada volume privat dan Telegram hanya menerima notifikasi.</p>
             <div className="backup-actions">
-              <button className="button primary" disabled={backupBusy}>{backupBusy ? 'Menyimpan…' : 'Simpan jadwal backup'}</button>
-              {['success', 'notification_failed'].includes(backupSettings.last_status) && <button className="button secondary" type="button" disabled={backupBusy} onClick={() => void downloadPlatformBackup()}>Unduh backup terenkripsi</button>}
+              <button className="button primary" disabled={backupBusy}>{backupAction === 'save' ? 'Menyimpan…' : 'Simpan jadwal backup'}</button>
+              <button className="button secondary" type="button" disabled={backupBusy || !backupSettings.bot_configured} onClick={() => void runBackupNow()}>{backupAction === 'run' ? 'Membuat backup…' : 'Backup sekarang'}</button>
+              {['success', 'notification_failed'].includes(backupSettings.last_status) && <button className="button secondary" type="button" disabled={backupBusy} onClick={() => void downloadPlatformBackup()}>{backupAction === 'download' ? 'Mengunduh…' : 'Unduh backup terenkripsi'}</button>}
             </div>
           </form>
         </section>

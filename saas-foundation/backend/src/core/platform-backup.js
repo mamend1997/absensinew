@@ -120,9 +120,11 @@ async function notifyTelegram(credentials, text) {
 async function claimDailyRun() {
   return inTransaction(async (connection) => {
     const [[settings]] = await connection.execute(
-      'SELECT enabled, backup_time, encrypted_credentials, last_run_date FROM platform_backup_settings WHERE id = 1 FOR UPDATE',
+      `SELECT enabled, backup_time, encrypted_credentials, last_run_date,
+              (last_status = 'running' AND last_run_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 2 HOUR)) AS run_in_progress
+         FROM platform_backup_settings WHERE id = 1 FOR UPDATE`,
     );
-    if (!settings || !Number(settings.enabled)) return null;
+    if (!settings || !Number(settings.enabled) || Number(settings.run_in_progress)) return null;
     const clock = localClock();
     if (clock.time < settings.backup_time || settings.last_run_date === clock.date) return null;
     await connection.execute(
@@ -136,14 +138,42 @@ async function claimDailyRun() {
   });
 }
 
-async function setResult(status, error = null) {
+async function claimManualRun() {
+  return inTransaction(async (connection) => {
+    const [[settings]] = await connection.execute(
+      `SELECT encrypted_credentials,
+              (last_status = 'running' AND last_run_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 2 HOUR)) AS run_in_progress
+         FROM platform_backup_settings WHERE id = 1 FOR UPDATE`,
+    );
+    if (!settings || Number(settings.run_in_progress)) return null;
+    const { date } = localClock();
+    await connection.execute(
+      `UPDATE platform_backup_settings
+          SET last_status = 'running', last_run_at = UTC_TIMESTAMP(),
+              last_error = NULL
+        WHERE id = 1`,
+    );
+    return { ...settings, date };
+  });
+}
+
+async function setResult(status, error = null, filename = null) {
+  if (filename) {
+    await pool.execute(
+      `UPDATE platform_backup_settings
+          SET last_status = ?, last_error = ?, last_run_file = ?
+        WHERE id = 1`,
+      [status, error, filename],
+    );
+    return;
+  }
   await pool.execute(
     'UPDATE platform_backup_settings SET last_status = ?, last_error = ? WHERE id = 1',
     [status, error],
   );
 }
 
-async function writeEncryptedBackup(date) {
+async function writeEncryptedBackup(date, manual = false) {
   if (!config.backupDirectory) {
     throw new Error('BACKUP_DIRECTORY belum diarahkan ke volume privat yang persisten.');
   }
@@ -153,31 +183,35 @@ async function writeEncryptedBackup(date) {
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await chmod(directory, 0o700);
   const data = await snapshotDatabase();
-  const path = resolve(directory, `ruang-hadir-saas-${date}.json.enc`);
+  const suffix = manual
+    ? `-manual-${new Date().toISOString().replace(/[-:.]/g, '')}-${randomBytes(4).toString('hex')}`
+    : '';
+  const filename = `ruang-hadir-saas-${date}${suffix}.json.enc`;
+  const path = resolve(directory, filename);
   await writeFile(path, seal(JSON.stringify(data)), {
     encoding: 'utf8',
     flag: 'wx',
     mode: 0o600,
   });
+  return filename;
 }
 
-export async function runPlatformBackup() {
-  const claimed = await claimDailyRun();
-  if (!claimed) return false;
+async function executeBackup(claimed, manual) {
   try {
     if (!claimed.encrypted_credentials) throw new Error('Kredensial Telegram belum diatur.');
     const credentials = decryptPlatformBackupCredentials(claimed.encrypted_credentials);
-    await writeEncryptedBackup(claimed.date);
+    const filename = await writeEncryptedBackup(claimed.date, manual);
     try {
       await notifyTelegram(
         credentials,
-        `Backup platform Ruang Hadir tanggal ${claimed.date} berhasil dibuat dan disimpan terenkripsi di volume privat. Data sekolah tidak dikirim melalui Telegram.`,
+        `Backup platform Ruang Hadir${manual ? ' manual' : ''} tanggal ${claimed.date} berhasil dibuat dan disimpan terenkripsi di volume privat. Data sekolah tidak dikirim melalui Telegram.`,
       );
-      await setResult('success');
+      await setResult('success', null, filename);
     } catch (error) {
       await setResult(
         'notification_failed',
         error instanceof Error ? error.message.slice(0, 500) : 'Notifikasi Telegram gagal.',
+        filename,
       );
     }
   } catch (error) {
@@ -185,6 +219,18 @@ export async function runPlatformBackup() {
     console.error('Backup platform gagal; data sekolah tidak dikirim ke Telegram.');
   }
   return true;
+}
+
+export async function runPlatformBackup() {
+  const claimed = await claimDailyRun();
+  if (!claimed) return false;
+  return executeBackup(claimed, false);
+}
+
+export async function runPlatformBackupNow() {
+  const claimed = await claimManualRun();
+  if (!claimed) return false;
+  return executeBackup(claimed, true);
 }
 
 export function startPlatformBackupWorker() {
@@ -198,14 +244,16 @@ export function startPlatformBackupWorker() {
 
 export async function latestPlatformBackupPath() {
   const [[settings]] = await pool.execute(
-    'SELECT last_run_date FROM platform_backup_settings WHERE id = 1',
+    'SELECT last_run_date, last_run_file FROM platform_backup_settings WHERE id = 1',
   );
-  if (!config.backupDirectory || !/^\d{4}-\d{2}-\d{2}$/.test(settings?.last_run_date ?? '')) {
-    return null;
-  }
+  if (!config.backupDirectory) return null;
   const directory = isAbsolute(config.backupDirectory)
     ? config.backupDirectory
     : resolve(process.cwd(), config.backupDirectory);
+  if (/^ruang-hadir-saas-\d{4}-\d{2}-\d{2}(?:-manual-[A-Za-z0-9-]+)?\.json\.enc$/.test(settings?.last_run_file ?? '')) {
+    return resolve(directory, settings.last_run_file);
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(settings?.last_run_date ?? '')) return null;
   return resolve(directory, `ruang-hadir-saas-${settings.last_run_date}.json.enc`);
 }
 

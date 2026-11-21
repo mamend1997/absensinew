@@ -6,6 +6,7 @@ import {
   decryptPlatformBackupCredentials,
   encryptPlatformBackupCredentials,
   latestPlatformBackupPath,
+  runPlatformBackupNow,
 } from '../core/platform-backup.js';
 import { Router } from 'express';
 import { generateUniqueSchoolCode, isValidSchoolCode } from '../core/school-code.js';
@@ -154,7 +155,6 @@ router.post('/auth/password-reset/start', asyncRoute(async (req, res) => {
         decryptGatewayToken(gateway),
         phone,
         `Kode reset Super Admin Ruang Hadir: ${otp}. Berlaku 5 menit. Jangan bagikan kode ini kepada siapa pun.`,
-        'super_admin_password_reset',
       );
     } catch (error) {
       await pool.execute(
@@ -330,7 +330,6 @@ router.post('/settings/whatsapp-gateway/test', requireSuperAdmin, asyncRoute(asy
         decryptGatewayToken(gateway),
         phone,
         'Uji koneksi gateway WhatsApp Ruang Hadir. Jika pesan ini diterima, gateway siap digunakan.',
-        'gateway_test',
       );
       status = 'success';
       message = 'Gateway menerima permintaan (HTTP 2xx). Periksa WhatsApp penerima untuk memastikan pesan diterima.';
@@ -538,6 +537,30 @@ router.put('/settings/backup', asyncRoute(async (req, res) => {
     last_status: updated.last_status,
     last_run_at: updated.last_run_at,
     last_error: updated.last_error,
+  });
+}));
+
+router.post('/settings/backup/run', asyncRoute(async (req, res) => {
+  if (!config.backupDirectory) {
+    throw fail(400, 'BACKUP_DIRECTORY harus diarahkan ke volume privat yang persisten.', 'BACKUP_CONFIGURATION_REQUIRED');
+  }
+  const [[settings]] = await pool.execute(
+    'SELECT encrypted_credentials FROM platform_backup_settings WHERE id = 1',
+  );
+  if (!settings?.encrypted_credentials) {
+    throw fail(400, 'Isi kredensial Telegram terlebih dahulu.', 'BACKUP_CONFIGURATION_REQUIRED');
+  }
+  const started = await runPlatformBackupNow();
+  if (!started) {
+    throw fail(409, 'Backup sedang berjalan. Coba lagi setelah proses selesai.', 'BACKUP_IN_PROGRESS');
+  }
+  const [[result]] = await pool.execute(
+    'SELECT last_status, last_run_at, last_error FROM platform_backup_settings WHERE id = 1',
+  );
+  res.json({
+    last_status: result?.last_status ?? 'failed',
+    last_run_at: result?.last_run_at ?? null,
+    last_error: result?.last_error ?? 'Status backup tidak tersedia.',
   });
 }));
 

@@ -161,6 +161,7 @@ CREATE TABLE IF NOT EXISTS platform_backup_settings (
     backup_time CHAR(5) NOT NULL DEFAULT '02:00',
     encrypted_credentials TEXT NULL,
     last_run_date CHAR(10) NULL,
+    last_run_file VARCHAR(255) NULL,
     last_status VARCHAR(24) NOT NULL DEFAULT 'never',
     last_run_at TIMESTAMP NULL,
     last_error VARCHAR(500) NULL,
