@@ -957,6 +957,7 @@ router.get('/settings', requireSchoolUser,
   requireAnyPermission('settings.operational.view', 'participants.view', 'participants.read', 'participants.manage', 'scanner.use'), asyncRoute(async (req, res) => {
   const [[settings]] = await pool.execute(
     `SELECT timezone, check_in_deadline, lateness_tolerance_minutes, check_out_start,
+            scan_welcome_message, scan_success_message, scan_failure_message,
             scanner_pin_hash IS NOT NULL AS scanner_pin_configured
        FROM operational_settings WHERE sekolah_id = ?`,
     [req.schoolUser.sekolah_id],
@@ -1002,6 +1003,14 @@ router.put('/settings', requireSchoolUser, requirePermission('settings.operation
   const checkOut = body.check_out_start ?? '15:00:00';
   const timePattern = /^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/;
   if (!timePattern.test(checkIn) || !timePattern.test(checkOut)) throw fail(400, 'Format jam harus HH:mm[:ss].');
+  const scanMessages = ['scan_welcome_message', 'scan_success_message', 'scan_failure_message'].map((field) => {
+    const value = body[field];
+    if (value === undefined) return null;
+    if (typeof value !== 'string' || !value.trim() || value.length > 255) {
+      throw fail(400, `Teks ${field} harus diisi dan maksimal 255 karakter.`, 'VALIDATION_ERROR');
+    }
+    return value.trim();
+  });
   if (body.scanner_pin !== undefined && body.scanner_pin !== null && body.scanner_pin !== '' &&
       (typeof body.scanner_pin !== 'string' || !/^\d{4,6}$/.test(body.scanner_pin))) {
     throw fail(400, 'PIN scanner harus terdiri dari 4–6 angka.', 'VALIDATION_ERROR');
@@ -1028,9 +1037,21 @@ router.put('/settings', requireSchoolUser, requirePermission('settings.operation
     await connection.beginTransaction();
     await connection.execute(
       `UPDATE operational_settings SET timezone = ?, check_in_deadline = ?,
-        lateness_tolerance_minutes = ?, check_out_start = ?, updated_by = ?
+        lateness_tolerance_minutes = ?, check_out_start = ?,
+        scan_welcome_message = COALESCE(?, scan_welcome_message),
+        scan_success_message = COALESCE(?, scan_success_message),
+        scan_failure_message = COALESCE(?, scan_failure_message),
+        updated_by = ?
        WHERE sekolah_id = ?`,
-      [timezone, checkIn, tolerance, checkOut, req.schoolUser.id, req.schoolUser.sekolah_id],
+      [
+        timezone,
+        checkIn,
+        tolerance,
+        checkOut,
+        ...scanMessages,
+        req.schoolUser.id,
+        req.schoolUser.sekolah_id,
+      ],
     );
     if (typeof body.scanner_pin === 'string' && /^\d{4,6}$/.test(body.scanner_pin)) {
       await connection.execute(

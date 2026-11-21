@@ -8,6 +8,17 @@ export async function ensureRuntimeMigrations(pool) {
       'ALTER TABLE operational_settings ADD COLUMN scanner_pin_hash VARCHAR(255) NULL AFTER check_out_start',
     );
   }
+  const operationalColumnNames = new Set(operationalColumns.map((column) => column.COLUMN_NAME));
+  const messageColumns = [
+    ['scan_welcome_message', "VARCHAR(255) NOT NULL DEFAULT 'Pindai kartu atau barcode peserta saat melaksanakan absensi'"],
+    ['scan_success_message', "VARCHAR(255) NOT NULL DEFAULT 'Terima kasih, {name}. Absensi {status} sudah dicatat.'"],
+    ['scan_failure_message', "VARCHAR(255) NOT NULL DEFAULT 'Maaf, absensi {name} gagal. {reason}.'"],
+  ];
+  for (const [name, definition] of messageColumns) {
+    if (operationalColumns.length && !operationalColumnNames.has(name)) {
+      await pool.execute(`ALTER TABLE operational_settings ADD COLUMN ${name} ${definition}`);
+    }
+  }
 
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS participant_operational_overrides (

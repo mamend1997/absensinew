@@ -3,7 +3,7 @@
 :root { font-family: 'DM Sans', sans-serif; color: #172b27; background: #f3f6f3; font-synthesis: none; text-rendering: optimizeLegibility; }
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; min-height: 100vh; }
-button, input, select { font: inherit; }
+button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
 .login-shell { display: grid; min-height: 100vh; place-items: center; padding: 22px; background: radial-gradient(circle at 16% 10%, #284c3c, #172b27 48%, #101e1c); }
 .login-card { display: grid; width: min(420px, 100%); gap: 15px; border: 1px solid #dfe7df; border-radius: 22px; background: #fff; padding: 34px; box-shadow: 0 24px 80px #06120f55; }
@@ -34,8 +34,9 @@ h3 { margin: 0; font-size: 13px; }
 .password-checklist li.valid { color: #176f4c; }
 .password-checklist li.valid span { color: #278454; }
 label { display: grid; gap: 7px; color: #40544c; font-size: 11px; font-weight: 700; }
-input, select { width: 100%; min-width: 0; min-height: 40px; border: 1px solid #d8e1da; border-radius: 9px; background: #fff; padding: 8px 10px; color: #172b27; outline: none; }
-input:focus, select:focus { border-color: #39845d; box-shadow: 0 0 0 3px #39845d1c; }
+input, select, textarea { width: 100%; min-width: 0; min-height: 40px; border: 1px solid #d8e1da; border-radius: 9px; background: #fff; padding: 8px 10px; color: #172b27; outline: none; }
+input:focus, select:focus, textarea:focus { border-color: #39845d; box-shadow: 0 0 0 3px #39845d1c; }
+textarea { resize: vertical; line-height: 1.5; }
 input[type=checkbox] { width: 16px; min-height: 16px; accent-color: #176f4c; }
 .button { display: inline-flex; min-height: 38px; align-items: center; justify-content: center; border: 1px solid transparent; border-radius: 9px; padding: 0 12px; font-weight: 700; font-size: 11px; white-space: nowrap; }
 .button:disabled { cursor: wait; opacity: .6; }
@@ -258,6 +259,8 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
 .tag.synced { background: #e6f5eb; color: #1a7448; }
 .form-grid label { font-size: 10px; }
 .settings-form { display: grid; gap: 16px; }
+.attendance-speech-settings { display: grid; gap: 11px; border-top: 1px solid #edf1ed; padding-top: 14px; }
+.attendance-speech-settings .muted { margin: 4px 0 0; font-size: 10px; line-height: 1.5; }
 .scanner-preference-panel { display: grid; gap: 12px; }
 .scanner-preference-panel .muted { margin: 0; }
 .scanner-usb-toggle { display: flex !important; align-items: center; gap: 9px; cursor: pointer; }

@@ -187,6 +187,9 @@ interface OperationalSettings {
   check_in_deadline: string;
   lateness_tolerance_minutes: number;
   check_out_start: string;
+  scan_welcome_message: string;
+  scan_success_message: string;
+  scan_failure_message: string;
   weekly_schedules: WeeklySchedule[];
   holidays: Holiday[];
   participant_overrides: ParticipantSchedule[];
@@ -277,6 +280,9 @@ const initialSettings: OperationalSettings = {
   check_in_deadline: '08:00:00',
   lateness_tolerance_minutes: 0,
   check_out_start: '15:00:00',
+  scan_welcome_message: 'Pindai kartu atau barcode peserta saat melaksanakan absensi',
+  scan_success_message: 'Terima kasih, {name}. Absensi {status} sudah dicatat.',
+  scan_failure_message: 'Maaf, absensi {name} gagal. {reason}.',
   weekly_schedules: [],
   holidays: [],
   participant_overrides: [],
@@ -311,6 +317,62 @@ function initialPage(currentSession: SchoolSession): Page {
     (!hasPermission(permissions, 'dashboard.view') || window.matchMedia('(max-width: 900px)').matches)
     ? 'scanner'
     : 'dashboard';
+}
+
+function playAttendanceTone(success: boolean) {
+  if (!('AudioContext' in window)) return;
+  try {
+    const context = new AudioContext();
+    void context.resume().then(() => {
+      const start = context.currentTime + 0.02;
+      const notes = success
+        ? [{ frequency: 880, at: 0 }, { frequency: 1175, at: 0.12 }]
+        : [{ frequency: 370, at: 0 }, { frequency: 220, at: 0.18 }];
+      notes.forEach((note, index) => {
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        oscillator.type = 'sine';
+        oscillator.frequency.value = note.frequency;
+        gain.gain.value = 0.055;
+        oscillator.connect(gain);
+        gain.connect(context.destination);
+        oscillator.onended = () => {
+          if (index === notes.length - 1) void context.close();
+        };
+        oscillator.start(start + note.at);
+        oscillator.stop(start + note.at + 0.11);
+      });
+    }).catch((error: unknown) => console.warn('Suara notifikasi absensi tidak dapat diputar.', error));
+  } catch (error) {
+    console.warn('Suara notifikasi absensi tidak tersedia.', error);
+  }
+}
+
+function attendanceMessage(
+  template: string,
+  values: { name: string; status: string; reason: string },
+) {
+  return template.replace(/\{(name|status|reason)\}/gi, (_match, key: string) =>
+    values[key.toLowerCase() as keyof typeof values] ?? '',
+  );
+}
+
+function speakAttendanceMessage(text: string) {
+  if (!('speechSynthesis' in window) || !('SpeechSynthesisUtterance' in window)) return;
+  try {
+    const synthesis = window.speechSynthesis;
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'id-ID';
+    utterance.rate = 0.92;
+    utterance.pitch = 1.05;
+    utterance.onerror = (event) => console.warn('Ucapan absensi tidak dapat diputar.', event.error);
+    const voices = synthesis.getVoices();
+    utterance.voice = voices.find((voice) => voice.lang.toLowerCase().startsWith('id')) ?? null;
+    synthesis.cancel();
+    synthesis.speak(utterance);
+  } catch (error) {
+    console.warn('Ucapan absensi tidak tersedia.', error);
+  }
 }
 
 async function request<T>(
@@ -493,6 +555,7 @@ export default function App() {
   const [manualAttendanceOpen, setManualAttendanceOpen] = useState(false);
   const [manualAttendanceQuery, setManualAttendanceQuery] = useState('');
   const [manualParticipantId, setManualParticipantId] = useState('');
+  const [manualAttendanceBusy, setManualAttendanceBusy] = useState(false);
   const [selectedParticipantIds, setSelectedParticipantIds] = useState<Set<string>>(new Set());
   const [scanClock, setScanClock] = useState(() => new Date());
   const [participantForm, setParticipantForm] = useState({
@@ -750,8 +813,9 @@ export default function App() {
     setClassrooms([]);
     const cachedSettings = canReadSettings ? await db.get('settings', 'operational') : undefined;
     if (cachedSettings && canReadSettings) {
-      setSettings(cachedSettings);
-      setOperationalForm(cachedSettings);
+      const normalizedCachedSettings = { ...initialSettings, ...cachedSettings };
+      setSettings(normalizedCachedSettings);
+      setOperationalForm(normalizedCachedSettings);
     }
     try {
       const [participantResult, classroomResult, settingResult] = await Promise.all([
@@ -1057,11 +1121,8 @@ export default function App() {
     const participant = participants.find((item) =>
       (item.qr_code === value || item.participant_code === value) &&
       (item.is_active == null || item.is_active === true || Number(item.is_active) === 1));
-    if (!participant) {
-      setMessage('QR/barcode tidak ditemukan di master peserta lokal.', true);
-      return false;
-    }
     try {
+      if (!participant) throw new Error('QR/barcode tidak ditemukan di master peserta lokal.');
       const db = await database(session.school.id);
       const allScans = await db.getAll('queue');
       const initialCalculation = calculateAttendance({
@@ -1105,7 +1166,19 @@ export default function App() {
         calculation,
       }) as QueuedScan;
       await syncManager().enqueue(scan);
-      setLastScan(`${participant.full_name} · ${calculation.status}${calculation.lateMinutes ? ` ${calculation.lateMinutes} menit` : ''}`);
+      const attendanceStatus = calculation.status === 'check_out' || calculation.status === 'pulang'
+        ? 'pulang'
+        : calculation.status === 'terlambat'
+          ? `terlambat${calculation.lateMinutes ? ` ${calculation.lateMinutes} menit` : ''}`
+          : 'hadir tepat waktu';
+      const successMessage = attendanceMessage(settings.scan_success_message, {
+        name: participant.full_name,
+        status: attendanceStatus,
+        reason: '',
+      });
+      setLastScan(successMessage);
+      playAttendanceTone(true);
+      speakAttendanceMessage(successMessage);
       await refreshPendingCount();
       if (online) {
         try {
@@ -1117,7 +1190,16 @@ export default function App() {
       else setMessage(`${participant.full_name} masuk antrean offline.`);
       return true;
     } catch (reason) {
-      setMessage(reason instanceof Error ? reason.message : 'Scan gagal diproses.', true);
+      const message = reason instanceof Error ? reason.message : 'Scan gagal diproses.';
+      const failureMessage = attendanceMessage(settings.scan_failure_message, {
+        name: participant?.full_name ?? 'Peserta tidak dikenal',
+        status: '',
+        reason: message,
+      });
+      setLastScan(failureMessage);
+      playAttendanceTone(false);
+      speakAttendanceMessage(failureMessage);
+      setMessage(message, true);
       return false;
     }
   }
@@ -1608,13 +1690,24 @@ export default function App() {
   }
 
   async function submitManualAttendance() {
+    if (manualAttendanceBusy) return;
     const participant = participants.find((item) => String(item.id) === manualParticipantId);
     if (!participant) {
       setError('Pilih peserta terlebih dahulu.');
       return;
     }
-    const saved = await handleScan(participant.qr_code || participant.participant_code, 'MANUAL_INPUT');
-    if (saved) setManualAttendanceOpen(false);
+    setManualAttendanceBusy(true);
+    try {
+      const saved = await handleScan(participant.qr_code || participant.participant_code, 'MANUAL_INPUT');
+      if (saved) {
+        setManualAttendanceOpen(false);
+        setManualAttendanceQuery('');
+        setManualParticipantId('');
+        setPage('scanner');
+      }
+    } finally {
+      setManualAttendanceBusy(false);
+    }
   }
 
   async function saveSchoolWhatsappSettings(event: FormEvent<HTMLFormElement>) {
@@ -1958,8 +2051,7 @@ export default function App() {
                     <button className="scan-menu-trigger" type="button" aria-label="Buka menu dengan PIN" onClick={() => requestScannerMenu('dashboard')}><span className="hamburger-icon" aria-hidden="true"><i /><i /><i /></span></button>
                   </div>
                 </div>
-                {lastScan && <div className="scan-welcome" aria-live="polite"><span className="scan-welcome-track">{lastScan}</span></div>}
-                {!lastScan && <div className="scan-welcome"><span className="scan-welcome-track">Pindai kartu atau barcode peserta saat melaksanakan absensi</span></div>}
+                <div className="scan-welcome" aria-live="polite"><span className="scan-welcome-track">{lastScan || settings.scan_welcome_message}</span></div>
               </header>
 
               {pendingCount > 0 && <div className="scan-controls-row"><div className="scan-queue-summary"><span className="queue-mini-count">{pendingCount}</span><span>pending · sinkron otomatis</span></div></div>}
@@ -2108,6 +2200,21 @@ export default function App() {
                     return { ...current, weekly_schedules: [...existing, { weekday, is_working_day: event.target.checked, check_in_deadline: current.check_in_deadline, lateness_tolerance_minutes: current.lateness_tolerance_minutes, check_out_start: current.check_out_start }].sort((a, b) => a.weekday - b.weekday) };
                   })} /><span>Hari kerja</span></label>;
                 })}</div>
+                <section className="attendance-speech-settings">
+                  <div>
+                    <h2>Pesan scanner & suara absensi</h2>
+                    <p className="muted">Teks berhasil/gagal dibacakan melalui TTS perangkat dan ditampilkan pada banner scanner. Variabel: <code>{'{name}'}</code>, <code>{'{status}'}</code>, <code>{'{reason}'}</code>.</p>
+                  </div>
+                  <label>Teks sambutan scanner
+                    <textarea maxLength={255} required rows={2} value={operationalForm.scan_welcome_message} onChange={(event) => setOperationalForm((current) => ({ ...current, scan_welcome_message: event.target.value }))} />
+                  </label>
+                  <label>Ucapan setelah absensi berhasil
+                    <textarea maxLength={255} required rows={2} value={operationalForm.scan_success_message} onChange={(event) => setOperationalForm((current) => ({ ...current, scan_success_message: event.target.value }))} />
+                  </label>
+                  <label>Ucapan saat absensi gagal
+                    <textarea maxLength={255} required rows={2} value={operationalForm.scan_failure_message} onChange={(event) => setOperationalForm((current) => ({ ...current, scan_failure_message: event.target.value }))} />
+                  </label>
+                </section>
                 <div className="heading-actions"><button className="button primary">Simpan pengaturan</button></div>
               </form>}
               {can('settings.operational.edit') && <form className="panel holiday-form" onSubmit={(event) => void addHoliday(event)}>
@@ -2339,8 +2446,8 @@ export default function App() {
             </select>
           </label>
           <div className="pin-modal-actions">
-            <button type="button" className="button secondary" onClick={() => setManualAttendanceOpen(false)}>Batal</button>
-            <button type="button" className="button primary" disabled={!manualParticipantId} onClick={() => void submitManualAttendance()}>Catat absensi</button>
+            <button type="button" className="button secondary" disabled={manualAttendanceBusy} onClick={() => setManualAttendanceOpen(false)}>Batal</button>
+            <button type="button" className="button primary" disabled={!manualParticipantId || manualAttendanceBusy} onClick={() => void submitManualAttendance()}>{manualAttendanceBusy ? 'Mencatat…' : 'Catat absensi'}</button>
           </div>
         </section>
       </div>}
