@@ -1,8 +1,16 @@
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+export class NetworkUnavailableError extends Error {
+  constructor() {
+    super('Tidak dapat terhubung ke server. Periksa koneksi internet, lalu coba lagi.');
+    this.name = 'NetworkUnavailableError';
+  }
+}
+
 export function isNetworkUnavailableError(error) {
-  return error instanceof TypeError &&
-    /failed to fetch|network error|network request failed|load failed/i.test(error.message);
+  return error instanceof NetworkUnavailableError ||
+    (error instanceof TypeError &&
+      /failed to fetch|network error|network request failed|load failed/i.test(error.message));
 }
 
 function assertQueuedScan(scan, schoolId) {

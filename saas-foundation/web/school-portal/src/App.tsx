@@ -9,9 +9,13 @@ import {
   createQueuedScan,
 } from './core/attendance.js';
 import { extractSchoolAccessToken } from './core/auth-session.js';
-import { cameraRotationFromOrientation } from './core/camera-orientation.js';
+import { cameraRotationForScreen } from './core/camera-orientation.js';
 import { getDefaultPage } from './core/navigation.js';
-import { createOfflineSyncManager, isNetworkUnavailableError } from './core/offline-sync.js';
+import {
+  createOfflineSyncManager,
+  isNetworkUnavailableError,
+  NetworkUnavailableError,
+} from './core/offline-sync.js';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '');
 const DEFAULT_WHATSAPP_GATEWAY_URL = 'https://gateway-production-a1168195.up.railway.app/api/send-message';
@@ -245,6 +249,21 @@ interface ParticipantSchedule {
   weekday: number;
   check_in_deadline: string;
 }
+type ScheduleOverride = Pick<ParticipantSchedule, 'weekday' | 'check_in_deadline'>;
+type PendingSettingsOperation =
+  | {
+    id: 'operational';
+    revision: string;
+    kind: 'operational';
+    payload: OperationalSettings;
+  }
+  | {
+    id: string;
+    revision: string;
+    kind: 'participant-schedule';
+    participant_id: string;
+    overrides: ScheduleOverride[];
+  };
 interface ParticipantImportResult {
   imported: number;
   skipped: number;
@@ -318,6 +337,7 @@ interface ScannerPreferences {
 interface ScannerCache extends DBSchema {
   participants: { key: string; value: Participant };
   settings: { key: string; value: OperationalSettings };
+  pendingSettings: { key: string; value: PendingSettingsOperation };
   scannerPreferences: { key: string; value: ScannerPreferences };
   queue: {
     key: string;
@@ -537,6 +557,16 @@ class ApiError extends Error {
   }
 }
 
+async function fetchApi(url: string, options?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, options);
+  } catch (reason) {
+    if (reason instanceof NetworkUnavailableError) throw reason;
+    if (isNetworkUnavailableError(reason)) throw new NetworkUnavailableError();
+    throw reason;
+  }
+}
+
 async function request<T>(
   path: string,
   token?: string,
@@ -547,7 +577,7 @@ async function request<T>(
     signal?: AbortSignal;
   } = {},
 ): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetchApi(`${API_BASE}${path}`, {
     method: options.method ?? 'GET',
     signal: options.signal,
     headers: {
@@ -607,7 +637,7 @@ function PasswordEye({ visible }: { visible: boolean }) {
 
 function database(schoolId: string | number): Promise<IDBPDatabase<ScannerCache>> {
   if (!('indexedDB' in window)) throw new Error('Penyimpanan lokal tidak tersedia pada browser ini.');
-  return openDB<ScannerCache>(`saas-school-${schoolId}`, 4, {
+  return openDB<ScannerCache>(`saas-school-${schoolId}`, 5, {
     upgrade(db, oldVersion) {
       if (oldVersion < 1) {
         db.createObjectStore('participants', { keyPath: 'id' });
@@ -617,8 +647,13 @@ function database(schoolId: string | number): Promise<IDBPDatabase<ScannerCache>
       if (oldVersion < 2) db.createObjectStore('settings');
       if (oldVersion < 3) db.createObjectStore('scannerPreferences');
       if (oldVersion < 4) db.createObjectStore('attendanceState', { keyPath: 'key' });
+      if (oldVersion < 5) db.createObjectStore('pendingSettings');
     },
   });
+}
+
+function createSettingsRevision() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 function dailyAttendanceKey(participantId: string, attendanceDate: string) {
@@ -786,9 +821,11 @@ export default function App() {
   const [selectedReportEntries, setSelectedReportEntries] = useState<Set<string>>(new Set());
   const [pendingCount, setPendingCount] = useState(0);
   const [online, setOnline] = useState(navigator.onLine);
+  const [connectivityVersion, setConnectivityVersion] = useState(0);
   const [lastScan, setLastScan] = useState('');
   const [scanPopup, setScanPopup] = useState<{ message: string; success: boolean; id: number } | null>(null);
   const [historyResetVersion, setHistoryResetVersion] = useState(0);
+  const [queueRefreshVersion, setQueueRefreshVersion] = useState(0);
   const [manualCode, setManualCode] = useState('');
   const [manualAttendanceOpen, setManualAttendanceOpen] = useState(false);
   const [manualAttendanceQuery, setManualAttendanceQuery] = useState('');
@@ -829,6 +866,12 @@ export default function App() {
   const controlsRef = useRef<{ stop: () => void } | null>(null);
   const cameraStartGenerationRef = useRef(0);
   const cameraRotationRef = useRef(0);
+  const cameraScreenAngleRef = useRef(0);
+  const deviceOrientationRef = useRef<{ beta: number | null; gamma: number | null }>({
+    beta: null,
+    gamma: null,
+  });
+  const settingsSyncPromiseRef = useRef<Promise<void> | null>(null);
   const scannerIdleRef = useRef(false);
   const resetScannerIdleTimerRef = useRef<() => void>(() => {});
   const handleScanRef = useRef<
@@ -887,7 +930,7 @@ export default function App() {
         link.href = '/favicon.svg';
       };
     }
-    fetch(`${API_BASE}/branding/logo`, { cache: 'no-store' })
+    fetchApi(`${API_BASE}/branding/logo`, { cache: 'no-store' })
       .then(async (response) => {
         if (response.status === 404) return null;
         if (!response.ok) throw new Error(`Logo platform gagal dimuat (${response.status}).`);
@@ -909,7 +952,7 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
-    fetch(`${API_BASE}/branding`, { cache: 'no-store' })
+    fetchApi(`${API_BASE}/branding`, { cache: 'no-store' })
       .then(async (response) => {
         if (!response.ok) throw new Error(`Nama aplikasi gagal dimuat (${response.status}).`);
         return response.json() as Promise<{ application_name?: string }>;
@@ -1102,8 +1145,15 @@ export default function App() {
   }, [page, session?.token, googleSheetsSettings.is_enabled]);
 
   useEffect(() => {
-    const onOnline = () => setOnline(true);
-    const onOffline = () => setOnline(false);
+    const onOnline = () => {
+      setOnline(true);
+      setOfflineMode(false);
+      setConnectivityVersion((current) => current + 1);
+    };
+    const onOffline = () => {
+      setOnline(false);
+      setOfflineMode(true);
+    };
     window.addEventListener('online', onOnline);
     window.addEventListener('offline', onOffline);
     return () => {
@@ -1114,7 +1164,7 @@ export default function App() {
 
   useEffect(() => {
     if (!session || page !== 'scanner' || !scannerPreferencesReady || scannerIdle) return;
-    let orientationTimer: number | undefined;
+    const screenOrientation = window.screen.orientation;
     const stopCamera = () => {
       cameraStartGenerationRef.current += 1;
       controlsRef.current?.stop();
@@ -1129,33 +1179,41 @@ export default function App() {
     const resumeCamera = () => {
       if (!document.hidden) void startCamera(scannerPreferencesRef.current);
     };
-    const handleDeviceOrientation = (event: DeviceOrientationEvent) => {
-      const nextRotation = cameraRotationFromOrientation(
-        event.beta,
-        event.gamma,
+    const updateCameraRotation = () => {
+      const screenAngle = screenOrientation?.angle ?? cameraScreenAngleRef.current;
+      const nextRotation = cameraRotationForScreen(
+        deviceOrientationRef.current.beta,
+        deviceOrientationRef.current.gamma,
+        screenAngle,
         cameraRotationRef.current,
+        cameraScreenAngleRef.current,
       );
-      if (nextRotation === cameraRotationRef.current) return;
-      cameraRotationRef.current = nextRotation;
-      setCameraRotation(nextRotation);
-      if (orientationTimer !== undefined) window.clearTimeout(orientationTimer);
-      stopCamera();
-      orientationTimer = window.setTimeout(() => {
-        orientationTimer = undefined;
-        resumeCamera();
-      }, 300);
+      cameraScreenAngleRef.current = screenAngle;
+      if (nextRotation !== cameraRotationRef.current) {
+        cameraRotationRef.current = nextRotation;
+        setCameraRotation(nextRotation);
+      }
     };
+    const handleDeviceOrientation = (event: DeviceOrientationEvent) => {
+      deviceOrientationRef.current = { beta: event.beta, gamma: event.gamma };
+      updateCameraRotation();
+    };
+    const handleScreenOrientationChange = () => updateCameraRotation();
     const handleVisibilityChange = () => {
       if (document.hidden) stopCamera();
       else resumeCamera();
     };
+    updateCameraRotation();
     window.addEventListener('deviceorientation', handleDeviceOrientation);
+    window.addEventListener('orientationchange', handleScreenOrientationChange);
+    screenOrientation?.addEventListener('change', handleScreenOrientationChange);
     document.addEventListener('visibilitychange', handleVisibilityChange);
     resumeCamera();
     return () => {
       window.removeEventListener('deviceorientation', handleDeviceOrientation);
+      window.removeEventListener('orientationchange', handleScreenOrientationChange);
+      screenOrientation?.removeEventListener('change', handleScreenOrientationChange);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      if (orientationTimer !== undefined) window.clearTimeout(orientationTimer);
       stopCamera();
     };
   }, [page, session?.school.id, scannerIdle, scannerPreferencesReady]);
@@ -1196,7 +1254,6 @@ export default function App() {
         restored.screenSleepMinutes = Number.isFinite(Number(restored.screenSleepMinutes))
           ? Math.min(60, Math.max(1, Math.round(Number(restored.screenSleepMinutes))))
           : initialScannerPreferences.screenSleepMinutes;
-        if (restored.cameraFacing === 'user') restored.cameraFacing = 'environment';
         setScannerPreferences(restored);
         await db.put('scannerPreferences', restored, 'default');
       })
@@ -1301,7 +1358,7 @@ export default function App() {
       }
       setError(reason instanceof Error ? reason.message : 'Sinkronisasi otomatis gagal.');
     });
-  }, [online, page, session?.school.id]);
+  }, [connectivityVersion, online, page, session?.school.id]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setScanClock(new Date()), 1000);
@@ -1322,6 +1379,18 @@ export default function App() {
     }, 10000);
     return () => window.clearInterval(timer);
   }, [online, page, session?.school.id]);
+
+  useEffect(() => {
+    if (!session || !online) return;
+    void syncPendingSettings().catch((reason: unknown) => {
+      if (isNetworkUnavailableError(reason)) {
+        setOfflineMode(true);
+        if (!navigator.onLine) setOnline(false);
+        return;
+      }
+      setError(reason instanceof Error ? reason.message : 'Pengaturan lokal gagal disinkronkan.');
+    });
+  }, [connectivityVersion, online, session?.school.id, session?.token]);
 
   async function loadSchoolData(currentSession: SchoolSession) {
     if (currentSession.school.subscription_expired) return;
@@ -1675,7 +1744,100 @@ export default function App() {
   async function syncPending() {
     const result = await syncManager().syncPending();
     await refreshPendingCount();
+    if (result.accepted_ids.length) {
+      setQueueRefreshVersion((current) => current + 1);
+    }
+    if (result.batches > 0) setOfflineMode(false);
     return result;
+  }
+
+  async function persistPendingSettings(
+    operation: PendingSettingsOperation,
+    nextSettings: OperationalSettings,
+  ) {
+    if (!session) throw new Error('Sesi sekolah tidak tersedia.');
+    const db = await database(session.school.id);
+    const transaction = db.transaction(['settings', 'pendingSettings'], 'readwrite');
+    await Promise.all([
+      transaction.objectStore('settings').put(nextSettings, 'operational'),
+      transaction.objectStore('pendingSettings').put(operation, operation.id),
+    ]);
+    await transaction.done;
+    setSettings(nextSettings);
+    setOperationalForm(nextSettings);
+  }
+
+  async function syncPendingSettings() {
+    if (!session || !navigator.onLine) return;
+    if (settingsSyncPromiseRef.current) return settingsSyncPromiseRef.current;
+    const currentSession = session;
+    const syncTask = (async () => {
+      const db = await database(currentSession.school.id);
+      let synced = 0;
+      while (navigator.onLine) {
+        const operation = (await db.getAll('pendingSettings'))[0];
+        if (!operation) break;
+        if (operation.kind === 'operational') {
+          await request('/school/settings', currentSession.token, {
+            method: 'PUT',
+            body: operation.payload,
+          });
+        } else {
+          await request(
+            `/school/participants/${encodeURIComponent(operation.participant_id)}/schedule`,
+            currentSession.token,
+            { method: 'PUT', body: { overrides: operation.overrides } },
+          );
+        }
+
+        const latestOperation = await db.get('pendingSettings', operation.id);
+        if (latestOperation?.revision !== operation.revision) continue;
+
+        if (operation.kind === 'operational') {
+          const transaction = db.transaction(['settings', 'pendingSettings'], 'readwrite');
+          await Promise.all([
+            transaction.objectStore('settings').put(operation.payload, 'operational'),
+            transaction.objectStore('pendingSettings').delete(operation.id),
+          ]);
+          await transaction.done;
+          setSettings(operation.payload);
+          setOperationalForm(operation.payload);
+        } else {
+          const cachedSettings = await db.get('settings', 'operational') ?? settings;
+          const nextSettings = {
+            ...cachedSettings,
+            participant_overrides: [
+              ...cachedSettings.participant_overrides.filter(
+                (item) => String(item.participant_id) !== operation.participant_id,
+              ),
+              ...operation.overrides.map((item) => ({
+                ...item,
+                participant_id: operation.participant_id,
+              })),
+            ],
+          };
+          const transaction = db.transaction(['settings', 'pendingSettings'], 'readwrite');
+          await Promise.all([
+            transaction.objectStore('settings').put(nextSettings, 'operational'),
+            transaction.objectStore('pendingSettings').delete(operation.id),
+          ]);
+          await transaction.done;
+          setSettings(nextSettings);
+          setOperationalForm(nextSettings);
+        }
+        synced += 1;
+      }
+      if (synced) {
+        setOfflineMode(false);
+        setMessage('Pengaturan lokal berhasil disinkronkan ke server.');
+      }
+    })();
+    settingsSyncPromiseRef.current = syncTask;
+    try {
+      await syncTask;
+    } finally {
+      if (settingsSyncPromiseRef.current === syncTask) settingsSyncPromiseRef.current = null;
+    }
   }
 
   function markSubscriptionExpired() {
@@ -1897,16 +2059,19 @@ export default function App() {
   }
 
   async function startCamera(preferences = scannerPreferences) {
-    if (!videoRef.current) return;
+    const video = videoRef.current;
+    if (!video) return;
     const generation = ++cameraStartGenerationRef.current;
+    let controls: { stop: () => void } | null = null;
     try {
       const fastScan = preferences.scanSpeed === 'fast';
-      const isLandscape = Math.abs(cameraRotationRef.current) === 90;
+      const isLandscape = window.matchMedia('(orientation: landscape)').matches ||
+        Math.abs(cameraRotationRef.current) === 90;
       const reader = new BrowserMultiFormatReader(undefined, {
         delayBetweenScanAttempts: fastScan ? 100 : 350,
         delayBetweenScanSuccess: fastScan ? 250 : 500,
       });
-      const controls = await reader.decodeFromConstraints(
+      controls = await reader.decodeFromConstraints(
         {
           audio: false,
           video: {
@@ -1915,7 +2080,7 @@ export default function App() {
             height: { ideal: isLandscape ? 720 : 1280 },
           },
         },
-        videoRef.current,
+        video,
         (result) => {
           if (
             result &&
@@ -1931,10 +2096,23 @@ export default function App() {
         return;
       }
       controlsRef.current = controls;
+      await video.play();
+      if (cameraStartGenerationRef.current !== generation || document.hidden) {
+        controls.stop();
+        if (controlsRef.current === controls) controlsRef.current = null;
+        return;
+      }
       setCameraActive(true);
       setError('');
     } catch (reason) {
+      controls?.stop();
+      if (controlsRef.current === controls) controlsRef.current = null;
       if (cameraStartGenerationRef.current !== generation) return;
+      if (video.srcObject instanceof MediaStream) {
+        video.srcObject.getTracks().forEach((track) => track.stop());
+        video.srcObject = null;
+      }
+      setCameraActive(false);
       setMessage(reason instanceof Error ? reason.message : 'Kamera tidak dapat dibuka. Periksa izin kamera.', true);
     }
   }
@@ -2346,37 +2524,74 @@ export default function App() {
   async function saveParticipantSchedule() {
     if (!session || !scheduleParticipantId) return;
     setBusy(true);
+    let savedLocally = false;
+    const participantId = scheduleParticipantId;
     try {
       const overrides = Object.entries(scheduleOverrides)
         .filter(([, deadline]) => deadline)
-        .map(([weekday, deadline]) => ({
+        .map(([weekday, deadline]): ScheduleOverride => ({
           weekday: Number(weekday),
           check_in_deadline: `${deadline}:00`,
         }));
-      await request(`/school/participants/${scheduleParticipantId}/schedule`, session.token, {
-        method: 'PUT',
-        body: { overrides },
-      });
       const nextSettings = {
         ...settings,
         participant_overrides: [
           ...settings.participant_overrides.filter(
-            (item) => String(item.participant_id) !== scheduleParticipantId,
+            (item) => String(item.participant_id) !== participantId,
           ),
           ...overrides.map((item) => ({
             ...item,
-            participant_id: scheduleParticipantId,
+            participant_id: participantId,
           })),
         ],
       };
-      setSettings(nextSettings);
-      setOperationalForm(nextSettings);
+      const operation: PendingSettingsOperation = {
+        id: `participant-schedule:${participantId}`,
+        revision: createSettingsRevision(),
+        kind: 'participant-schedule',
+        participant_id: participantId,
+        overrides,
+      };
+      await persistPendingSettings(operation, nextSettings);
+      savedLocally = true;
+      if (!online || !navigator.onLine || offlineMode) {
+        setOfflineMode(true);
+        if (!navigator.onLine) setOnline(false);
+        setScheduleParticipantId('');
+        setMessage('Jadwal khusus peserta tersimpan di perangkat dan akan disinkronkan saat online.');
+        return;
+      }
+
+      await syncPendingSettings();
       const db = await database(session.school.id);
-      await db.put('settings', nextSettings, 'operational');
+      let pending = await db.get('pendingSettings', operation.id);
+      if (pending?.revision === operation.revision && navigator.onLine) {
+        await syncPendingSettings();
+        pending = await db.get('pendingSettings', operation.id);
+      }
+      if (pending?.revision === operation.revision) {
+        setScheduleParticipantId('');
+        setMessage('Jadwal khusus peserta tersimpan di perangkat dan akan disinkronkan saat online.');
+        return;
+      }
       setScheduleParticipantId('');
       setMessage('Jadwal khusus peserta berhasil disimpan dan tersedia untuk scanner offline.');
     } catch (reason) {
-      setMessage(reason instanceof Error ? reason.message : 'Jadwal khusus peserta gagal disimpan.', true);
+      if (isNetworkUnavailableError(reason) && savedLocally) {
+        setOfflineMode(true);
+        if (!navigator.onLine) setOnline(false);
+        setScheduleParticipantId('');
+        setMessage('Jadwal khusus peserta tersimpan di perangkat dan akan disinkronkan saat online.');
+      } else {
+        setMessage(
+          savedLocally && reason instanceof Error
+            ? `Jadwal tersimpan di perangkat, tetapi belum tersinkron: ${reason.message}`
+            : reason instanceof Error
+              ? reason.message
+              : 'Jadwal khusus peserta gagal disimpan.',
+          true,
+        );
+      }
     } finally {
       setBusy(false);
     }
@@ -2562,31 +2777,81 @@ export default function App() {
           check_out_start: schedule?.check_out_start ?? operationalForm.check_out_start,
         };
       });
-      const result = await request<unknown>('/school/settings', session.token, {
-        method: 'PUT',
-        body: {
-          ...operationalForm,
-          weekly_schedules: weeklySchedules,
-          ...(scannerPinForm ? { scanner_pin: scannerPinForm } : {}),
-        },
-      });
-      const nextSettings = {
+      const nextSettings: OperationalSettings = {
         ...operationalForm,
         weekly_schedules: weeklySchedules,
-        ...((result as { settings?: Partial<OperationalSettings> }).settings ?? {}),
         participant_overrides: settings.participant_overrides,
       };
-      setSettings(nextSettings);
-      setOperationalForm(nextSettings);
-      if (scannerPinForm) {
-        setScannerPinForm('');
-        setOperationalForm((current) => ({ ...current, scanner_pin_configured: true }));
-        setSettings((current) => ({ ...current, scanner_pin_configured: true }));
+      const operation: PendingSettingsOperation = {
+        id: 'operational',
+        revision: createSettingsRevision(),
+        kind: 'operational',
+        payload: nextSettings,
+      };
+      await persistPendingSettings(operation, nextSettings);
+      const offlineMessage = scannerPinForm
+        ? 'Pengaturan operasional tersimpan di perangkat dan akan disinkronkan saat online. PIN scanner tidak disimpan offline; simpan kembali saat online.'
+        : 'Pengaturan tersimpan di perangkat dan akan disinkronkan saat online.';
+      if (!online || !navigator.onLine || offlineMode) {
+        setOfflineMode(true);
+        if (!navigator.onLine) setOnline(false);
+        setMessage(offlineMessage);
+        return;
       }
+
+      try {
+        await syncPendingSettings();
+      } catch (reason) {
+        if (!isNetworkUnavailableError(reason)) {
+          setMessage(
+            `Pengaturan tersimpan di perangkat, tetapi belum tersinkron: ${reason instanceof Error ? reason.message : 'server menolak perubahan.'}`,
+            true,
+          );
+          return;
+        }
+        setOfflineMode(true);
+        if (!navigator.onLine) setOnline(false);
+        setMessage(offlineMessage);
+        return;
+      }
+
       const db = await database(session.school.id);
-      await db.put('settings', nextSettings, 'operational');
-      setMessage('Pengaturan operasional tersimpan.');
+      let pending = await db.get('pendingSettings', operation.id);
+      if (pending?.revision === operation.revision && navigator.onLine) {
+        await syncPendingSettings();
+        pending = await db.get('pendingSettings', operation.id);
+      }
+      if (pending?.revision === operation.revision) {
+        setMessage(offlineMessage);
+        return;
+      }
+      if (!scannerPinForm) {
+        setMessage('Pengaturan operasional berhasil disimpan dan disinkronkan.');
+        return;
+      }
+
+      const result = await request<unknown>('/school/settings', session.token, {
+        method: 'PUT',
+        body: { ...nextSettings, scanner_pin: scannerPinForm },
+      });
+      const finalSettings: OperationalSettings = {
+        ...nextSettings,
+        ...((result as { settings?: Partial<OperationalSettings> }).settings ?? {}),
+        participant_overrides: nextSettings.participant_overrides,
+        scanner_pin_configured: true,
+      };
+      await db.put('settings', finalSettings, 'operational');
+      setSettings(finalSettings);
+      setOperationalForm(finalSettings);
+      setScannerPinForm('');
+      setMessage('Pengaturan operasional dan PIN scanner berhasil disimpan.');
     } catch (reason) {
+      if (isNetworkUnavailableError(reason)) {
+        setOfflineMode(true);
+        if (!navigator.onLine) setOnline(false);
+        setMessage('Pengaturan operasional tersimpan. Perubahan PIN scanner belum berhasil disimpan dan harus dicoba saat online.');
+        return;
+      }
       setMessage(reason instanceof Error ? reason.message : 'Pengaturan gagal disimpan.', true);
     }
   }
@@ -2728,7 +2993,7 @@ export default function App() {
     if (!session) return;
     setSchoolBackupBusy(true);
     try {
-      const response = await fetch(`${API_BASE}/school/backup/export`, {
+      const response = await fetchApi(`${API_BASE}/school/backup/export`, {
         headers: { authorization: `Bearer ${session.token}` },
       });
       if (!response.ok) {
@@ -2758,7 +3023,7 @@ export default function App() {
     }
     setSchoolBackupBusy(true);
     try {
-      const response = await fetch(`${API_BASE}/school/backup/restore`, {
+      const response = await fetchApi(`${API_BASE}/school/backup/restore`, {
         method: 'POST',
         headers: {
           authorization: `Bearer ${session.token}`,
@@ -3221,6 +3486,7 @@ export default function App() {
                   <video
                     ref={videoRef}
                     className="camera-video"
+                    autoPlay
                     muted
                     playsInline
                     style={{
@@ -3230,7 +3496,7 @@ export default function App() {
                       height: Math.abs(cameraRotation) === 90 && cameraFrameSize.width
                         ? `${cameraFrameSize.width}px`
                         : undefined,
-                      transform: `translate(-50%, -50%) rotate(${cameraRotation}deg)`,
+                      transform: `translate(-50%, -50%) scaleX(${scannerPreferences.cameraFacing === 'user' ? -1 : 1}) rotate(${cameraRotation}deg)`,
                     }}
                   />
                   {cameraActive && <div className="scan-target"><span className="scan-target-line" /></div>}
@@ -3254,7 +3520,10 @@ export default function App() {
                     <button type="button" className="button secondary small history-reset-button" onClick={() => requestScannerMenu('reset-history')}>Reset riwayat</button>
                   </div>
                 </div>
-                <LocalQueueList schoolId={session.school.id} refreshKey={`${lastScan}:${historyResetVersion}`} />
+                <LocalQueueList
+                  schoolId={session.school.id}
+                  refreshKey={`${lastScan}:${historyResetVersion}:${queueRefreshVersion}`}
+                />
               </section>
               {scanPopup && <div className="scan-feedback-layer" aria-live={scanPopup.success ? 'polite' : 'assertive'}>
                 <div key={scanPopup.id} className={`scan-feedback-popup ${scanPopup.success ? 'success' : 'error'}`} role={scanPopup.success ? 'status' : 'alert'}>{scanPopup.message}</div>
@@ -3391,7 +3660,7 @@ export default function App() {
 
           {page === 'settings' && (
             <section>
-              <div className="page-heading"><div><p className="eyebrow">OPERASIONAL</p><h1>Pengaturan scanner & operasional</h1><p className="muted">Atur kamera perangkat, kecepatan scan, dan aturan operasional sekolah.</p></div></div>
+              <div className="page-heading"><div><p className="eyebrow">OPERASIONAL</p><h1>Pengaturan scanner & operasional</h1><p className="muted">Pengaturan perangkat, operasional, dan jadwal tersimpan lokal saat offline lalu disinkronkan otomatis ketika online. Integrasi WhatsApp dan Google Sheets memerlukan koneksi.</p></div></div>
               {can('settings.operational.edit') && <section className="panel scanner-preference-panel">
                 <div><h2>Pengaturan scanner</h2><p className="muted">Preferensi kamera disimpan lokal pada perangkat ini, tidak mengubah perangkat scanner lainnya.</p></div>
                 <div className="form-grid">

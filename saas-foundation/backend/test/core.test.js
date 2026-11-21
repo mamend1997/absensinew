@@ -16,9 +16,15 @@ import {
   hasTenantPermission,
 } from '../src/core/permissions.js';
 import { createOfflineSyncManager } from '../src/core/offline-sync.js';
-import { isNetworkUnavailableError } from '../../web/school-portal/src/core/offline-sync.js';
+import {
+  isNetworkUnavailableError,
+  NetworkUnavailableError,
+} from '../../web/school-portal/src/core/offline-sync.js';
 import { extractSchoolAccessToken } from '../../web/school-portal/src/core/auth-session.js';
-import { cameraRotationFromOrientation } from '../../web/school-portal/src/core/camera-orientation.js';
+import {
+  cameraRotationForScreen,
+  cameraRotationFromOrientation,
+} from '../../web/school-portal/src/core/camera-orientation.js';
 import { getDefaultPage } from '../../web/school-portal/src/core/navigation.js';
 
 test('school codes keep leading zeroes, validate manual changes, and retry collisions', async () => {
@@ -314,6 +320,8 @@ test('offline queue rejects scans from another tenant', async () => {
 test('offline scanner recognizes browser fetch failures without hiding API errors', () => {
   assert.equal(isNetworkUnavailableError(new TypeError('Failed to fetch')), true);
   assert.equal(isNetworkUnavailableError(new TypeError('Load failed')), true);
+  assert.equal(isNetworkUnavailableError(new NetworkUnavailableError()), true);
+  assert.doesNotMatch(new NetworkUnavailableError().message, /failed to fetch/i);
   assert.equal(isNetworkUnavailableError(new Error('Unauthorized')), false);
   assert.equal(isNetworkUnavailableError(new TypeError('Invalid URL')), false);
 });
@@ -353,4 +361,6 @@ test('camera rotation follows physical device orientation while keeping the near
   assert.equal(cameraRotationFromOrientation(-90, 0), -180);
   assert.equal(cameraRotationFromOrientation(45, 45, 0), 0);
   assert.equal(cameraRotationFromOrientation(null, null, 90), 90);
+  assert.equal(cameraRotationForScreen(0, 90, 0, 0), 90);
+  assert.equal(cameraRotationForScreen(0, 90, 90, 0), 0);
 });
