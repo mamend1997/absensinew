@@ -132,9 +132,14 @@ interface QueuedScan {
   menit_terlambat: number;
   status_sync: 'pending' | 'synced';
 }
+interface ScannerPreferences {
+  cameraFacing: 'user' | 'environment';
+  scanSpeed: 'fast' | 'balanced';
+}
 interface ScannerCache extends DBSchema {
   participants: { key: string; value: Participant };
   settings: { key: string; value: OperationalSettings };
+  scannerPreferences: { key: string; value: ScannerPreferences };
   queue: {
     key: string;
     value: QueuedScan;
@@ -166,6 +171,10 @@ const initialSettings: OperationalSettings = {
   weekly_schedules: [],
   holidays: [],
   participant_overrides: [],
+};
+const initialScannerPreferences: ScannerPreferences = {
+  cameraFacing: 'user',
+  scanSpeed: 'fast',
 };
 const weekDays = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
 const initialDate = new Date().toISOString().slice(0, 10);
@@ -240,7 +249,7 @@ function PasswordEye({ visible }: { visible: boolean }) {
 
 function database(schoolId: string | number): Promise<IDBPDatabase<ScannerCache>> {
   if (!('indexedDB' in window)) throw new Error('Penyimpanan lokal tidak tersedia pada browser ini.');
-  return openDB<ScannerCache>(`saas-school-${schoolId}`, 2, {
+  return openDB<ScannerCache>(`saas-school-${schoolId}`, 3, {
     upgrade(db, oldVersion) {
       if (oldVersion < 1) {
         db.createObjectStore('participants', { keyPath: 'id' });
@@ -248,6 +257,7 @@ function database(schoolId: string | number): Promise<IDBPDatabase<ScannerCache>
         queue.createIndex('by-status', 'status_sync');
       }
       if (oldVersion < 2) db.createObjectStore('settings');
+      if (oldVersion < 3) db.createObjectStore('scannerPreferences');
     },
   });
 }
@@ -370,14 +380,13 @@ export default function App() {
   const [userForm, setUserForm] = useState({ username: '', display_name: '', password: '', role_id: '' });
   const [deviceName, setDeviceName] = useState('Scanner sekolah');
   const [operationalForm, setOperationalForm] = useState(initialSettings);
+  const [scannerPreferences, setScannerPreferences] = useState(initialScannerPreferences);
   const [scannerPinForm, setScannerPinForm] = useState('');
   const [scannerMenuOpen, setScannerMenuOpen] = useState(false);
   const [scannerMenuPin, setScannerMenuPin] = useState('');
   const [scannerMenuTarget, setScannerMenuTarget] = useState<Page | null>(null);
   const [scannerUnlockBusy, setScannerUnlockBusy] = useState(false);
   const [holidayForm, setHolidayForm] = useState({ date: '', name: '' });
-  const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
-  const [cameraId, setCameraId] = useState('');
   const [cameraActive, setCameraActive] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -524,15 +533,27 @@ export default function App() {
 
   useEffect(() => {
     if (!session || page !== 'scanner') return;
-    void BrowserMultiFormatReader.listVideoInputDevices().then(setCameraDevices).catch((reason: unknown) => {
-      setError(reason instanceof Error ? reason.message : 'Daftar kamera tidak tersedia.');
-    });
     return () => {
       controlsRef.current?.stop();
       controlsRef.current = null;
       setCameraActive(false);
     };
   }, [page, session?.school.id]);
+
+  useEffect(() => {
+    if (!session) return;
+    let active = true;
+    setScannerPreferences(initialScannerPreferences);
+    void database(session.school.id)
+      .then((db) => db.get('scannerPreferences', 'default'))
+      .then((preferences) => {
+        if (active && preferences) setScannerPreferences(preferences);
+      })
+      .catch((reason: unknown) => {
+        if (active) setError(reason instanceof Error ? reason.message : 'Pengaturan scanner lokal gagal dimuat.');
+      });
+    return () => { active = false; };
+  }, [session?.school.id]);
 
   useEffect(() => () => {
     if (wedgeTimerRef.current) window.clearTimeout(wedgeTimerRef.current);
@@ -957,12 +978,23 @@ export default function App() {
     void handleScan(code);
   }
 
-  async function startCamera() {
+  async function startCamera(preferences = scannerPreferences) {
     if (!videoRef.current) return;
     try {
-      const reader = new BrowserMultiFormatReader();
-      const controls = await reader.decodeFromVideoDevice(
-        cameraId || undefined,
+      const fastScan = preferences.scanSpeed === 'fast';
+      const reader = new BrowserMultiFormatReader(undefined, {
+        delayBetweenScanAttempts: fastScan ? 100 : 350,
+        delayBetweenScanSuccess: fastScan ? 250 : 500,
+      });
+      const controls = await reader.decodeFromConstraints(
+        {
+          audio: false,
+          video: {
+            facingMode: { ideal: preferences.cameraFacing },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          },
+        },
         videoRef.current,
         (result) => {
           if (result) void handleScan(result.getText());
@@ -973,6 +1005,24 @@ export default function App() {
       setError('');
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : 'Kamera tidak dapat dibuka. Periksa izin kamera.', true);
+    }
+  }
+
+  async function updateScannerPreferences(next: ScannerPreferences) {
+    if (!session) return;
+    try {
+      const db = await database(session.school.id);
+      await db.put('scannerPreferences', next, 'default');
+      setScannerPreferences(next);
+      setMessage('Pengaturan scanner disimpan pada perangkat ini.');
+      if (cameraActive) {
+        controlsRef.current?.stop();
+        controlsRef.current = null;
+        setCameraActive(false);
+        await startCamera(next);
+      }
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Pengaturan scanner gagal disimpan.', true);
     }
   }
 
@@ -1685,7 +1735,7 @@ export default function App() {
                   </div>
                   <div className="scan-header-actions">
                     <div className={`connection-chip ${online ? 'is-online' : 'is-offline'}`}><span />{online ? 'Online' : 'Offline'}</div>
-                    {cameraDevices.length > 0 && <select className="scan-camera-select" aria-label="Pilih kamera" value={cameraId} onChange={(event) => setCameraId(event.target.value)}><option value="">Kamera otomatis</option>{cameraDevices.map((device, index) => <option key={device.deviceId} value={device.deviceId}>{device.label || `Kamera ${index + 1}`}</option>)}</select>}
+                    <select className="scan-camera-select" aria-label="Pilih kamera" value={scannerPreferences.cameraFacing} onChange={(event) => void updateScannerPreferences({ ...scannerPreferences, cameraFacing: event.target.value === 'environment' ? 'environment' : 'user' })}><option value="user">Depan</option><option value="environment">Belakang</option></select>
                     <button className="scan-menu-trigger" type="button" aria-label="Buka menu dengan PIN" onClick={() => requestScannerMenu('dashboard')}><span className="hamburger-icon" aria-hidden="true"><i /><i /><i /></span></button>
                   </div>
                 </div>
@@ -1716,7 +1766,7 @@ export default function App() {
                 <LocalQueueList schoolId={session.school.id} />
               </section>
 
-              {!cameraActive && <button className="button primary wide scan-resume-button" onClick={() => void startCamera()}>{cameraDevices.length ? 'Lanjutkan kamera' : 'Buka kamera'}</button>}
+              {!cameraActive && <button className="button primary wide scan-resume-button" onClick={() => void startCamera()}>{scannerPreferences.cameraFacing === 'user' ? 'Buka kamera depan' : 'Buka kamera belakang'}</button>}
             </section>
           )}
 
@@ -1800,7 +1850,25 @@ export default function App() {
 
           {page === 'settings' && (
             <section>
-              <div className="page-heading"><div><p className="eyebrow">OPERASIONAL</p><h1>Jam & hari libur</h1><p className="muted">Atur aturan operasional untuk tenant sekolah ini.</p></div></div>
+              <div className="page-heading"><div><p className="eyebrow">OPERASIONAL</p><h1>Pengaturan scanner & operasional</h1><p className="muted">Atur kamera perangkat, kecepatan scan, dan aturan operasional sekolah.</p></div></div>
+              <section className="panel scanner-preference-panel">
+                <div><h2>Pengaturan scanner</h2><p className="muted">Preferensi kamera disimpan lokal pada perangkat ini, tidak mengubah perangkat scanner lainnya.</p></div>
+                <div className="form-grid">
+                  <label>Kamera default
+                    <select value={scannerPreferences.cameraFacing} onChange={(event) => void updateScannerPreferences({ ...scannerPreferences, cameraFacing: event.target.value === 'environment' ? 'environment' : 'user' })}>
+                      <option value="user">Kamera depan</option>
+                      <option value="environment">Kamera belakang</option>
+                    </select>
+                  </label>
+                  <label>Kecepatan pemindaian
+                    <select value={scannerPreferences.scanSpeed} onChange={(event) => void updateScannerPreferences({ ...scannerPreferences, scanSpeed: event.target.value === 'balanced' ? 'balanced' : 'fast' })}>
+                      <option value="fast">Cepat — lebih responsif</option>
+                      <option value="balanced">Seimbang — lebih hemat baterai</option>
+                    </select>
+                  </label>
+                </div>
+                <p className="muted">Mode cepat mengurangi jeda decode menjadi 100 ms (250 ms setelah berhasil); mode seimbang memakai 350 ms (500 ms setelah berhasil). Pemindaian aktual tetap bergantung pada kamera, fokus, pencahayaan, dan kualitas kode.</p>
+              </section>
               <form className="panel settings-form" onSubmit={(event) => void saveSettings(event)}>
                 <div className="form-grid">
                   <label>Zona waktu<input value={operationalForm.timezone} onChange={(event) => setOperationalForm((current) => ({ ...current, timezone: event.target.value }))} /></label>

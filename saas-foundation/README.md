@@ -117,6 +117,8 @@ Portal terbaru di `web/school-portal` sudah memiliki konfigurasi Capacitor Andro
 Aplikasi ini memakai `https://localhost` sebagai origin Android untuk mendukung
 konteks aman kamera. API harus tersedia melalui HTTPS dan konfigurasi `CORS_ORIGINS`
 backend perlu mengizinkan `https://localhost` selain origin portal web.
+Scanner menggunakan kamera depan dan mode scan cepat secara default; arah kamera
+dan mode cepat/seimbang dapat diubah pada Pengaturan dan disimpan lokal per perangkat.
 
 1. Pasang Android Studio, JDK 21, Android SDK Platform 36, Build-Tools, dan
    Platform-Tools. Node.js 22.5 atau lebih baru diperlukan.
