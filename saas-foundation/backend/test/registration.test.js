@@ -18,6 +18,7 @@ const {
   decryptGatewayToken,
   createWhatsappGatewayPayload,
   encryptGatewayToken,
+  extractGatewayResponseFailure,
   extractGatewayResponseDetail,
   validateGatewayUrl,
 } = await import('../src/core/whatsapp-gateway.js');
@@ -107,6 +108,25 @@ test('WhatsApp gateway diagnostics redact secrets and bound error details', () =
     extractGatewayResponseDetail(JSON.stringify({ message: 'x'.repeat(500) }), 'token', 'phone').length,
     240,
   );
+});
+
+test('WhatsApp gateway rejects explicit delivery failures in successful HTTP responses', () => {
+  assert.equal(
+    extractGatewayResponseFailure(
+      JSON.stringify({
+        success: false,
+        message: 'Nomor +628123456789 token private-test-token gagal dikirim.',
+      }),
+      'private-test-token',
+      '+628123456789',
+    ),
+    'Gateway melaporkan pengiriman gagal: Nomor [redacted] token [redacted] gagal dikirim.',
+  );
+  assert.equal(
+    extractGatewayResponseFailure(JSON.stringify({ status: 'queued' }), 'token', 'phone'),
+    '',
+  );
+  assert.equal(extractGatewayResponseFailure('Accepted', 'token', 'phone'), '');
 });
 
 test('WhatsApp pinned DNS lookup honors Node requests for all resolved addresses', () => {

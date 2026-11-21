@@ -1209,25 +1209,24 @@ export default function App() {
     setBusy(true);
     setError('');
     try {
-      const result = await request<{
-        access_token: string;
-        school: SchoolInfo;
-        user: Partial<UserInfo> & { id: string | number; display_name: string; role_name: string };
-      }>('/school/auth/login', undefined, {
+      const result = await request<{ access_token?: string }>('/school/auth/login', undefined, {
         method: 'POST',
         body: loginForm,
       });
-      if (!result.access_token || !result.school || !result.user) {
-        throw new Error('Respons login tidak memuat sesi sekolah yang valid.');
+      if (typeof result?.access_token !== 'string' || !result.access_token.trim()) {
+        throw new Error('Respons login tidak memuat token sesi sekolah yang valid.');
       }
-      const current = await request<{ user: UserInfo; school: SchoolInfo }>(
+      const current = await request<{ user?: UserInfo; school?: SchoolInfo }>(
         '/school/auth/me',
         result.access_token,
       );
+      if (!current.user || !current.school || !Array.isArray(current.user.permissions)) {
+        throw new Error('Backend tidak mengembalikan profil sesi sekolah yang valid.');
+      }
       const nextSession: SchoolSession = {
         token: result.access_token,
         school: current.school,
-        user: { ...result.user, ...current.user, permissions: current.user.permissions },
+        user: current.user,
       };
       setSession(nextSession);
       localStorage.setItem(SESSION_KEY, JSON.stringify(nextSession));
@@ -3253,7 +3252,7 @@ export default function App() {
               {can('settings.operational.view') && <section className="panel school-whatsapp-panel">
                 <div>
                   <h2>Gateway WhatsApp sekolah</h2>
-                  <p className="muted">Konfigurasi ini khusus untuk tenant sekolah ini. Token dienkripsi di database dan tidak ditampilkan kembali. Simpan perubahan sebelum menguji gateway.</p>
+                  <p className="muted">Konfigurasi ini khusus untuk notifikasi sekolah, seperti keterlambatan; OTP pendaftaran dan reset kata sandi menggunakan gateway platform di Super Admin. Token dienkripsi di database dan tidak ditampilkan kembali. Simpan perubahan sebelum menguji gateway.</p>
                   <span className={`gateway-status ${whatsappSettings.is_enabled && whatsappSettings.is_configured ? 'ready' : ''}`}>
                     {whatsappSettings.is_enabled && whatsappSettings.is_configured ? '● Aktif' : '○ Belum aktif'}
                   </span>

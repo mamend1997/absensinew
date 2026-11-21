@@ -93,6 +93,20 @@ export function extractGatewayResponseDetail(body, token, phone) {
   return safeDetail.slice(0, 240);
 }
 
+export function extractGatewayResponseFailure(body, token, phone) {
+  let payload;
+  try { payload = JSON.parse(body); } catch { return ''; }
+  if (!payload || typeof payload !== 'object') return '';
+  const status = typeof payload.status === 'string' ? payload.status.toLowerCase() : '';
+  const failed = payload.ok === false || payload.success === false || payload.status === false ||
+    ['error', 'failed', 'failure'].includes(status);
+  if (!failed) return '';
+  const detail = extractGatewayResponseDetail(body, token, phone);
+  return detail
+    ? `Gateway melaporkan pengiriman gagal: ${detail}`
+    : 'Gateway melaporkan pengiriman gagal.';
+}
+
 export async function sendWhatsappMessage(urlValue, token, phone, message) {
   const url = validateGatewayUrl(urlValue);
   let addresses;
@@ -134,8 +148,18 @@ export async function sendWhatsappMessage(urlValue, token, phone, message) {
         responseBytes += boundedData.length;
       });
       response.on('end', () => {
-        if (response.statusCode >= 200 && response.statusCode < 300) resolve();
-        else {
+        if (response.statusCode >= 200 && response.statusCode < 300) {
+          const deliveryFailure = extractGatewayResponseFailure(
+            Buffer.concat(responseChunks).toString('utf8'),
+            token,
+            phone,
+          );
+          if (deliveryFailure) {
+            reject(fail(502, deliveryFailure, 'GATEWAY_DELIVERY_FAILED'));
+          } else {
+            resolve();
+          }
+        } else {
           const status = response.statusCode ?? 0;
           const detail = extractGatewayResponseDetail(
             Buffer.concat(responseChunks).toString('utf8'),
