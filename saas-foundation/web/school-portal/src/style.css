@@ -208,7 +208,7 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
 .scan-camera-shell { overflow: hidden; width: 100%; min-height: 100px; flex: 1 1 0; margin: 14px 0; border-radius: 38px; background: linear-gradient(135deg, #2dd4bf 0%, #3b82f6 52%, #8b5cf6 100%); padding: 9px; box-shadow: 0 16px 38px rgba(0,0,0,.22), 0 0 26px rgba(45,212,191,.16); }
 .scan-camera-frame { position: relative; min-height: 0; height: 100%; overflow: hidden; border-radius: 30px; background: #070b14; }
 .camera-video { display: none; }
-.camera-live .camera-video { display: block; width: 100%; height: 100%; min-height: 0; object-fit: cover; }
+.camera-live .camera-video { position: absolute; top: 50%; left: 50%; display: block; width: 100%; height: 100%; min-height: 0; object-fit: cover; }
 .scan-target { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
 .scan-target::before { width: min(86%,520px); height: 50%; border: 2px solid rgba(255,255,255,.7); border-radius: 17px; content: ''; box-shadow: 0 0 0 999px rgba(6,10,14,.14); }
 .scan-target-line { position: absolute; left: 7%; right: 7%; top: 50%; height: 2px; background: var(--scan-accent); box-shadow: 0 0 12px rgba(45,212,191,.8); animation: scan-line 2.4s ease-in-out infinite alternate; }

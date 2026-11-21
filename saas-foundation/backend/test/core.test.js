@@ -18,6 +18,7 @@ import {
 import { createOfflineSyncManager } from '../src/core/offline-sync.js';
 import { isNetworkUnavailableError } from '../../web/school-portal/src/core/offline-sync.js';
 import { extractSchoolAccessToken } from '../../web/school-portal/src/core/auth-session.js';
+import { cameraRotationFromOrientation } from '../../web/school-portal/src/core/camera-orientation.js';
 import { getDefaultPage } from '../../web/school-portal/src/core/navigation.js';
 
 test('school codes keep leading zeroes, validate manual changes, and retry collisions', async () => {
@@ -337,8 +338,19 @@ test('default route opens scanner for scanner users, including offline-capable s
 
 test('school login accepts supported token response keys and rejects malformed tokens', () => {
   assert.equal(extractSchoolAccessToken({ access_token: ' bearer-token ' }), 'bearer-token');
+  assert.equal(extractSchoolAccessToken({ data: { access_token: ' wrapped-token ' } }), 'wrapped-token');
+  assert.equal(extractSchoolAccessToken({ result: { session: { accessToken: ' camel-token ' } } }), 'camel-token');
   assert.equal(extractSchoolAccessToken({ token: 'legacy-token' }), 'legacy-token');
-  assert.equal(extractSchoolAccessToken({ access_token: '' }), '');
+  assert.equal(extractSchoolAccessToken({ access_token: '', token: 'fallback-token' }), 'fallback-token');
   assert.equal(extractSchoolAccessToken({ token: 123 }), '');
   assert.equal(extractSchoolAccessToken(null), '');
+});
+
+test('camera rotation follows physical device orientation while keeping the nearest stable angle', () => {
+  assert.equal(cameraRotationFromOrientation(90, 0), 0);
+  assert.equal(cameraRotationFromOrientation(0, -90), -90);
+  assert.equal(cameraRotationFromOrientation(0, 90), 90);
+  assert.equal(cameraRotationFromOrientation(-90, 0), -180);
+  assert.equal(cameraRotationFromOrientation(45, 45, 0), 0);
+  assert.equal(cameraRotationFromOrientation(null, null, 90), 90);
 });

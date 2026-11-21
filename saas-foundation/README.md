@@ -122,6 +122,7 @@ backend perlu mengizinkan `https://localhost` selain origin portal web.
 Scanner menggunakan kamera belakang dan mode scan cepat secara default; arah kamera,
 mode cepat/seimbang, waktu layar aktif saat idle (1–60 menit), serta field scanner
 barcode USB/Bluetooth dapat diatur pada Pengaturan dan disimpan lokal per perangkat.
+Antarmuka Android tetap portrait; hanya pratinjau kamera yang mengikuti rotasi fisik ponsel.
 Saat batas idle tercapai, kamera dijeda dan layar mengikuti waktu tidur Android.
 Jika field USB/Bluetooth dinonaktifkan, field tersebut disembunyikan dari layar scanner.
 

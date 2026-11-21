@@ -9,6 +9,7 @@ import {
   createQueuedScan,
 } from './core/attendance.js';
 import { extractSchoolAccessToken } from './core/auth-session.js';
+import { cameraRotationFromOrientation } from './core/camera-orientation.js';
 import { getDefaultPage } from './core/navigation.js';
 import { createOfflineSyncManager, isNetworkUnavailableError } from './core/offline-sync.js';
 
@@ -815,6 +816,8 @@ export default function App() {
   const [scannerUnlockBusy, setScannerUnlockBusy] = useState(false);
   const [holidayForm, setHolidayForm] = useState({ date: '', name: '' });
   const [cameraActive, setCameraActive] = useState(false);
+  const [cameraRotation, setCameraRotation] = useState(0);
+  const [cameraFrameSize, setCameraFrameSize] = useState({ width: 0, height: 0 });
   const [scannerIdle, setScannerIdle] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -822,8 +825,10 @@ export default function App() {
   const [confirmationDialog, setConfirmationDialog] = useState<ConfirmationDialog | null>(null);
   const [offlineMode, setOfflineMode] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const cameraFrameRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<{ stop: () => void } | null>(null);
   const cameraStartGenerationRef = useRef(0);
+  const cameraRotationRef = useRef(0);
   const scannerIdleRef = useRef(false);
   const resetScannerIdleTimerRef = useRef<() => void>(() => {});
   const handleScanRef = useRef<
@@ -1110,7 +1115,6 @@ export default function App() {
   useEffect(() => {
     if (!session || page !== 'scanner' || !scannerPreferencesReady || scannerIdle) return;
     let orientationTimer: number | undefined;
-    let isLandscape = window.matchMedia('(orientation: landscape)').matches;
     const stopCamera = () => {
       cameraStartGenerationRef.current += 1;
       controlsRef.current?.stop();
@@ -1125,10 +1129,15 @@ export default function App() {
     const resumeCamera = () => {
       if (!document.hidden) void startCamera(scannerPreferencesRef.current);
     };
-    const handleOrientationChange = () => {
-      const nextIsLandscape = window.matchMedia('(orientation: landscape)').matches;
-      if (nextIsLandscape === isLandscape) return;
-      isLandscape = nextIsLandscape;
+    const handleDeviceOrientation = (event: DeviceOrientationEvent) => {
+      const nextRotation = cameraRotationFromOrientation(
+        event.beta,
+        event.gamma,
+        cameraRotationRef.current,
+      );
+      if (nextRotation === cameraRotationRef.current) return;
+      cameraRotationRef.current = nextRotation;
+      setCameraRotation(nextRotation);
       if (orientationTimer !== undefined) window.clearTimeout(orientationTimer);
       stopCamera();
       orientationTimer = window.setTimeout(() => {
@@ -1140,18 +1149,32 @@ export default function App() {
       if (document.hidden) stopCamera();
       else resumeCamera();
     };
-    window.addEventListener('orientationchange', handleOrientationChange);
-    window.addEventListener('resize', handleOrientationChange);
+    window.addEventListener('deviceorientation', handleDeviceOrientation);
     document.addEventListener('visibilitychange', handleVisibilityChange);
     resumeCamera();
     return () => {
-      window.removeEventListener('orientationchange', handleOrientationChange);
-      window.removeEventListener('resize', handleOrientationChange);
+      window.removeEventListener('deviceorientation', handleDeviceOrientation);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       if (orientationTimer !== undefined) window.clearTimeout(orientationTimer);
       stopCamera();
     };
   }, [page, session?.school.id, scannerIdle, scannerPreferencesReady]);
+
+  useEffect(() => {
+    const frame = cameraFrameRef.current;
+    if (!frame || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(([entry]) => {
+      const width = Math.round(entry.contentRect.width);
+      const height = Math.round(entry.contentRect.height);
+      setCameraFrameSize((current) =>
+        current.width === width && current.height === height
+          ? current
+          : { width, height },
+      );
+    });
+    observer.observe(frame);
+    return () => observer.disconnect();
+  }, [page, session?.school.id]);
 
   useEffect(() => {
     scannerPreferencesRef.current = scannerPreferences;
@@ -1431,7 +1454,7 @@ export default function App() {
       });
       const accessToken = extractSchoolAccessToken(result);
       if (!accessToken) {
-        throw new Error('Respons login tidak memuat token sesi sekolah yang valid.');
+        throw new Error('API sekolah tidak mengembalikan token sesi. Periksa URL backend dan versi API sekolah.');
       }
       const current = await request<{ user?: UserInfo; school?: SchoolInfo }>(
         '/school/auth/me',
@@ -1878,7 +1901,7 @@ export default function App() {
     const generation = ++cameraStartGenerationRef.current;
     try {
       const fastScan = preferences.scanSpeed === 'fast';
-      const isLandscape = window.matchMedia('(orientation: landscape)').matches;
+      const isLandscape = Math.abs(cameraRotationRef.current) === 90;
       const reader = new BrowserMultiFormatReader(undefined, {
         delayBetweenScanAttempts: fastScan ? 100 : 350,
         delayBetweenScanSuccess: fastScan ? 250 : 500,
@@ -3194,8 +3217,22 @@ export default function App() {
               </header>
 
               <div className="scan-camera-shell">
-                <div className={`scan-camera-frame ${cameraActive ? 'camera-live' : ''}`}>
-                  <video ref={videoRef} className="camera-video" muted playsInline />
+                <div ref={cameraFrameRef} className={`scan-camera-frame ${cameraActive ? 'camera-live' : ''}`}>
+                  <video
+                    ref={videoRef}
+                    className="camera-video"
+                    muted
+                    playsInline
+                    style={{
+                      width: Math.abs(cameraRotation) === 90 && cameraFrameSize.height
+                        ? `${cameraFrameSize.height}px`
+                        : undefined,
+                      height: Math.abs(cameraRotation) === 90 && cameraFrameSize.width
+                        ? `${cameraFrameSize.width}px`
+                        : undefined,
+                      transform: `translate(-50%, -50%) rotate(${cameraRotation}deg)`,
+                    }}
+                  />
                   {cameraActive && <div className="scan-target"><span className="scan-target-line" /></div>}
                   {!cameraActive && <div className="scan-camera-paused">Kamera dijeda</div>}
                 </div>
