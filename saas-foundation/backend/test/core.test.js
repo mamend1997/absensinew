@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { calculateAttendance, createQueuedScan } from '../src/core/attendance.js';
-import { calculateAttendance as calculateBrowserAttendance } from '../../web/school-portal/src/core/attendance.js';
+import {
+  calculateAttendance as calculateBrowserAttendance,
+  createQueuedScan as createBrowserQueuedScan,
+} from '../../web/school-portal/src/core/attendance.js';
 import {
   assertValidSchoolCode,
   generateUniqueSchoolCode,
@@ -176,10 +179,12 @@ test('queued scan model preserves idempotency key and original client timestamp'
       lateMinutes: 10,
     },
   });
+
   assert.equal(record.sekolah_id, '10');
   assert.equal(record.client_timestamp, '2026-11-23T01:15:00.000Z');
   assert.equal(record.status_sync, 'pending');
   assert.equal(record.menit_terlambat, 10);
+  assert.equal(record.scan_method, 'SCAN_QR');
   assert.throws(
     () => createQueuedScan({
       sekolah_id: 10,
@@ -190,6 +195,18 @@ test('queued scan model preserves idempotency key and original client timestamp'
     }),
     /Status absensi tidak sesuai/,
   );
+});
+
+test('browser queued scans preserve manual attendance origin', () => {
+  const record = createBrowserQueuedScan({
+    sekolah_id: 10,
+    id_peserta: 'p1',
+    jenis_absen: 'check_in',
+    scan_method: 'MANUAL_INPUT',
+    id_unik: '5a2c6ec7-33cb-4a2d-b205-7a2be89146e2',
+    calculation: { date: '2026-11-23', status: 'hadir', lateMinutes: 0 },
+  });
+  assert.equal(record.scan_method, 'MANUAL_INPUT');
 });
 
 test('batch sync marks only server-accepted ids and keeps rejected records pending', async () => {

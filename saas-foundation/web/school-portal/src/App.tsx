@@ -10,21 +10,128 @@ import { createOfflineSyncManager } from './core/offline-sync.js';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '');
 const SESSION_KEY = 'saas_school_session';
-const DEVICE_KEY_PREFIX = 'saas_scanner_device_key_';
-type Page = 'dashboard' | 'scanner' | 'reports' | 'participants' | 'settings' | 'roles' | 'devices' | 'downloads' | 'billing';
+type Page = 'dashboard' | 'scanner' | 'reports' | 'participants' | 'settings' | 'roles' | 'downloads' | 'billing';
 type Permission =
   | 'dashboard.read'
+  | 'dashboard.view'
   | 'attendance.read'
+  | 'attendance.view'
   | 'attendance.export'
+  | 'attendance.edit'
   | 'participants.read'
+  | 'participants.view'
   | 'participants.manage'
+  | 'participants.edit'
+  | 'participants.delete'
   | 'participants.qr.print'
   | 'settings.operational.manage'
+  | 'settings.operational.view'
+  | 'settings.operational.edit'
   | 'attendance.excuse.manage'
   | 'scanner.use'
   | 'school.users.manage'
+  | 'school.users.view'
+  | 'school.users.edit'
+  | 'school.users.delete'
   | 'school.roles.manage'
-  | 'scanner.devices.manage';
+  | 'school.roles.view'
+  | 'school.roles.edit'
+  | 'school.roles.delete';
+type RoleAction = 'view' | 'edit' | 'delete';
+interface RolePermissionGroup {
+  key: string;
+  label: string;
+  view: Permission;
+  edit?: Permission;
+  delete?: Permission;
+}
+interface GoogleSheetsSettings {
+  web_app_url: string;
+  is_enabled: boolean;
+  is_configured: boolean;
+  secret_hint: string;
+}
+const ROLE_PERMISSION_GROUPS: RolePermissionGroup[] = [
+  { key: 'dashboard', label: 'Ringkasan', view: 'dashboard.view' },
+  { key: 'attendance', label: 'Rekap absensi', view: 'attendance.view', edit: 'attendance.edit' },
+  { key: 'participants', label: 'Peserta & kelas', view: 'participants.view', edit: 'participants.edit', delete: 'participants.delete' },
+  { key: 'settings', label: 'Pengaturan', view: 'settings.operational.view', edit: 'settings.operational.edit' },
+  { key: 'users', label: 'Akun sekolah', view: 'school.users.view', edit: 'school.users.edit', delete: 'school.users.delete' },
+  { key: 'roles', label: 'Role & izin', view: 'school.roles.view', edit: 'school.roles.edit', delete: 'school.roles.delete' },
+  { key: 'scanner', label: 'Scanner', view: 'scanner.use' },
+];
+const LEGACY_PERMISSION_EXPANSIONS: Partial<Record<Permission, Permission[]>> = {
+  'dashboard.read': ['dashboard.view'],
+  'attendance.read': ['attendance.view'],
+  'attendance.excuse.manage': ['attendance.edit'],
+  'participants.read': ['participants.view'],
+  'participants.manage': ['participants.view', 'participants.edit', 'participants.delete'],
+  'settings.operational.manage': ['settings.operational.view', 'settings.operational.edit'],
+  'school.users.manage': ['school.users.view', 'school.users.edit', 'school.users.delete'],
+  'school.roles.manage': ['school.roles.view', 'school.roles.edit', 'school.roles.delete'],
+};
+const LEGACY_PERMISSION_KEYS = new Set(Object.keys(LEGACY_PERMISSION_EXPANSIONS));
+const VIEW_PERMISSION_DEPENDENCIES: Partial<Record<Permission, Permission[]>> = {
+  'attendance.export': ['attendance.view'],
+  'attendance.edit': ['attendance.view'],
+  'participants.edit': ['participants.view'],
+  'participants.delete': ['participants.view'],
+  'settings.operational.edit': ['settings.operational.view'],
+  'school.users.edit': ['school.users.view', 'school.roles.view'],
+  'school.users.delete': ['school.users.view'],
+  'school.roles.edit': ['school.roles.view'],
+  'school.roles.delete': ['school.roles.view'],
+};
+
+function normalizeRolePermissions(value: unknown): Permission[] {
+  const permissions = new Set(Array.isArray(value)
+    ? value.filter((permission): permission is Permission => typeof permission === 'string')
+    : []);
+  for (const [legacy, expanded] of Object.entries(LEGACY_PERMISSION_EXPANSIONS)) {
+    if (permissions.has(legacy as Permission)) {
+      for (const permission of expanded ?? []) permissions.add(permission);
+    }
+    for (const [permission, dependencies] of Object.entries(VIEW_PERMISSION_DEPENDENCIES)) {
+      if (permissions.has(permission as Permission)) {
+        for (const dependency of dependencies ?? []) permissions.add(dependency);
+      }
+    }
+  }
+  return [...permissions];
+}
+
+function hasPermission(permissions: Permission[], permission: Permission): boolean {
+  return normalizeRolePermissions(permissions).includes(permission);
+}
+
+function currentRolePermissions(permissions: Permission[]): Permission[] {
+  return permissions.filter((permission) => !LEGACY_PERMISSION_KEYS.has(permission));
+}
+
+function updateRolePermission(
+  permissions: Permission[],
+  group: RolePermissionGroup,
+  action: RoleAction,
+  enabled: boolean,
+): Permission[] {
+  const next = new Set(currentRolePermissions(normalizeRolePermissions(permissions)));
+  const permission = group[action];
+  if (!permission) return [...next];
+  if (enabled) {
+    next.add(permission);
+    if (action !== 'view') next.add(group.view);
+    if (group.key === 'attendance' && action === 'edit') next.add('attendance.export');
+  } else {
+    next.delete(permission);
+    if (group.key === 'attendance' && action === 'edit') next.delete('attendance.export');
+    if (action === 'view') {
+      if (group.edit) next.delete(group.edit);
+      if (group.delete) next.delete(group.delete);
+      if (group.key === 'attendance') next.delete('attendance.export');
+    }
+  }
+  return [...next];
+}
 
 interface SchoolInfo {
   id: string | number;
@@ -37,6 +144,7 @@ interface UserInfo {
   id: string | number;
   display_name: string;
   role_name: string;
+  role_key?: string;
   permissions: Permission[];
 }
 interface SchoolSession { token: string; school: SchoolInfo; user: UserInfo }
@@ -110,7 +218,6 @@ interface ReportRow {
   late_minutes?: number;
   menit_terlambat?: number;
 }
-interface Device { id: string | number; device_name: string; is_active: boolean | number }
 interface SchoolWhatsappGatewaySettings {
   endpoint_url: string;
   is_enabled: boolean;
@@ -126,6 +233,7 @@ interface QueuedScan {
   id_peserta: string;
   id_perangkat: string | null;
   jenis_absen: 'check_in' | 'check_out';
+  scan_method?: 'SCAN_QR' | 'MANUAL_INPUT';
   attendance_date: string;
   client_timestamp: string;
   status_kehadiran: string;
@@ -199,8 +307,8 @@ function initialPage(currentSession: SchoolSession): Page {
   if (currentSession.school.subscription_expired ||
       new URLSearchParams(window.location.search).get('billing') === 'return') return 'billing';
   const permissions = currentSession.user.permissions;
-  return permissions.includes('scanner.use') &&
-    (!permissions.includes('dashboard.read') || window.matchMedia('(max-width: 900px)').matches)
+  return hasPermission(permissions, 'scanner.use') &&
+    (!hasPermission(permissions, 'dashboard.view') || window.matchMedia('(max-width: 900px)').matches)
     ? 'scanner'
     : 'dashboard';
 }
@@ -343,7 +451,7 @@ export default function App() {
   const [participantImportResult, setParticipantImportResult] = useState<ParticipantImportResult | null>(null);
   const [roles, setRoles] = useState<Record<string, unknown>[]>([]);
   const [users, setUsers] = useState<Record<string, unknown>[]>([]);
-  const [devices, setDevices] = useState<Device[]>([]);
+  const [roleSavingId, setRoleSavingId] = useState('');
   const [apkDriveUrl, setApkDriveUrl] = useState('');
   const [billingData, setBillingData] = useState<BillingData | null>(null);
   const [billingProvider, setBillingProvider] = useState<'xendit' | 'duitku' | 'kasera'>('xendit');
@@ -365,6 +473,14 @@ export default function App() {
   const [whatsappBusy, setWhatsappBusy] = useState(false);
   const [whatsappTestPhone, setWhatsappTestPhone] = useState('');
   const [whatsappTestBusy, setWhatsappTestBusy] = useState(false);
+  const [googleSheetsSettings, setGoogleSheetsSettings] = useState<GoogleSheetsSettings>({
+    web_app_url: '',
+    is_enabled: false,
+    is_configured: false,
+    secret_hint: '',
+  });
+  const [googleSheetsSecret, setGoogleSheetsSecret] = useState('');
+  const [googleSheetsBusy, setGoogleSheetsBusy] = useState(false);
   const [reportRows, setReportRows] = useState<ReportRow[]>([]);
   const [reportFrom, setReportFrom] = useState(initialDate);
   const [reportTo, setReportTo] = useState(initialDate);
@@ -372,25 +488,28 @@ export default function App() {
   const [reportClassroom, setReportClassroom] = useState('');
   const [pendingCount, setPendingCount] = useState(0);
   const [online, setOnline] = useState(navigator.onLine);
-  const [deviceKey, setDeviceKey] = useState('');
   const [lastScan, setLastScan] = useState('');
   const [manualCode, setManualCode] = useState('');
+  const [manualAttendanceOpen, setManualAttendanceOpen] = useState(false);
+  const [manualAttendanceQuery, setManualAttendanceQuery] = useState('');
+  const [manualParticipantId, setManualParticipantId] = useState('');
   const [selectedParticipantIds, setSelectedParticipantIds] = useState<Set<string>>(new Set());
   const [scanClock, setScanClock] = useState(() => new Date());
   const [participantForm, setParticipantForm] = useState({
     participant_code: '', full_name: '', classroom_id: '', qr_code: '',
   });
   const [classroomForm, setClassroomForm] = useState({ id: '', name: '' });
-  const [roleForm, setRoleForm] = useState({ role_key: '', role_name: '', permissions: '' });
+  const [roleForm, setRoleForm] = useState<{ role_key: string; role_name: string; permissions: Permission[] }>({
+    role_key: '', role_name: '', permissions: [],
+  });
   const [userForm, setUserForm] = useState({ username: '', display_name: '', password: '', role_id: '' });
-  const [deviceName, setDeviceName] = useState('Scanner sekolah');
   const [operationalForm, setOperationalForm] = useState(initialSettings);
   const [scannerPreferences, setScannerPreferences] = useState(initialScannerPreferences);
   const [scannerPreferencesReady, setScannerPreferencesReady] = useState(false);
   const [scannerPinForm, setScannerPinForm] = useState('');
   const [scannerMenuOpen, setScannerMenuOpen] = useState(false);
   const [scannerMenuPin, setScannerMenuPin] = useState('');
-  const [scannerMenuTarget, setScannerMenuTarget] = useState<Page | null>(null);
+  const [scannerMenuTarget, setScannerMenuTarget] = useState<Page | 'manual-attendance' | null>(null);
   const [scannerUnlockBusy, setScannerUnlockBusy] = useState(false);
   const [holidayForm, setHolidayForm] = useState({ date: '', name: '' });
   const [cameraActive, setCameraActive] = useState(false);
@@ -402,7 +521,6 @@ export default function App() {
   const controlsRef = useRef<{ stop: () => void } | null>(null);
   const wedgeTimerRef = useRef<number | undefined>(undefined);
   const lastScanAtRef = useRef(new Map<string, number>());
-  const deviceStorageKey = session ? `${DEVICE_KEY_PREFIX}${session.school.id}` : '';
   const passwordChecks = {
     length: registrationForm.password.length >= 8,
     uppercase: /[A-Z]/.test(registrationForm.password),
@@ -464,13 +582,9 @@ export default function App() {
   }, [applicationName]);
 
   const permissions = session?.user.permissions ?? [];
-  const can = (permission: Permission) => permissions.includes(permission);
+  const can = (permission: Permission) => hasPermission(permissions, permission);
   useEffect(() => {
     if (!session) return;
-    const savedDeviceKey = localStorage.getItem(deviceStorageKey) ?? sessionStorage.getItem(deviceStorageKey);
-    if (savedDeviceKey) localStorage.setItem(deviceStorageKey, savedDeviceKey);
-    sessionStorage.removeItem(deviceStorageKey);
-    setDeviceKey(savedDeviceKey ?? '');
     void request<{ session?: SchoolSession; school?: SchoolInfo; user?: UserInfo }>(
       '/school/auth/me',
       session.token,
@@ -492,8 +606,7 @@ export default function App() {
   }, [session?.token]);
 
   useEffect(() => {
-    if (!session || page !== 'billing' ||
-        !session.user.permissions.includes('school.users.manage')) return;
+    if (!session || page !== 'billing' || session.user.role_key !== 'admin-sekolah') return;
     void loadBillingData();
   }, [page, session?.token]);
 
@@ -520,13 +633,23 @@ export default function App() {
   }, [billingPlan, billingProvider, page, session?.token]);
 
   useEffect(() => {
-    if (!session || !session.user.permissions.includes('settings.operational.manage')) return;
+    if (!session || !hasPermission(session.user.permissions, 'settings.operational.view')) return;
     request<{ settings: SchoolWhatsappGatewaySettings }>(
       '/school/settings/whatsapp-gateway',
       session.token,
     )
       .then((result) => setWhatsappSettings(result.settings))
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Pengaturan WhatsApp sekolah gagal dimuat.'));
+  }, [session?.token]);
+
+  useEffect(() => {
+    if (!session || !hasPermission(session.user.permissions, 'settings.operational.view')) return;
+    request<{ settings: GoogleSheetsSettings }>(
+      '/school/settings/google-sheets',
+      session.token,
+    )
+      .then((result) => setGoogleSheetsSettings(result.settings))
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Pengaturan Google Sheets gagal dimuat.'));
   }, [session?.token]);
 
   useEffect(() => {
@@ -584,11 +707,11 @@ export default function App() {
   }, [page]);
 
   useEffect(() => {
-    if (!session || page !== 'scanner' || !online || !deviceKey) return;
+    if (!session || page !== 'scanner' || !online) return;
     void syncPending().catch((reason: unknown) => {
       setError(reason instanceof Error ? reason.message : 'Sinkronisasi otomatis gagal.');
     });
-  }, [online, deviceKey, page, session?.school.id]);
+  }, [online, page, session?.school.id]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setScanClock(new Date()), 1000);
@@ -596,58 +719,67 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!session || page !== 'scanner' || !online || !deviceKey) return;
+    if (!session || page !== 'scanner' || !online) return;
     const timer = window.setInterval(() => {
       void syncPending().catch((reason: unknown) => {
         setError(reason instanceof Error ? reason.message : 'Sinkronisasi otomatis gagal.');
       });
     }, 10000);
     return () => window.clearInterval(timer);
-  }, [online, deviceKey, page, session?.school.id]);
+  }, [online, page, session?.school.id]);
 
   async function loadSchoolData(currentSession: SchoolSession) {
     if (currentSession.school.subscription_expired) return;
     const db = await database(currentSession.school.id);
     const cached = await db.getAll('participants');
-    setParticipants(cached);
-    const cachedSettings = await db.get('settings', 'operational');
-    if (cachedSettings) {
+    const canReadMaster = hasPermission(currentSession.user.permissions, 'participants.view') ||
+      hasPermission(currentSession.user.permissions, 'scanner.use');
+    const canReadSettings = hasPermission(currentSession.user.permissions, 'settings.operational.view') ||
+      canReadMaster;
+    setParticipants(canReadMaster ? cached : []);
+    setClassrooms([]);
+    const cachedSettings = canReadSettings ? await db.get('settings', 'operational') : undefined;
+    if (cachedSettings && canReadSettings) {
       setSettings(cachedSettings);
       setOperationalForm(cachedSettings);
     }
     try {
       const [participantResult, classroomResult, settingResult] = await Promise.all([
-        request<unknown>('/school/participants', currentSession.token),
-        request<unknown>('/school/classrooms', currentSession.token),
-        request<unknown>('/school/settings', currentSession.token),
+        canReadMaster ? request<unknown>('/school/participants', currentSession.token) : Promise.resolve(null),
+        canReadMaster ? request<unknown>('/school/classrooms', currentSession.token) : Promise.resolve(null),
+        canReadSettings ? request<unknown>('/school/settings', currentSession.token) : Promise.resolve(null),
       ]);
-      const freshParticipants = unwrapArray<Participant>(participantResult, 'participants')
-        .map((item) => ({ ...item, id: String(item.id) }));
-      setParticipants(freshParticipants);
-      const write = db.transaction('participants', 'readwrite');
-      await write.store.clear();
-      for (const participant of freshParticipants) await write.store.put(participant);
-      await write.done;
+      if (participantResult) {
+        const freshParticipants = unwrapArray<Participant>(participantResult, 'participants')
+          .map((item) => ({ ...item, id: String(item.id) }));
+        setParticipants(freshParticipants);
+        const write = db.transaction('participants', 'readwrite');
+        await write.store.clear();
+        for (const participant of freshParticipants) await write.store.put(participant);
+        await write.done;
+      }
       if (classroomResult && typeof classroomResult === 'object') {
         setClassrooms(unwrapArray<Classroom>(classroomResult, 'classrooms'));
       }
-      const settingsPayload = settingResult && typeof settingResult === 'object'
-        ? (settingResult as Record<string, unknown>).settings ?? settingResult
-        : {};
-      const nextSettings = {
-        ...initialSettings,
-        ...(settingsPayload as Partial<OperationalSettings>),
-        participant_overrides: unwrapArray<ParticipantSchedule>(settingsPayload, 'participant_overrides')
-          .map((item) => ({ ...item, participant_id: String(item.participant_id) })),
-      };
-      setSettings(nextSettings);
-      setOperationalForm(nextSettings);
-      await db.put('settings', nextSettings, 'operational');
+      if (settingResult) {
+        const settingsPayload = settingResult && typeof settingResult === 'object'
+          ? (settingResult as Record<string, unknown>).settings ?? settingResult
+          : {};
+        const nextSettings = {
+          ...initialSettings,
+          ...(settingsPayload as Partial<OperationalSettings>),
+          participant_overrides: unwrapArray<ParticipantSchedule>(settingsPayload, 'participant_overrides')
+            .map((item) => ({ ...item, participant_id: String(item.participant_id) })),
+        };
+        setSettings(nextSettings);
+        setOperationalForm(nextSettings);
+        await db.put('settings', nextSettings, 'operational');
+      }
       setOfflineMode(false);
       setError('');
     } catch (reason) {
       setOfflineMode(true);
-      if (!cached.length) {
+      if (canReadMaster && !cached.length) {
         setError(reason instanceof Error ? `${reason.message} Master peserta lokal belum tersedia.` : 'Tidak dapat memuat master peserta lokal.');
       }
     }
@@ -835,11 +967,9 @@ export default function App() {
     controlsRef.current?.stop();
     controlsRef.current = null;
     localStorage.removeItem(SESSION_KEY);
-    if (deviceStorageKey) localStorage.removeItem(deviceStorageKey);
     setSession(null);
     setParticipants([]);
     setPage('dashboard');
-    setDeviceKey('');
     setError('');
     setNotice('');
   }
@@ -855,7 +985,7 @@ export default function App() {
   }
 
   function syncManager() {
-    if (!session || !deviceKey) throw new Error('Atur API Key perangkat untuk sinkronisasi.');
+    if (!session) throw new Error('Sesi sekolah tidak tersedia untuk sinkronisasi.');
     return createOfflineSyncManager({
       schoolId: String(session.school.id),
       storage: {
@@ -887,9 +1017,9 @@ export default function App() {
       },
       async sendBatch({ records }: { sekolah_id: string; records: QueuedScan[] }) {
         return request<{ accepted_ids: string[]; rejected_ids?: string[] }>(
-          '/school/attendance/sync-batch',
-          undefined,
-          { method: 'POST', headers: { 'x-device-key': deviceKey }, body: { records } },
+          '/school/attendance/sync-batch/session',
+          session.token,
+          { method: 'POST', body: { records } },
         );
       },
     });
@@ -906,20 +1036,20 @@ export default function App() {
     return result;
   }
 
-  async function handleScan(rawValue: string) {
-    if (!session) return;
+  async function handleScan(rawValue: string, scanMethod: 'SCAN_QR' | 'MANUAL_INPUT' = 'SCAN_QR'): Promise<boolean> {
+    if (!session) return false;
     const value = rawValue.trim();
-    if (!value) return;
+    if (!value) return false;
     const now = Date.now();
     const previous = lastScanAtRef.current.get(value) ?? 0;
-    if (now - previous < 3000) return;
+    if (now - previous < 3000) return false;
     lastScanAtRef.current.set(value, now);
     const participant = participants.find((item) =>
       (item.qr_code === value || item.participant_code === value) &&
       (item.is_active == null || item.is_active === true || Number(item.is_active) === 1));
     if (!participant) {
       setMessage('QR/barcode tidak ditemukan di master peserta lokal.', true);
-      return;
+      return false;
     }
     try {
       const db = await database(session.school.id);
@@ -961,15 +1091,24 @@ export default function App() {
         id_peserta: participant.id,
         id_perangkat: null,
         jenis_absen: eventType,
+        scan_method: scanMethod,
         calculation,
       }) as QueuedScan;
       await syncManager().enqueue(scan);
       setLastScan(`${participant.full_name} · ${calculation.status}${calculation.lateMinutes ? ` ${calculation.lateMinutes} menit` : ''}`);
       await refreshPendingCount();
-      if (online && deviceKey) await syncPending();
+      if (online) {
+        try {
+          await syncPending();
+        } catch (reason) {
+          setMessage(reason instanceof Error ? reason.message : 'Scan tersimpan lokal; sinkronisasi akan dicoba ulang.');
+        }
+      }
       else setMessage(`${participant.full_name} masuk antrean offline.`);
+      return true;
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : 'Scan gagal diproses.', true);
+      return false;
     }
   }
 
@@ -1321,16 +1460,51 @@ export default function App() {
     event.preventDefault();
     if (!session) return;
     try {
-      const permissionsList = roleForm.permissions.split(',').map((item) => item.trim()).filter(Boolean);
       const result = await request<unknown>('/school/roles', session.token, {
         method: 'POST',
-        body: { role_key: roleForm.role_key, role_name: roleForm.role_name, permissions: permissionsList },
+        body: {
+          role_key: roleForm.role_key,
+          role_name: roleForm.role_name,
+          permissions: currentRolePermissions(roleForm.permissions),
+        },
       });
       setRoles((current) => [...current, ((result as { role?: Record<string, unknown> }).role ?? result) as Record<string, unknown>]);
-      setRoleForm({ role_key: '', role_name: '', permissions: '' });
+      setRoleForm({ role_key: '', role_name: '', permissions: [] });
       setMessage('Role baru berhasil dibuat.');
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : 'Role gagal dibuat.', true);
+    }
+  }
+
+  async function saveExistingRole(role: Record<string, unknown>) {
+    if (!session || role.id == null) return;
+    const roleId = String(role.id);
+    setRoleSavingId(roleId);
+    try {
+      const permissions = currentRolePermissions(normalizeRolePermissions(role.permissions));
+      const result = await request<{ role?: Record<string, unknown> }>(
+        `/school/roles/${roleId}`,
+        session.token,
+        { method: 'PATCH', body: { permissions } },
+      );
+      const savedRole = result.role ?? { ...role, permissions };
+      setRoles((current) => current.map((item) => String(item.id) === roleId ? savedRole : item));
+      setMessage(`Izin role ${String(role.role_name ?? '')} diperbarui.`);
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Izin role gagal disimpan.', true);
+    } finally {
+      setRoleSavingId('');
+    }
+  }
+
+  async function deleteRole(role: Record<string, unknown>) {
+    if (!session || role.id == null || !window.confirm(`Hapus role ${String(role.role_name ?? '')}?`)) return;
+    try {
+      await request(`/school/roles/${String(role.id)}`, session.token, { method: 'DELETE' });
+      setRoles((current) => current.filter((item) => String(item.id) !== String(role.id)));
+      setMessage('Role berhasil dihapus.');
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Role gagal dihapus.', true);
     }
   }
 
@@ -1344,6 +1518,19 @@ export default function App() {
       setMessage('Akun sekolah berhasil dibuat.');
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : 'Akun sekolah gagal dibuat.', true);
+    }
+  }
+
+  async function deactivateUser(user: Record<string, unknown>) {
+    if (!session || user.id == null ||
+        !window.confirm(`Nonaktifkan akun ${String(user.username ?? '')}?`)) return;
+    try {
+      await request(`/school/users/${String(user.id)}`, session.token, { method: 'DELETE' });
+      setUsers((current) => current.map((item) =>
+        String(item.id) === String(user.id) ? { ...item, is_active: 0 } : item));
+      setMessage('Akun sekolah dinonaktifkan.');
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Akun sekolah gagal dinonaktifkan.', true);
     }
   }
 
@@ -1378,7 +1565,7 @@ export default function App() {
     }
   }
 
-  function requestScannerMenu(target: Page = 'dashboard') {
+  function requestScannerMenu(target: Page | 'manual-attendance' = 'dashboard') {
     setScannerMenuTarget(target);
     setScannerMenuPin('');
     setScannerMenuOpen(true);
@@ -1395,7 +1582,13 @@ export default function App() {
       });
       setScannerMenuOpen(false);
       setScannerMenuPin('');
-      setPage(scannerMenuTarget);
+      if (scannerMenuTarget === 'manual-attendance') {
+        setManualAttendanceQuery('');
+        setManualParticipantId('');
+        setManualAttendanceOpen(true);
+      } else {
+        setPage(scannerMenuTarget);
+      }
       setError('');
       setNotice('');
     } catch (reason) {
@@ -1403,6 +1596,16 @@ export default function App() {
     } finally {
       setScannerUnlockBusy(false);
     }
+  }
+
+  async function submitManualAttendance() {
+    const participant = participants.find((item) => String(item.id) === manualParticipantId);
+    if (!participant) {
+      setError('Pilih peserta terlebih dahulu.');
+      return;
+    }
+    const saved = await handleScan(participant.qr_code || participant.participant_code, 'MANUAL_INPUT');
+    if (saved) setManualAttendanceOpen(false);
   }
 
   async function saveSchoolWhatsappSettings(event: FormEvent<HTMLFormElement>) {
@@ -1431,6 +1634,35 @@ export default function App() {
       setError(reason instanceof Error ? reason.message : 'Pengaturan WhatsApp sekolah gagal disimpan.');
     } finally {
       setWhatsappBusy(false);
+    }
+  }
+
+  async function saveGoogleSheetsSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session) return;
+    setGoogleSheetsBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await request<{ settings: GoogleSheetsSettings }>(
+        '/school/settings/google-sheets',
+        session.token,
+        {
+          method: 'PUT',
+          body: {
+            web_app_url: googleSheetsSettings.web_app_url,
+            is_enabled: googleSheetsSettings.is_enabled,
+            ...(googleSheetsSecret ? { shared_secret: googleSheetsSecret } : {}),
+          },
+        },
+      );
+      setGoogleSheetsSettings(result.settings);
+      setGoogleSheetsSecret('');
+      setNotice('Sinkronisasi Google Sheets berhasil disimpan.');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Pengaturan Google Sheets gagal disimpan.');
+    } finally {
+      setGoogleSheetsBusy(false);
     }
   }
 
@@ -1505,74 +1737,35 @@ export default function App() {
     setHolidayForm({ date: '', name: '' });
   }
 
-  async function createDevice(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!session) return;
-    try {
-      const result = await request<{ api_key: string; device?: Device }>(
-        '/school/devices',
-        session.token,
-        { method: 'POST', body: { device_name: deviceName } },
-      );
-      if (!result.api_key) throw new Error('Server tidak mengembalikan API Key perangkat.');
-      localStorage.setItem(deviceStorageKey, result.api_key);
-      setDeviceKey(result.api_key);
-      if (result.device) setDevices((current) => [...current, result.device!]);
-      setMessage('Perangkat terdaftar. Simpan API Key ini; key hanya ditampilkan saat dibuat.');
-    } catch (reason) {
-      setMessage(reason instanceof Error ? reason.message : 'Perangkat gagal didaftarkan.', true);
-    }
-  }
-
-  async function loadDevices() {
-    if (!session) return;
-    try {
-      const result = await request<unknown>('/school/devices', session.token);
-      setDevices(unwrapArray<Device>(result, 'devices'));
-    } catch (reason) {
-      setMessage(reason instanceof Error ? reason.message : 'Daftar perangkat gagal dimuat.', true);
-    }
-  }
-
-  async function revokeDevice(device: Device) {
-    if (!session || !window.confirm(`Cabut akses perangkat ${device.device_name}?`)) return;
-    try {
-      await request(`/school/devices/${device.id}/revoke`, session.token, { method: 'POST' });
-      await loadDevices();
-      setMessage('Akses perangkat dicabut.');
-    } catch (reason) {
-      setMessage(reason instanceof Error ? reason.message : 'Akses perangkat gagal dicabut.', true);
-    }
-  }
-
   useEffect(() => {
-    if (!session || !['roles', 'devices'].includes(page)) return;
-    if (page === 'roles') {
+    if (!session || page !== 'roles') return;
+    if (hasPermission(session.user.permissions, 'school.roles.view')) {
       void request<unknown>('/school/roles', session.token)
         .then((result) => setRoles(unwrapArray(result, 'roles')))
         .catch((reason: unknown) => setMessage(reason instanceof Error ? reason.message : 'Role gagal dimuat.', true));
+    }
+    if (hasPermission(session.user.permissions, 'school.users.view')) {
       void request<unknown>('/school/users', session.token)
         .then((result) => setUsers(unwrapArray(result, 'users')))
         .catch((reason: unknown) => setMessage(reason instanceof Error ? reason.message : 'Akun sekolah gagal dimuat.', true));
-    } else {
-      void loadDevices();
     }
   }, [page, session?.token]);
 
   const navItems = useMemo(() => {
-    const items: { id: Page; label: string; permission?: Permission }[] = [
+    const items: { id: Page; label: string; permission?: Permission | Permission[] }[] = [
       { id: 'scanner', label: 'Scanner', permission: 'scanner.use' },
-      { id: 'dashboard', label: 'Ringkasan', permission: 'dashboard.read' },
-      { id: 'reports', label: 'Rekap', permission: 'attendance.read' },
-      { id: 'participants', label: 'Peserta', permission: 'participants.read' },
-      { id: 'settings', label: 'Pengaturan', permission: 'settings.operational.manage' },
-      { id: 'roles', label: 'Akun & Role', permission: 'school.users.manage' },
-      { id: 'devices', label: 'Perangkat', permission: 'scanner.use' },
+      { id: 'dashboard', label: 'Ringkasan', permission: 'dashboard.view' },
+      { id: 'reports', label: 'Rekap', permission: 'attendance.view' },
+      { id: 'participants', label: 'Peserta', permission: 'participants.view' },
+      { id: 'settings', label: 'Pengaturan', permission: 'settings.operational.view' },
+      { id: 'roles', label: 'Akun & Role', permission: ['school.users.view', 'school.roles.view'] },
       { id: 'downloads', label: 'Unduh APK' },
-      ...(can('school.users.manage') ? [{ id: 'billing' as const, label: 'Langganan' }] : []),
+      ...(session?.user.role_key === 'admin-sekolah' ? [{ id: 'billing' as const, label: 'Langganan' }] : []),
     ];
-    return items.filter((item) => !item.permission || can(item.permission));
-  }, [session?.user.permissions]);
+    return items.filter((item) => !item.permission || (Array.isArray(item.permission)
+      ? item.permission.some((permission) => can(permission))
+      : can(item.permission)));
+  }, [session?.user.permissions, session?.user.role_key]);
 
   if (!session) {
     return (
@@ -1740,7 +1933,7 @@ export default function App() {
                 <article className="metric-card"><span>Antrean belum terkirim</span><strong>{pendingCount}</strong></article>
                 <article className="metric-card"><span>Status koneksi</span><strong className={online ? 'text-green' : 'text-red'}>{online ? 'Online' : 'Offline'}</strong></article>
               </div>
-              <div className="panel quick-panel"><h2>Akses cepat</h2><p className="muted">Buka scanner untuk absensi atau rekap untuk memantau kehadiran.</p><div className="heading-actions">{can('scanner.use') && <button className="button primary" onClick={() => setPage('scanner')}>Buka Scanner</button>}{can('attendance.read') && <button className="button secondary" onClick={() => { setPage('reports'); void loadReport(); }}>Lihat Rekap</button>}</div></div>
+              <div className="panel quick-panel"><h2>Akses cepat</h2><p className="muted">Buka scanner untuk absensi atau rekap untuk memantau kehadiran.</p><div className="heading-actions">{can('scanner.use') && <button className="button primary" onClick={() => setPage('scanner')}>Buka Scanner</button>}{can('attendance.view') && <button className="button secondary" onClick={() => { setPage('reports'); void loadReport(); }}>Lihat Rekap</button>}</div></div>
             </section>
           )}
 
@@ -1760,7 +1953,7 @@ export default function App() {
                   </div>
                   <div className="scan-header-actions">
                     <div className={`connection-chip ${online ? 'is-online' : 'is-offline'}`}><span />{online ? 'Online' : 'Offline'}</div>
-                    <select className="scan-camera-select" aria-label="Pilih kamera" value={scannerPreferences.cameraFacing} onChange={(event) => void updateScannerPreferences({ ...scannerPreferences, cameraFacing: event.target.value === 'environment' ? 'environment' : 'user' })}><option value="user">Depan</option><option value="environment">Belakang</option></select>
+                    <button className="button scan-manual-button" type="button" onClick={() => requestScannerMenu('manual-attendance')}>Absensi Manual</button>
                     <button className="scan-menu-trigger" type="button" aria-label="Buka menu dengan PIN" onClick={() => requestScannerMenu('dashboard')}><span className="hamburger-icon" aria-hidden="true"><i /><i /><i /></span></button>
                   </div>
                 </div>
@@ -1791,7 +1984,6 @@ export default function App() {
                 <LocalQueueList schoolId={session.school.id} />
               </section>
 
-              {!cameraActive && <button className="button primary wide scan-resume-button" onClick={() => void startCamera()}>{scannerPreferences.cameraFacing === 'user' ? 'Buka kamera depan' : 'Buka kamera belakang'}</button>}
             </section>
           )}
 
@@ -1803,7 +1995,7 @@ export default function App() {
                 <label>Sampai tanggal<input type="date" required value={reportTo} onChange={(event) => setReportTo(event.target.value)} /></label>
                 <label>Kelas<select value={reportClassroom} onChange={(event) => setReportClassroom(event.target.value)}><option value="">Semua kelas</option>{classrooms.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
                 <label>Status<select value={reportStatus} onChange={(event) => setReportStatus(event.target.value)}><option value="">Semua status</option><option value="hadir">Hadir</option><option value="terlambat">Terlambat</option><option value="pulang">Pulang</option><option value="belum_hadir">Tidak hadir</option></select></label>
-                <div className="heading-actions"><button className="button primary" disabled={busy}>{busy ? 'Memuat…' : 'Tampilkan'}</button><button type="button" className="button secondary" onClick={() => downloadReport(reportRows)}>Ekspor CSV</button><button type="button" className="button secondary" onClick={() => window.print()}>Cetak / PDF</button></div>
+                <div className="heading-actions"><button className="button primary" disabled={busy}>{busy ? 'Memuat…' : 'Tampilkan'}</button>{can('attendance.export') && <button type="button" className="button secondary" onClick={() => downloadReport(reportRows)}>Ekspor CSV</button>}{can('attendance.export') && <button type="button" className="button secondary" onClick={() => window.print()}>Cetak / PDF</button>}</div>
               </form>
               <div className="panel report-print-area">
                 <div className="print-heading"><h2>{session.school.name} · Rekap Absensi</h2><p>{reportFrom} sampai {reportTo}</p></div>
@@ -1818,23 +2010,23 @@ export default function App() {
           {page === 'participants' && (
             <section>
               <div className="page-heading"><div><p className="eyebrow">DATA SEKOLAH</p><h1>Master peserta</h1><p className="muted">Master lokal digunakan untuk validasi scan saat offline.</p></div></div>
-              {can('participants.manage') && <form className="panel form-grid" onSubmit={(event) => void createParticipant(event)}>
+              {can('participants.edit') && <form className="panel form-grid" onSubmit={(event) => void createParticipant(event)}>
                 <label>Kode peserta<input required value={participantForm.participant_code} onChange={(event) => setParticipantForm((current) => ({ ...current, participant_code: event.target.value }))} /></label>
                 <label>Nama lengkap<input required value={participantForm.full_name} onChange={(event) => setParticipantForm((current) => ({ ...current, full_name: event.target.value }))} /></label>
                 <label>Kelas<select required value={participantForm.classroom_id} onChange={(event) => setParticipantForm((current) => ({ ...current, classroom_id: event.target.value }))}><option value="">Pilih kelas</option>{classrooms.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
                 <label>QR / Barcode<input required value={participantForm.qr_code} onChange={(event) => setParticipantForm((current) => ({ ...current, qr_code: event.target.value }))} /></label>
                 <button className="button primary" disabled={busy}>Tambah peserta</button>
               </form>}
-              {can('participants.manage') && <div className="panel classroom-manager">
+              {can('participants.edit') && <div className="panel classroom-manager">
                 <div className="section-title"><div><h2>Nama kelas / unit</h2><p className="muted">Kelola nama kelas yang digunakan pada master peserta.</p></div></div>
                 <form className="classroom-form" onSubmit={(event) => void saveClassroom(event)}>
                   <label>Nama kelas<input required maxLength={100} value={classroomForm.name} onChange={(event) => setClassroomForm((current) => ({ ...current, name: event.target.value }))} placeholder="Contoh: Kelas 7A" /></label>
                   <button className="button primary" disabled={busy}>{classroomForm.id ? 'Simpan nama' : 'Tambah kelas'}</button>
                   {classroomForm.id && <button type="button" className="button secondary" onClick={() => setClassroomForm({ id: '', name: '' })}>Batal</button>}
                 </form>
-                <div className="classroom-list">{classrooms.map((classroom) => <div className="classroom-row" key={classroom.id}><div><strong>{classroom.name}</strong><small>{classroom.unit_name ?? 'Umum'}</small></div><div className="heading-actions"><button type="button" className="button secondary small" onClick={() => setClassroomForm({ id: classroom.id, name: classroom.name })}>Edit</button><button type="button" className="button danger small" onClick={() => void deleteClassroom(classroom)}>Hapus</button></div></div>)}</div>
+                <div className="classroom-list">{classrooms.map((classroom) => <div className="classroom-row" key={classroom.id}><div><strong>{classroom.name}</strong><small>{classroom.unit_name ?? 'Umum'}</small></div><div className="heading-actions"><button type="button" className="button secondary small" onClick={() => setClassroomForm({ id: classroom.id, name: classroom.name })}>Edit</button>{can('participants.delete') && <button type="button" className="button danger small" onClick={() => void deleteClassroom(classroom)}>Hapus</button>}</div></div>)}</div>
               </div>}
-              {can('participants.manage') && <div className="panel participant-import">
+              {can('participants.edit') && <div className="panel participant-import">
                 <div><h2>Impor dari Excel</h2><p className="muted">Gunakan template agar kolom dan ID kelas sesuai. Maksimal 500 baris per impor.</p></div>
                 <div className="heading-actions">
                   <button type="button" className="button secondary" onClick={() => void downloadParticipantTemplate()}>Unduh template .xlsx</button>
@@ -1866,7 +2058,7 @@ export default function App() {
               <div className="panel">
                 <div className="section-title"><div><h2>{participants.length} peserta lokal</h2><p className="muted">Data di-cache per sekolah pada perangkat ini.</p></div><div className="heading-actions">{can('participants.qr.print') && <button className="button secondary" onClick={() => void printSelectedQrs()}>Cetak QR terpilih</button>}<button className="button secondary" onClick={() => session && void loadSchoolData(session)}>Sinkronkan master</button></div></div>
                 <div className="table-scroll"><table><thead><tr><th><input type="checkbox" aria-label="Pilih semua peserta" checked={participants.length > 0 && selectedParticipantIds.size === participants.length} onChange={(event) => setSelectedParticipantIds(event.target.checked ? new Set(participants.map((item) => item.id)) : new Set())} /></th><th>Kode</th><th>Nama</th><th>Kelas</th><th>QR</th><th className="no-print">Aksi</th></tr></thead><tbody>
-                  {participants.map((participant) => <tr key={participant.id}><td><input type="checkbox" aria-label={`Pilih ${participant.full_name}`} checked={selectedParticipantIds.has(participant.id)} onChange={(event) => setSelectedParticipantIds((current) => { const next = new Set(current); if (event.target.checked) next.add(participant.id); else next.delete(participant.id); return next; })} /></td><td>{participant.participant_code}</td><td>{participant.full_name}</td><td>{participant.classroom_name ?? classrooms.find((item) => item.id === participant.classroom_id)?.name ?? '—'}</td><td><code>{participant.qr_code}</code></td><td className="no-print">{can('participants.manage') && <div className="participant-actions"><button className="button secondary small" onClick={() => openParticipantSchedule(participant.id)}>Atur jam</button><button className="button danger small" onClick={() => void removeParticipant(participant)}>Nonaktifkan</button></div>}</td></tr>)}
+                  {participants.map((participant) => <tr key={participant.id}><td><input type="checkbox" aria-label={`Pilih ${participant.full_name}`} checked={selectedParticipantIds.has(participant.id)} onChange={(event) => setSelectedParticipantIds((current) => { const next = new Set(current); if (event.target.checked) next.add(participant.id); else next.delete(participant.id); return next; })} /></td><td>{participant.participant_code}</td><td>{participant.full_name}</td><td>{participant.classroom_name ?? classrooms.find((item) => item.id === participant.classroom_id)?.name ?? '—'}</td><td><code>{participant.qr_code}</code></td><td className="no-print"><div className="participant-actions">{can('participants.edit') && <button className="button secondary small" onClick={() => openParticipantSchedule(participant.id)}>Atur jam</button>}{can('participants.delete') && <button className="button danger small" onClick={() => void removeParticipant(participant)}>Nonaktifkan</button>}</div></td></tr>)}
                   {!participants.length && <tr><td colSpan={6} className="empty">Master peserta belum tersedia. Hubungkan jaringan untuk mengambil data sekolah.</td></tr>}
                 </tbody></table></div>
               </div>
@@ -1876,7 +2068,7 @@ export default function App() {
           {page === 'settings' && (
             <section>
               <div className="page-heading"><div><p className="eyebrow">OPERASIONAL</p><h1>Pengaturan scanner & operasional</h1><p className="muted">Atur kamera perangkat, kecepatan scan, dan aturan operasional sekolah.</p></div></div>
-              <section className="panel scanner-preference-panel">
+              {can('settings.operational.edit') && <section className="panel scanner-preference-panel">
                 <div><h2>Pengaturan scanner</h2><p className="muted">Preferensi kamera disimpan lokal pada perangkat ini, tidak mengubah perangkat scanner lainnya.</p></div>
                 <div className="form-grid">
                   <label>Kamera default
@@ -1897,8 +2089,8 @@ export default function App() {
                   <span>Aktifkan field scanner barcode USB / Bluetooth</span>
                 </label>
                 <p className="muted">Mode cepat mengurangi jeda decode menjadi 100 ms (250 ms setelah berhasil); mode seimbang memakai 350 ms (500 ms setelah berhasil). Pemindaian aktual tetap bergantung pada kamera, fokus, pencahayaan, dan kualitas kode.</p>
-              </section>
-              <form className="panel settings-form" onSubmit={(event) => void saveSettings(event)}>
+              </section>}
+              {can('settings.operational.edit') && <form className="panel settings-form" onSubmit={(event) => void saveSettings(event)}>
                 <div className="form-grid">
                   <label>Zona waktu<input value={operationalForm.timezone} onChange={(event) => setOperationalForm((current) => ({ ...current, timezone: event.target.value }))} /></label>
                   <label>Batas masuk<input type="time" required value={operationalForm.check_in_deadline.slice(0, 5)} onChange={(event) => setOperationalForm((current) => ({ ...current, check_in_deadline: `${event.target.value}:00` }))} /></label>
@@ -1917,13 +2109,13 @@ export default function App() {
                   })} /><span>Hari kerja</span></label>;
                 })}</div>
                 <div className="heading-actions"><button className="button primary">Simpan pengaturan</button></div>
-              </form>
-              <form className="panel holiday-form" onSubmit={(event) => void addHoliday(event)}>
+              </form>}
+              {can('settings.operational.edit') && <form className="panel holiday-form" onSubmit={(event) => void addHoliday(event)}>
                 <div><h2>Hari libur khusus</h2><p className="muted">Tanggal libur sekolah di luar jadwal mingguan.</p></div>
                 <div className="form-grid"><label>Tanggal<input type="date" required value={holidayForm.date} onChange={(event) => setHolidayForm((current) => ({ ...current, date: event.target.value }))} /></label><label>Nama libur<input required value={holidayForm.name} onChange={(event) => setHolidayForm((current) => ({ ...current, name: event.target.value }))} /></label><button className="button secondary">Tambah libur</button></div>
                 <ul className="holiday-list">{operationalForm.holidays.map((holiday) => <li key={`${holiday.date}-${holiday.name}`}><span>{holiday.date} · {holiday.name}</span><button type="button" className="text-button" onClick={() => setOperationalForm((current) => ({ ...current, holidays: current.holidays.filter((item) => item !== holiday) }))}>Hapus</button></li>)}</ul>
-              </form>
-              {can('participants.manage') && <section className="panel participant-schedule-settings">
+              </form>}
+              {can('participants.edit') && <section className="panel participant-schedule-settings">
                 <div><h2>Batas masuk khusus peserta</h2><p className="muted">Pilih peserta dan atur batas waktu masuk untuk hari tertentu. Hari kosong memakai jadwal sekolah.</p></div>
                 <label>Pilih peserta
                   <select value={scheduleParticipantId} onChange={(event) => openParticipantSchedule(event.target.value)}>
@@ -1938,7 +2130,7 @@ export default function App() {
                   <div className="heading-actions"><button type="button" className="button primary" disabled={busy} onClick={() => void saveParticipantSchedule()}>{busy ? 'Menyimpan…' : 'Simpan jadwal peserta'}</button><button type="button" className="button secondary" onClick={() => { setScheduleParticipantId(''); setScheduleOverrides({}); }}>Batal</button></div>
                 </>}
               </section>}
-              {can('settings.operational.manage') && <section className="panel school-whatsapp-panel">
+              {can('settings.operational.view') && <section className="panel school-whatsapp-panel">
                 <div>
                   <h2>Gateway WhatsApp sekolah</h2>
                   <p className="muted">Konfigurasi ini khusus untuk tenant sekolah ini. Token dienkripsi di database dan tidak ditampilkan kembali. Simpan perubahan sebelum menguji gateway.</p>
@@ -1946,7 +2138,7 @@ export default function App() {
                     {whatsappSettings.is_enabled && whatsappSettings.is_configured ? '● Aktif' : '○ Belum aktif'}
                   </span>
                 </div>
-                <form className="school-whatsapp-form" onSubmit={(event) => void saveSchoolWhatsappSettings(event)}>
+                {can('settings.operational.edit') ? <form className="school-whatsapp-form" onSubmit={(event) => void saveSchoolWhatsappSettings(event)}>
                   <label>URL HTTPS gateway<input type="url" required placeholder="https://gateway.example/api/send" value={whatsappSettings.endpoint_url} onChange={(event) => setWhatsappSettings((current) => ({ ...current, endpoint_url: event.target.value }))} /></label>
                   <label>Bearer token
                     <input type="password" autoComplete="new-password" placeholder={whatsappSettings.is_configured ? 'Tersimpan — kosongkan untuk mempertahankan' : 'Masukkan token gateway'} value={whatsappToken} onChange={(event) => setWhatsappToken(event.target.value)} />
@@ -1969,39 +2161,76 @@ export default function App() {
                     {whatsappSettings.last_test_at && <time>{whatsappSettings.last_test_at} UTC</time>}
                     <p>{whatsappSettings.last_test_message}</p>
                   </div>}
-                </form>
+                </form> : <p className="muted">Konfigurasi tersedia untuk dilihat oleh akun ini.</p>}
+              </section>}
+              {can('settings.operational.view') && <section className="panel google-sheets-panel">
+                <div>
+                  <h2>Sinkronisasi Google Sheets</h2>
+                  <p className="muted">Absensi yang diterima server akan diteruskan otomatis satu arah ke Google Sheets melalui Apps Script.</p>
+                  <span className={`gateway-status ${googleSheetsSettings.is_enabled && googleSheetsSettings.is_configured ? 'ready' : ''}`}>
+                    {googleSheetsSettings.is_enabled && googleSheetsSettings.is_configured ? '● Aktif' : '○ Belum aktif'}
+                  </span>
+                  {googleSheetsSettings.secret_hint && <small className="gateway-hint">Secret: {googleSheetsSettings.secret_hint}</small>}
+                </div>
+                {can('settings.operational.edit') ? <form className="school-whatsapp-form" onSubmit={(event) => void saveGoogleSheetsSettings(event)}>
+                  <label>URL Web App Apps Script<input type="url" required placeholder="https://script.google.com/macros/s/.../exec" value={googleSheetsSettings.web_app_url} onChange={(event) => setGoogleSheetsSettings((current) => ({ ...current, web_app_url: event.target.value }))} /></label>
+                  <label>Secret sinkronisasi<input type="password" autoComplete="new-password" placeholder={googleSheetsSettings.is_configured ? 'Tersimpan — kosongkan untuk mempertahankan' : 'Masukkan secret yang sama dengan Script Properties'} value={googleSheetsSecret} onChange={(event) => setGoogleSheetsSecret(event.target.value)} /></label>
+                  <label className="school-whatsapp-toggle"><input type="checkbox" checked={googleSheetsSettings.is_enabled} onChange={(event) => setGoogleSheetsSettings((current) => ({ ...current, is_enabled: event.target.checked }))} /> Aktifkan sinkronisasi</label>
+                  <button className="button primary" disabled={googleSheetsBusy}>{googleSheetsBusy ? 'Menyimpan…' : 'Simpan pengaturan'}</button>
+                </form> : <p className="muted">URL: {googleSheetsSettings.web_app_url || 'Belum dikonfigurasi'}</p>}
               </section>}
             </section>
           )}
 
           {page === 'roles' && (
             <section>
-              <div className="page-heading"><div><p className="eyebrow">AKSES SEKOLAH</p><h1>Akun & role dinamis</h1><p className="muted">Izin melekat pada role sekolah dan tidak berlaku lintas tenant.</p></div></div>
-              {can('school.roles.manage') && <form className="panel form-grid" onSubmit={(event) => void saveRole(event)}>
+              <div className="page-heading"><div><p className="eyebrow">AKSES SEKOLAH</p><h1>Akun & role</h1><p className="muted">Atur izin melihat, mengubah, dan menghapus untuk setiap modul.</p></div></div>
+              {can('school.roles.edit') && <form className="panel form-grid" onSubmit={(event) => void saveRole(event)}>
+                <h2 className="wide">Buat role</h2>
                 <label>Kunci role<input required pattern="[a-z0-9-]+" value={roleForm.role_key} onChange={(event) => setRoleForm((current) => ({ ...current, role_key: event.target.value.toLowerCase() }))} placeholder="wakasek-kurikulum" /></label>
                 <label>Nama role<input required value={roleForm.role_name} onChange={(event) => setRoleForm((current) => ({ ...current, role_name: event.target.value }))} placeholder="Wakasek Kurikulum" /></label>
-                <label className="wide">Permission (pisahkan koma)<input required value={roleForm.permissions} onChange={(event) => setRoleForm((current) => ({ ...current, permissions: event.target.value }))} placeholder="dashboard.read,attendance.read,attendance.export" /></label>
-                <button className="button primary">Tambah role</button>
+                <div className="wide role-permission-matrix">
+                  {ROLE_PERMISSION_GROUPS.map((group) => <div className="role-permission-row" key={group.key}>
+                    <strong>{group.label}</strong>
+                    {(['view', 'edit', 'delete'] as const).map((action) => {
+                      const permission = group[action];
+                      if (!permission) return null;
+                      return <label key={action}><input type="checkbox" checked={roleForm.permissions.includes(permission)} onChange={(event) => setRoleForm((current) => ({ ...current, permissions: updateRolePermission(current.permissions, group, action, event.target.checked) }))} />{action === 'view' ? 'Lihat' : action === 'edit' ? 'Edit' : 'Hapus'}</label>;
+                    })}
+                  </div>)}
+                </div>
+                <button className="button primary" disabled={!roleForm.permissions.length}>Tambah role</button>
               </form>}
-              <div className="panel"><h2>Daftar role</h2><div className="table-scroll"><table><thead><tr><th>Nama role</th><th>Kunci</th><th>Permission</th></tr></thead><tbody>{roles.map((role, index) => <tr key={String(role.id ?? role.role_key ?? index)}><td>{String(role.role_name ?? role.name ?? '—')}</td><td><code>{String(role.role_key ?? '')}</code></td><td>{Array.isArray(role.permissions) ? role.permissions.join(', ') : String(role.permissions ?? '')}</td></tr>)}{!roles.length && <tr><td colSpan={3} className="empty">Belum ada role yang dimuat.</td></tr>}</tbody></table></div></div>
-              {can('school.users.manage') && <form className="panel form-grid" onSubmit={(event) => void saveUser(event)}>
+              {can('school.roles.view') && <div className="panel role-list-panel"><h2>Daftar role</h2>
+                {roles.map((role, index) => {
+                  const roleId = String(role.id ?? index);
+                  const rolePermissions = normalizeRolePermissions(role.permissions);
+                  return <article className="role-card" key={roleId}>
+                    <div className="role-card-heading"><div><strong>{String(role.role_name ?? role.name ?? '—')}</strong><code>{String(role.role_key ?? '')}</code></div>
+                      {can('school.roles.edit') && <button className="button primary small" disabled={roleSavingId === roleId} onClick={() => void saveExistingRole(role)}>{roleSavingId === roleId ? 'Menyimpan…' : 'Simpan izin'}</button>}
+                      {can('school.roles.delete') && !Number(role.is_system) && <button className="button danger small" onClick={() => void deleteRole(role)}>Hapus role</button>}
+                    </div>
+                    <div className="role-permission-matrix">{ROLE_PERMISSION_GROUPS.map((group) => <div className="role-permission-row" key={group.key}>
+                      <strong>{group.label}</strong>
+                      {(['view', 'edit', 'delete'] as const).map((action) => {
+                        const permission = group[action];
+                        if (!permission) return null;
+                        return <label key={action}><input type="checkbox" disabled={!can('school.roles.edit')} checked={rolePermissions.includes(permission)} onChange={(event) => setRoles((current) => current.map((item) => String(item.id) === roleId ? { ...item, permissions: updateRolePermission(normalizeRolePermissions(item.permissions), group, action, event.target.checked) } : item))} />{action === 'view' ? 'Lihat' : action === 'edit' ? 'Edit' : 'Hapus'}</label>;
+                      })}
+                    </div>)}</div>
+                  </article>;
+                })}
+                {!roles.length && <p className="empty">Belum ada role yang dimuat.</p>}
+              </div>}
+              {can('school.users.edit') && <form className="panel form-grid" onSubmit={(event) => void saveUser(event)}>
                 <h2 className="wide">Buat akun sekolah</h2>
                 <label>Nama tampilan<input required value={userForm.display_name} onChange={(event) => setUserForm((current) => ({ ...current, display_name: event.target.value }))} /></label>
                 <label>Username<input required value={userForm.username} onChange={(event) => setUserForm((current) => ({ ...current, username: event.target.value }))} /></label>
-                <label>Password sementara<input type="password" minLength={10} required value={userForm.password} onChange={(event) => setUserForm((current) => ({ ...current, password: event.target.value }))} /></label>
+                <label>Password sementara<input type="password" minLength={12} required value={userForm.password} onChange={(event) => setUserForm((current) => ({ ...current, password: event.target.value }))} /></label>
                 <label>Role<select required value={userForm.role_id} onChange={(event) => setUserForm((current) => ({ ...current, role_id: event.target.value }))}><option value="">Pilih role</option>{roles.map((role, index) => <option key={String(role.id ?? index)} value={String(role.id)}>{String(role.role_name ?? role.name)}</option>)}</select></label>
                 <button className="button primary">Buat akun</button>
-                <div className="table-scroll wide"><table><thead><tr><th>Username</th><th>Nama</th><th>Role</th><th>Status</th></tr></thead><tbody>{users.map((user, index) => <tr key={String(user.id ?? index)}><td>{String(user.username ?? '')}</td><td>{String(user.display_name ?? '')}</td><td>{String(user.role_name ?? '')}</td><td>{Number(user.is_active) ? 'Aktif' : 'Nonaktif'}</td></tr>)}</tbody></table></div>
               </form>}
-            </section>
-          )}
-
-          {page === 'devices' && (
-            <section>
-              <div className="page-heading"><div><p className="eyebrow">PERANGKAT TERDAFTAR</p><h1>Scanner sekolah</h1><p className="muted">Setiap key terikat ke sekolah ini dan dapat dicabut.</p></div></div>
-              {can('scanner.use') && <form className="panel form-grid" onSubmit={(event) => void createDevice(event)}><label>Nama perangkat<input required value={deviceName} onChange={(event) => setDeviceName(event.target.value)} /></label><button className="button primary">Daftarkan perangkat</button><button type="button" className="button secondary" onClick={() => void loadDevices()}>Muat daftar</button></form>}
-              {deviceKey && <div className="alert success key-reveal">API Key aktif untuk perangkat ini tersimpan pada sesi browser. Jangan bagikan key dan cabut bila perangkat hilang.</div>}
-              <div className="panel"><div className="table-scroll"><table><thead><tr><th>Perangkat</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{devices.map((device) => <tr key={device.id}><td>{device.device_name}</td><td>{Number(device.is_active) ? 'Aktif' : 'Dicabut'}</td><td>{Number(device.is_active) ? <button className="button danger small" onClick={() => void revokeDevice(device)}>Cabut akses</button> : '—'}</td></tr>)}{!devices.length && <tr><td colSpan={3} className="empty">Belum ada perangkat.</td></tr>}</tbody></table></div></div>
+              {can('school.users.view') && <div className="panel"><h2>Daftar akun</h2><div className="table-scroll"><table><thead><tr><th>Username</th><th>Nama</th><th>Role</th><th>Status</th>{can('school.users.delete') && <th>Aksi</th>}</tr></thead><tbody>{users.map((user, index) => <tr key={String(user.id ?? index)}><td>{String(user.username ?? '')}</td><td>{String(user.display_name ?? '')}</td><td>{String(user.role_name ?? '')}</td><td>{Number(user.is_active) ? 'Aktif' : 'Nonaktif'}</td>{can('school.users.delete') && <td>{Number(user.is_active) ? <button className="button danger small" onClick={() => void deactivateUser(user)}>Nonaktifkan</button> : '—'}</td>}</tr>)}</tbody></table></div></div>}
             </section>
           )}
 
@@ -2072,8 +2301,8 @@ export default function App() {
       {scannerMenuOpen && <div className="pin-modal-backdrop" role="presentation">
         <form className="pin-modal" onSubmit={(event) => void unlockScannerMenu(event)} role="dialog" aria-modal="true" aria-labelledby="scanner-pin-title">
           <div className="pin-modal-icon" aria-hidden="true">PIN</div>
-          <h2 id="scanner-pin-title">Masuk ke menu sekolah</h2>
-          <p>Masukkan PIN scanner untuk berpindah halaman.</p>
+          <h2 id="scanner-pin-title">{scannerMenuTarget === 'manual-attendance' ? 'Konfirmasi absensi manual' : 'Masuk ke menu sekolah'}</h2>
+          <p>Masukkan PIN scanner untuk melanjutkan.</p>
           <input className="pin-modal-input" type="password" inputMode="numeric" pattern="\d{4,6}" minLength={4} maxLength={6} autoComplete="off" required autoFocus value={scannerMenuPin} onChange={(event) => setScannerMenuPin(event.target.value.replace(/\D/g, '').slice(0, 6))} />
           {error && <div className="pin-modal-error">{error}</div>}
           <div className="pin-modal-actions">
@@ -2081,6 +2310,33 @@ export default function App() {
             <button className="button primary" disabled={scannerUnlockBusy}>{scannerUnlockBusy ? 'Memeriksa…' : 'Buka menu'}</button>
           </div>
         </form>
+      </div>}
+      {manualAttendanceOpen && <div className="pin-modal-backdrop" role="presentation">
+        <section className="pin-modal manual-attendance-modal" role="dialog" aria-modal="true" aria-labelledby="manual-attendance-title">
+          <h2 id="manual-attendance-title">Pilih peserta</h2>
+          <p>Status Masuk atau Pulang ditentukan otomatis mengikuti catatan hari ini.</p>
+          <label>Cari nama, kode, atau kelas
+            <input autoFocus value={manualAttendanceQuery} onChange={(event) => setManualAttendanceQuery(event.target.value)} />
+          </label>
+          <label>Peserta
+            <select value={manualParticipantId} onChange={(event) => setManualParticipantId(event.target.value)}>
+              <option value="">Pilih peserta</option>
+              {participants.filter((participant) => {
+                const search = manualAttendanceQuery.trim().toLocaleLowerCase();
+                return !search || [participant.full_name, participant.participant_code, participant.classroom_name]
+                  .some((value) => String(value ?? '').toLocaleLowerCase().includes(search));
+              }).map((participant) => (
+                <option key={participant.id} value={String(participant.id)}>
+                  {participant.full_name} · {participant.participant_code} · {participant.classroom_name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="pin-modal-actions">
+            <button type="button" className="button secondary" onClick={() => setManualAttendanceOpen(false)}>Batal</button>
+            <button type="button" className="button primary" disabled={!manualParticipantId} onClick={() => void submitManualAttendance()}>Catat absensi</button>
+          </div>
+        </section>
       </div>}
     </div>
   );

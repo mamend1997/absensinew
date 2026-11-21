@@ -156,6 +156,21 @@ export async function ensureRuntimeMigrations(pool) {
   }
 
   await pool.execute(`
+    CREATE TABLE IF NOT EXISTS school_google_sheets_config (
+      sekolah_id BIGINT UNSIGNED NOT NULL,
+      web_app_url VARCHAR(1000) NOT NULL,
+      token_ciphertext VARBINARY(1024) NOT NULL,
+      token_iv BINARY(12) NOT NULL,
+      token_auth_tag BINARY(16) NOT NULL,
+      is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (sekolah_id),
+      CONSTRAINT fk_school_google_sheets_school FOREIGN KEY (sekolah_id)
+        REFERENCES schools (id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await pool.execute(`
     CREATE TABLE IF NOT EXISTS platform_billing_settings (
       id TINYINT UNSIGNED NOT NULL,
       monthly_price BIGINT UNSIGNED NOT NULL DEFAULT 50000,

@@ -12,6 +12,9 @@ import {
   classroomScope, requireAnyPermission, requireDevice, requirePermission, requireSchoolUser,
 } from '../middleware/auth.js';
 import {
+  ALLOWED_PERMISSIONS, hasSchoolPermission, normalizeSchoolPermissions,
+} from '../core/school-permissions.js';
+import {
   createRegistrationOtp,
   equalOtpHash,
   hashRegistrationIp,
@@ -27,6 +30,9 @@ import { enforceOtpRequestLimit } from '../core/otp-rate-limit.js';
 import {
   decryptGatewayToken, encryptGatewayToken, sendWhatsappMessage, validateGatewayUrl,
 } from '../core/whatsapp-gateway.js';
+import {
+  sendAttendanceToGoogleSheets, validateAppsScriptWebAppUrl,
+} from '../core/google-sheets-sync.js';
 import { config } from '../config.js';
 import { createDeviceApiKey, hashPassword, signToken, verifyPassword } from '../security.js';
 import { getPlatformPaymentSettings } from '../core/platform-payment-settings.js';
@@ -34,12 +40,6 @@ import { getPlatformPaymentSettings } from '../core/platform-payment-settings.js
 const router = Router();
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DEFAULT_ROLES = ['admin-sekolah', 'operator-scanner'];
-const ALLOWED_PERMISSIONS = new Set([
-  'dashboard.read', 'attendance.read', 'attendance.export',
-  'participants.read', 'participants.manage', 'participants.qr.print',
-  'settings.operational.manage', 'attendance.excuse.manage', 'scanner.use',
-  'school.users.manage', 'school.roles.manage',
-]);
 
 function string(value, field, max = 150) {
   if (typeof value !== 'string' || value.trim() === '' || value.length > max) {
@@ -59,11 +59,12 @@ function validatePermissions(permissions, ownedPermissions) {
     typeof permission !== 'string' || !ALLOWED_PERMISSIONS.has(permission))) {
     throw fail(400, 'Daftar permission tidak valid.', 'VALIDATION_ERROR');
   }
+  const normalizedPermissions = normalizeSchoolPermissions(permissions);
   if (new Set(permissions).size !== permissions.length ||
-      permissions.some((permission) => !ownedPermissions.includes(permission))) {
+      normalizedPermissions.some((permission) => !hasSchoolPermission(ownedPermissions, permission))) {
     throw fail(403, 'Role tidak dapat memberi permission yang tidak dimiliki pengelola.', 'FORBIDDEN');
   }
-  return permissions;
+  return normalizedPermissions;
 }
 
 function validDate(value) {
@@ -440,11 +441,7 @@ router.get('/auth/me', requireSchoolUser, (req, res) => {
   });
 });
 
-router.get('/roles', requireSchoolUser, requirePermission('school.roles.manage'), asyncRoute(async (req, res) => {
-  if (!req.schoolUser.permissions.includes('school.roles.manage') &&
-      !req.schoolUser.permissions.includes('school.users.manage')) {
-    throw fail(403, 'Izin tidak mencukupi.', 'FORBIDDEN');
-  }
+router.get('/roles', requireSchoolUser, requirePermission('school.roles.view'), asyncRoute(async (req, res) => {
   const [rows] = await pool.execute(
     `SELECT id, role_key, role_name, permissions, is_system
        FROM roles WHERE sekolah_id = ? ORDER BY id`,
@@ -453,7 +450,7 @@ router.get('/roles', requireSchoolUser, requirePermission('school.roles.manage')
   res.json({ roles: rows.map((row) => ({ ...row, permissions: parseJson(row.permissions) })) });
 }));
 
-router.post('/roles', requireSchoolUser, requirePermission('school.roles.manage'), asyncRoute(async (req, res) => {
+router.post('/roles', requireSchoolUser, requirePermission('school.roles.edit'), asyncRoute(async (req, res) => {
   requireFields(req.body, ['role_key', 'role_name', 'permissions']);
   const roleKey = string(req.body.role_key, 'role_key', 80).toLowerCase();
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(roleKey) || DEFAULT_ROLES.includes(roleKey)) {
@@ -484,7 +481,9 @@ const updateRole = asyncRoute(async (req, res) => {
     [req.schoolUser.sekolah_id, roleId],
   );
   if (!found.length) throw fail(404, 'Role tidak ditemukan.', 'NOT_FOUND');
-  if (found[0].is_system) throw fail(403, 'Role sistem tidak dapat diubah.', 'FORBIDDEN');
+  if (found[0].is_system && req.body.role_name !== undefined) {
+    throw fail(403, 'Nama role sistem tidak dapat diubah.', 'FORBIDDEN');
+  }
   const updates = [];
   const values = [];
   if (req.body.role_name !== undefined) {
@@ -506,10 +505,30 @@ const updateRole = asyncRoute(async (req, res) => {
   role.permissions = parseJson(role.permissions);
   res.json({ role });
 });
-router.patch('/roles/:id', requireSchoolUser, requirePermission('school.roles.manage'), updateRole);
-router.patch('/roles', requireSchoolUser, requirePermission('school.roles.manage'), updateRole);
+router.patch('/roles/:id', requireSchoolUser, requirePermission('school.roles.edit'), updateRole);
+router.patch('/roles', requireSchoolUser, requirePermission('school.roles.edit'), updateRole);
 
-router.get('/users', requireSchoolUser, requirePermission('school.users.manage'), asyncRoute(async (req, res) => {
+router.delete('/roles/:id', requireSchoolUser, requirePermission('school.roles.delete'), asyncRoute(async (req, res) => {
+  const roleId = req.params.id;
+  if (!/^[1-9]\d*$/.test(roleId)) throw fail(400, 'role_id tidak valid.', 'VALIDATION_ERROR');
+  const [[role]] = await pool.execute(
+    'SELECT id, is_system FROM roles WHERE sekolah_id = ? AND id = ?',
+    [req.schoolUser.sekolah_id, roleId],
+  );
+  if (!role) throw fail(404, 'Role tidak ditemukan.', 'NOT_FOUND');
+  if (role.is_system) throw fail(403, 'Role sistem tidak dapat dihapus.', 'FORBIDDEN');
+  const [users] = await pool.execute(
+    'SELECT id FROM users WHERE sekolah_id = ? AND role_id = ? LIMIT 1',
+    [req.schoolUser.sekolah_id, roleId],
+  );
+  if (users.length) throw fail(409, 'Pindahkan akun dari role ini sebelum menghapusnya.', 'CONFLICT');
+  await pool.execute('DELETE FROM roles WHERE sekolah_id = ? AND id = ?', [
+    req.schoolUser.sekolah_id, roleId,
+  ]);
+  res.status(204).end();
+}));
+
+router.get('/users', requireSchoolUser, requirePermission('school.users.view'), asyncRoute(async (req, res) => {
   const scope = req.schoolUser.classroom_id === null ? { sql: '', params: [] }
     : { sql: ' AND u.classroom_id = ?', params: [req.schoolUser.classroom_id] };
   const [rows] = await pool.execute(
@@ -522,7 +541,7 @@ router.get('/users', requireSchoolUser, requirePermission('school.users.manage')
   res.json({ users: rows });
 }));
 
-router.post('/users', requireSchoolUser, requirePermission('school.users.manage'), asyncRoute(async (req, res) => {
+router.post('/users', requireSchoolUser, requirePermission('school.users.edit'), asyncRoute(async (req, res) => {
   requireFields(req.body, ['role_id', 'username', 'display_name', 'password']);
   if (typeof req.body.password !== 'string' || req.body.password.length < 12 ||
       req.body.password.length > 1024) throw fail(400, 'Password wajib 12–1024 karakter.', 'VALIDATION_ERROR');
@@ -533,8 +552,8 @@ router.post('/users', requireSchoolUser, requirePermission('school.users.manage'
     [req.schoolUser.sekolah_id, req.body.role_id],
   );
   if (!roles.length) throw fail(400, 'Role tidak ditemukan.', 'VALIDATION_ERROR');
-  const rolePermissions = parseJson(roles[0].permissions);
-  if (rolePermissions.some((permission) => !req.schoolUser.permissions.includes(permission))) {
+  const rolePermissions = normalizeSchoolPermissions(parseJson(roles[0].permissions));
+  if (rolePermissions.some((permission) => !hasSchoolPermission(req.schoolUser.permissions, permission))) {
     throw fail(403, 'Tidak dapat menetapkan role dengan izin lebih tinggi.', 'FORBIDDEN');
   }
   const classroomId = req.body.classroom_id ?? null;
@@ -562,8 +581,45 @@ router.post('/users', requireSchoolUser, requirePermission('school.users.manage'
   });
 }));
 
+router.delete('/users/:id', requireSchoolUser, requirePermission('school.users.delete'), asyncRoute(async (req, res) => {
+  const userId = req.params.id;
+  if (!/^[1-9]\d*$/.test(userId)) throw fail(400, 'user_id tidak valid.', 'VALIDATION_ERROR');
+  if (String(req.schoolUser.id) === userId) {
+    throw fail(409, 'Akun yang sedang digunakan tidak dapat dinonaktifkan.', 'CONFLICT');
+  }
+  const classScope = req.schoolUser.classroom_id === null ? '' : ' AND classroom_id = ?';
+  const values = [req.schoolUser.sekolah_id, userId];
+  if (req.schoolUser.classroom_id !== null) values.push(req.schoolUser.classroom_id);
+  const [[target]] = await pool.execute(
+    `SELECT id, is_active, role_id FROM users
+      WHERE sekolah_id = ? AND id = ?${classScope}`,
+    values,
+  );
+  if (!target) throw fail(404, 'Akun tidak ditemukan.', 'NOT_FOUND');
+  const [[role]] = await pool.execute(
+    'SELECT role_key FROM roles WHERE sekolah_id = ? AND id = ?',
+    [req.schoolUser.sekolah_id, target.role_id],
+  );
+  if (Number(target.is_active) && role?.role_key === 'admin-sekolah') {
+    const [[remaining]] = await pool.execute(
+      `SELECT COUNT(*) AS count
+         FROM users u JOIN roles r ON r.id = u.role_id AND r.sekolah_id = u.sekolah_id
+        WHERE u.sekolah_id = ? AND u.is_active = TRUE AND u.id <> ? AND r.role_key = 'admin-sekolah'`,
+      [req.schoolUser.sekolah_id, userId],
+    );
+    if (Number(remaining.count) === 0) {
+      throw fail(409, 'Sekolah harus memiliki minimal satu Admin Sekolah aktif.', 'CONFLICT');
+    }
+  }
+  await pool.execute(
+    'UPDATE users SET is_active = FALSE, auth_version = auth_version + 1 WHERE sekolah_id = ? AND id = ?',
+    [req.schoolUser.sekolah_id, userId],
+  );
+  res.status(204).end();
+}));
+
 router.get('/classrooms', requireSchoolUser,
-  requireAnyPermission('participants.read', 'scanner.use'), asyncRoute(async (req, res) => {
+  requireAnyPermission('participants.view', 'participants.read', 'scanner.use'), asyncRoute(async (req, res) => {
   const scope = classroomScope(req.schoolUser, 'c');
   const [rows] = await pool.execute(
     `SELECT c.id, c.unit_id, c.name, u.name AS unit_name
@@ -574,7 +630,7 @@ router.get('/classrooms', requireSchoolUser,
   res.json({ classrooms: rows });
 }));
 
-router.post('/classrooms', requireSchoolUser, requirePermission('participants.manage'), asyncRoute(async (req, res) => {
+router.post('/classrooms', requireSchoolUser, requirePermission('participants.edit'), asyncRoute(async (req, res) => {
   const name = string(req.body?.name, 'Nama kelas', 100);
   let unitId;
   if (req.body?.unit_id != null) {
@@ -613,7 +669,7 @@ router.post('/classrooms', requireSchoolUser, requirePermission('participants.ma
   res.status(201).json({ classroom: { id: String(result.insertId), unit_id: unitId, name } });
 }));
 
-router.put('/classrooms/:id', requireSchoolUser, requirePermission('participants.manage'), asyncRoute(async (req, res) => {
+router.put('/classrooms/:id', requireSchoolUser, requirePermission('participants.edit'), asyncRoute(async (req, res) => {
   const classroomId = req.params.id;
   if (!/^[1-9]\d*$/.test(classroomId)) throw fail(400, 'ID kelas tidak valid.', 'VALIDATION_ERROR');
   const name = string(req.body?.name, 'Nama kelas', 100);
@@ -629,7 +685,7 @@ router.put('/classrooms/:id', requireSchoolUser, requirePermission('participants
   res.json({ classroom: { id: classroomId, unit_id: String(found[0].unit_id), name } });
 }));
 
-router.delete('/classrooms/:id', requireSchoolUser, requirePermission('participants.manage'), asyncRoute(async (req, res) => {
+router.delete('/classrooms/:id', requireSchoolUser, requirePermission('participants.delete'), asyncRoute(async (req, res) => {
   const classroomId = req.params.id;
   if (!/^[1-9]\d*$/.test(classroomId)) throw fail(400, 'ID kelas tidak valid.', 'VALIDATION_ERROR');
   const [participants] = await pool.execute(
@@ -651,7 +707,7 @@ router.delete('/classrooms/:id', requireSchoolUser, requirePermission('participa
 }));
 
 router.get('/participants', requireSchoolUser,
-  requireAnyPermission('participants.read', 'scanner.use'), asyncRoute(async (req, res) => {
+  requireAnyPermission('participants.view', 'participants.read', 'scanner.use'), asyncRoute(async (req, res) => {
   const scope = classroomScope(req.schoolUser);
   const [rows] = await pool.execute(
     `SELECT p.id, p.classroom_id, p.participant_code, p.full_name, p.qr_code,
@@ -663,7 +719,7 @@ router.get('/participants', requireSchoolUser,
   res.json({ participants: rows });
 }));
 
-router.post('/participants/import', requireSchoolUser, requirePermission('participants.manage'), asyncRoute(async (req, res) => {
+router.post('/participants/import', requireSchoolUser, requirePermission('participants.edit'), asyncRoute(async (req, res) => {
   const records = req.body?.participants;
   if (!Array.isArray(records) || records.length < 1 || records.length > 500) {
     throw fail(400, 'participants harus berisi 1–500 baris.', 'VALIDATION_ERROR');
@@ -753,7 +809,7 @@ router.post('/participants/import', requireSchoolUser, requirePermission('partic
   });
 }));
 
-router.post('/participants', requireSchoolUser, requirePermission('participants.manage'), asyncRoute(async (req, res) => {
+router.post('/participants', requireSchoolUser, requirePermission('participants.edit'), asyncRoute(async (req, res) => {
   requireFields(req.body, ['classroom_id', 'participant_code', 'full_name']);
   scopedClassroom(req.schoolUser, req.body.classroom_id);
   const [classrooms] = await pool.execute(
@@ -777,7 +833,7 @@ router.post('/participants', requireSchoolUser, requirePermission('participants.
   } });
 }));
 
-router.put('/participants/:id/schedule', requireSchoolUser, requirePermission('participants.manage'), asyncRoute(async (req, res) => {
+router.put('/participants/:id/schedule', requireSchoolUser, requirePermission('participants.edit'), asyncRoute(async (req, res) => {
   const participantId = req.params.id;
   if (!/^[1-9]\d*$/.test(participantId)) {
     throw fail(400, 'ID peserta tidak valid.', 'VALIDATION_ERROR');
@@ -869,8 +925,8 @@ const updateParticipant = asyncRoute(async (req, res) => {
   );
   res.json({ participant });
 });
-router.put('/participants/:id', requireSchoolUser, requirePermission('participants.manage'), updateParticipant);
-router.put('/participants', requireSchoolUser, requirePermission('participants.manage'), updateParticipant);
+router.put('/participants/:id', requireSchoolUser, requirePermission('participants.edit'), updateParticipant);
+router.put('/participants', requireSchoolUser, requirePermission('participants.edit'), updateParticipant);
 
 const deleteParticipant = asyncRoute(async (req, res) => {
   const participantId = req.params.id ?? req.body?.id ?? req.query.id;
@@ -890,11 +946,11 @@ const deleteParticipant = asyncRoute(async (req, res) => {
   if (!result.affectedRows) throw fail(409, 'Peserta telah memiliki data terkait dan tidak dapat dihapus.', 'CONFLICT');
   res.status(204).end();
 });
-router.delete('/participants/:id', requireSchoolUser, requirePermission('participants.manage'), deleteParticipant);
-router.delete('/participants', requireSchoolUser, requirePermission('participants.manage'), deleteParticipant);
+router.delete('/participants/:id', requireSchoolUser, requirePermission('participants.delete'), deleteParticipant);
+router.delete('/participants', requireSchoolUser, requirePermission('participants.delete'), deleteParticipant);
 
 router.get('/settings', requireSchoolUser,
-  requireAnyPermission('settings.operational.manage', 'participants.read', 'participants.manage', 'scanner.use'), asyncRoute(async (req, res) => {
+  requireAnyPermission('settings.operational.view', 'participants.view', 'participants.read', 'participants.manage', 'scanner.use'), asyncRoute(async (req, res) => {
   const [[settings]] = await pool.execute(
     `SELECT timezone, check_in_deadline, lateness_tolerance_minutes, check_out_start,
             scanner_pin_hash IS NOT NULL AS scanner_pin_configured
@@ -932,7 +988,7 @@ router.get('/settings', requireSchoolUser,
   });
 }));
 
-router.put('/settings', requireSchoolUser, requirePermission('settings.operational.manage'), asyncRoute(async (req, res) => {
+router.put('/settings', requireSchoolUser, requirePermission('settings.operational.edit'), asyncRoute(async (req, res) => {
   const body = req.body ?? {};
   const timezone = body.timezone ?? req.schoolUser.timezone;
   try { new Intl.DateTimeFormat('en', { timeZone: timezone }); } catch { throw fail(400, 'Timezone tidak valid.'); }
@@ -1014,7 +1070,7 @@ router.put('/settings', requireSchoolUser, requirePermission('settings.operation
 }));
 
 router.post('/settings/scanner-pin/verify', requireSchoolUser,
-  requireAnyPermission('scanner.use', 'dashboard.read'), asyncRoute(async (req, res) => {
+  requireAnyPermission('scanner.use', 'dashboard.view'), asyncRoute(async (req, res) => {
     const pin = req.body?.pin;
     if (typeof pin !== 'string' || !/^\d{4,6}$/.test(pin)) {
       throw fail(400, 'PIN harus terdiri dari 4–6 angka.', 'VALIDATION_ERROR');
@@ -1031,7 +1087,7 @@ router.post('/settings/scanner-pin/verify', requireSchoolUser,
     res.json({ valid: true });
   }));
 
-router.get('/settings/whatsapp-gateway', requireSchoolUser, requirePermission('settings.operational.manage'), asyncRoute(async (req, res) => {
+router.get('/settings/whatsapp-gateway', requireSchoolUser, requirePermission('settings.operational.view'), asyncRoute(async (req, res) => {
   const [[settings]] = await pool.execute(
     `SELECT endpoint_url, token_ciphertext, is_enabled,
             last_test_at, last_test_status, last_test_message
@@ -1051,7 +1107,7 @@ router.get('/settings/whatsapp-gateway', requireSchoolUser, requirePermission('s
   });
 }));
 
-router.put('/settings/whatsapp-gateway', requireSchoolUser, requirePermission('settings.operational.manage'), asyncRoute(async (req, res) => {
+router.put('/settings/whatsapp-gateway', requireSchoolUser, requirePermission('settings.operational.edit'), asyncRoute(async (req, res) => {
   const settings = validateSchoolGatewaySettings(req.body ?? {});
   const [[existing]] = await pool.execute(
     `SELECT token_ciphertext, token_iv, token_auth_tag
@@ -1085,7 +1141,7 @@ router.put('/settings/whatsapp-gateway', requireSchoolUser, requirePermission('s
   res.json({ message: 'Pengaturan WhatsApp sekolah disimpan.' });
 }));
 
-router.post('/settings/whatsapp-gateway/test', requireSchoolUser, requirePermission('settings.operational.manage'), asyncRoute(async (req, res) => {
+router.post('/settings/whatsapp-gateway/test', requireSchoolUser, requirePermission('settings.operational.edit'), asyncRoute(async (req, res) => {
   const phone = normalizeWhatsappPhone(req.body?.phone);
   if (!phone) throw fail(400, 'Nomor WhatsApp uji coba tidak valid.', 'VALIDATION_ERROR');
   const [[gateway]] = await pool.execute(
@@ -1125,13 +1181,89 @@ router.post('/settings/whatsapp-gateway/test', requireSchoolUser, requirePermiss
   res.json({ log });
 }));
 
-router.delete('/settings/whatsapp-gateway', requireSchoolUser, requirePermission('settings.operational.manage'), asyncRoute(async (req, res) => {
+router.delete('/settings/whatsapp-gateway', requireSchoolUser, requirePermission('settings.operational.edit'), asyncRoute(async (req, res) => {
   await pool.execute(
     `DELETE FROM school_whatsapp_gateway_config WHERE sekolah_id = ?`,
     [req.schoolUser.sekolah_id],
   );
   res.json({ message: 'Konfigurasi WhatsApp sekolah dihapus.' });
 }));
+
+router.get('/settings/google-sheets', requireSchoolUser,
+  requirePermission('settings.operational.view'), asyncRoute(async (req, res) => {
+    const [[settings]] = await pool.execute(
+      `SELECT web_app_url, token_ciphertext, is_enabled
+         FROM school_google_sheets_config WHERE sekolah_id = ?`,
+      [req.schoolUser.sekolah_id],
+    );
+    res.json({
+      settings: {
+        web_app_url: settings?.web_app_url ?? '',
+        is_enabled: Boolean(settings?.is_enabled),
+        is_configured: Boolean(settings?.web_app_url && settings?.token_ciphertext),
+        secret_hint: settings?.token_ciphertext ? 'Secret tersimpan terenkripsi' : '',
+      },
+    });
+  }));
+
+router.put('/settings/google-sheets', requireSchoolUser,
+  requirePermission('settings.operational.edit'), asyncRoute(async (req, res) => {
+    const body = req.body ?? {};
+    if (typeof body.is_enabled !== 'boolean') {
+      throw fail(400, 'Status aktif Google Sheets tidak valid.', 'VALIDATION_ERROR');
+    }
+    const [[existing]] = await pool.execute(
+      `SELECT web_app_url, token_ciphertext, token_iv, token_auth_tag
+         FROM school_google_sheets_config WHERE sekolah_id = ?`,
+      [req.schoolUser.sekolah_id],
+    );
+    const rawUrl = typeof body.web_app_url === 'string' ? body.web_app_url.trim() : '';
+    const webAppUrl = rawUrl
+      ? validateAppsScriptWebAppUrl(rawUrl)
+      : existing?.web_app_url ?? '';
+    const sharedSecret = typeof body.shared_secret === 'string' ? body.shared_secret : '';
+    if (sharedSecret && (sharedSecret.length < 24 || sharedSecret.length > 500)) {
+      throw fail(400, 'Secret Google Sheets harus berisi 24–500 karakter.', 'VALIDATION_ERROR');
+    }
+    const encrypted = sharedSecret
+      ? encryptGatewayToken(sharedSecret)
+      : existing?.token_ciphertext
+        ? {
+          ciphertext: existing.token_ciphertext,
+          iv: existing.token_iv,
+          authTag: existing.token_auth_tag,
+        }
+        : null;
+    if (body.is_enabled && (!webAppUrl || !encrypted)) {
+      throw fail(400, 'Masukkan URL Apps Script dan secret sebelum mengaktifkan sinkronisasi.', 'VALIDATION_ERROR');
+    }
+    if (!webAppUrl || !encrypted) {
+      await pool.execute('DELETE FROM school_google_sheets_config WHERE sekolah_id = ?', [
+        req.schoolUser.sekolah_id,
+      ]);
+      return res.json({
+        settings: { web_app_url: '', is_enabled: false, is_configured: false, secret_hint: '' },
+      });
+    }
+    await pool.execute(
+      `INSERT INTO school_google_sheets_config
+        (sekolah_id, web_app_url, token_ciphertext, token_iv, token_auth_tag, is_enabled)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE web_app_url = VALUES(web_app_url),
+         token_ciphertext = VALUES(token_ciphertext), token_iv = VALUES(token_iv),
+         token_auth_tag = VALUES(token_auth_tag), is_enabled = VALUES(is_enabled)`,
+      [req.schoolUser.sekolah_id, webAppUrl, encrypted.ciphertext,
+        encrypted.iv, encrypted.authTag, body.is_enabled],
+    );
+    res.json({
+      settings: {
+        web_app_url: webAppUrl,
+        is_enabled: body.is_enabled,
+        is_configured: true,
+        secret_hint: 'Secret tersimpan terenkripsi',
+      },
+    });
+  }));
 
 router.get('/billing', requireSchoolUser, asyncRoute(async (req, res) => {
   requireBillingAdmin(req);
@@ -1307,7 +1439,9 @@ router.post('/devices/:id/revoke', requireSchoolUser, requirePermission('scanner
   res.json({ message: 'Kunci perangkat telah dicabut.' });
 }));
 
-router.post('/attendance/sync-batch', requireDevice, asyncRoute(async (req, res) => {
+const syncAttendanceBatch = asyncRoute(async (req, res) => {
+  const schoolId = req.schoolUser?.sekolah_id ?? req.device.sekolah_id;
+  const deviceId = req.device?.id ?? null;
   const records = req.body?.records;
   if (!Array.isArray(records) || records.length < 1 || records.length > 100) {
     throw fail(400, 'records harus berisi 1–100 scan.', 'VALIDATION_ERROR');
@@ -1315,7 +1449,7 @@ router.post('/attendance/sync-batch', requireDevice, asyncRoute(async (req, res)
   const acceptedIds = [];
   const rejectedIds = [];
   const rejected = [];
-  const settings = await loadAttendanceSettings(req.device.sekolah_id);
+  const settings = await loadAttendanceSettings(schoolId);
   const seen = new Set();
   for (const record of records) {
     const id = record?.id_unik;
@@ -1332,8 +1466,10 @@ router.post('/attendance/sync-batch', requireDevice, asyncRoute(async (req, res)
     seen.add(id);
     const eventType = record.event_type ?? record.jenis_absen;
     const participantId = record.participant_id ?? record.id_peserta;
+    const scanMethod = record.scan_method ?? 'SCAN_QR';
     if (!['check_in', 'check_out'].includes(eventType) ||
         !/^[1-9]\d*$/.test(String(participantId ?? '')) ||
+        !['SCAN_QR', 'MANUAL_INPUT'].includes(scanMethod) ||
         typeof record.client_timestamp !== 'string' ||
         !/(?:Z|[+-]\d{2}:\d{2})$/i.test(record.client_timestamp) ||
         !Number.isFinite(Date.parse(record.client_timestamp))) {
@@ -1347,7 +1483,7 @@ router.post('/attendance/sync-batch', requireDevice, asyncRoute(async (req, res)
            FROM participants p JOIN classrooms c
              ON c.id = p.classroom_id AND c.sekolah_id = p.sekolah_id
           WHERE p.sekolah_id = ? AND p.id = ? AND p.is_active = TRUE`,
-        [req.device.sekolah_id, participantId],
+        [schoolId, participantId],
       );
       if (!participants.length) throw new Error('participant_not_found');
       const participant = participants[0];
@@ -1363,20 +1499,20 @@ router.post('/attendance/sync-batch', requireDevice, asyncRoute(async (req, res)
       try {
         await pool.execute(
           `INSERT INTO attendance_logs
-            (sekolah_id, id_unik, participant_id, device_id, participant_code_snapshot,
+            (sekolah_id, id_unik, participant_id, device_id, recorded_by, participant_code_snapshot,
              participant_name_snapshot, classroom_name_snapshot, attendance_date,
-             event_type, client_timestamp_utc, attendance_status, late_minutes)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [req.device.sekolah_id, id, participant.id, req.device.id,
+             event_type, client_timestamp_utc, attendance_status, late_minutes, scan_method)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [schoolId, id, participant.id, deviceId, req.schoolUser?.id ?? null,
             participant.participant_code, participant.full_name, participant.classroom_name,
-            calculation.date, eventType, timestamp, calculation.status, calculation.lateMinutes],
+            calculation.date, eventType, timestamp, calculation.status, calculation.lateMinutes, scanMethod],
         );
       } catch (error) {
         if (error.code !== 'ER_DUP_ENTRY') throw error;
         const [existing] = await pool.execute(
           `SELECT participant_id, event_type, attendance_date
              FROM attendance_logs WHERE sekolah_id = ? AND id_unik = ?`,
-          [req.device.sekolah_id, id],
+          [schoolId, id],
         );
         if (existing.length && String(existing[0].participant_id) === String(participant.id) &&
             existing[0].event_type === eventType && existing[0].attendance_date === calculation.date) {
@@ -1395,11 +1531,18 @@ router.post('/attendance/sync-batch', requireDevice, asyncRoute(async (req, res)
       });
     }
   }
-  await pool.execute('UPDATE scanner_devices SET last_synced_at = CURRENT_TIMESTAMP WHERE id = ?', [req.device.id]);
+  if (deviceId) {
+    await pool.execute('UPDATE scanner_devices SET last_synced_at = CURRENT_TIMESTAMP WHERE id = ?', [deviceId]);
+  }
+  await sendAttendanceToGoogleSheets({ schoolId, ids: acceptedIds });
   res.json({ accepted_ids: acceptedIds, rejected_ids: rejectedIds, rejected });
-}));
+});
 
-router.get('/attendance/report', requireSchoolUser, requirePermission('attendance.read'), asyncRoute(async (req, res) => {
+router.post('/attendance/sync-batch', requireDevice, syncAttendanceBatch);
+router.post('/attendance/sync-batch/session', requireSchoolUser,
+  requirePermission('scanner.use'), syncAttendanceBatch);
+
+router.get('/attendance/report', requireSchoolUser, requirePermission('attendance.view'), asyncRoute(async (req, res) => {
   const from = req.query.from;
   const to = req.query.to;
   if (!validDate(from) || !validDate(to) || from > to ||

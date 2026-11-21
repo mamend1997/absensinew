@@ -1,6 +1,7 @@
 import { pool } from '../db.js';
 import { asyncRoute, fail, parseJson } from '../http.js';
 import { hashDeviceApiKey, readBearerToken, verifyToken } from '../security.js';
+import { hasSchoolPermission, normalizeSchoolPermissions } from '../core/school-permissions.js';
 
 export const requireSuperAdmin = asyncRoute(async (req, res, next) => {
   const token = readBearerToken(req.get('authorization'));
@@ -60,7 +61,7 @@ export const requireSchoolUser = asyncRoute(async (req, res, next) => {
       Number(row.auth_version ?? 0) !== Number(claims.authVersion ?? 0)) {
     throw fail(401, 'Sesi sekolah tidak valid atau kode sekolah telah berubah.', 'UNAUTHENTICATED');
   }
-  const permissions = parseJson(row.permissions);
+  const permissions = normalizeSchoolPermissions(parseJson(row.permissions));
   req.schoolUser = {
     ...row,
     role_key: row.role_key,
@@ -105,7 +106,7 @@ export function requireAnyPermission(...permissions) {
       return next(fail(402, 'Langganan sekolah telah berakhir. Perpanjang untuk melanjutkan.', 'SUBSCRIPTION_EXPIRED'));
     }
     if (!user || String(user.role_sekolah_id) !== String(user.sekolah_id) ||
-        !permissions.some((permission) => user.permissions.includes(permission))) {
+        !permissions.some((permission) => hasSchoolPermission(user.permissions, permission))) {
       return next(fail(403, 'Izin tidak mencukupi.', 'FORBIDDEN'));
     }
     next();

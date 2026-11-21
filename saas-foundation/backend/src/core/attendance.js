@@ -112,6 +112,7 @@ export function createQueuedScan({
   id_peserta,
   id_perangkat,
   jenis_absen,
+  scan_method = 'SCAN_QR',
   client_timestamp = new Date().toISOString(),
   calculation,
   id_unik = globalThis.crypto?.randomUUID?.(),
@@ -124,6 +125,9 @@ export function createQueuedScan({
   }
   if (!['check_in', 'check_out'].includes(jenis_absen)) {
     throw new TypeError('jenis_absen harus check_in atau check_out.');
+  }
+  if (!['SCAN_QR', 'MANUAL_INPUT'].includes(scan_method)) {
+    throw new TypeError('scan_method harus SCAN_QR atau MANUAL_INPUT.');
   }
   if (
     !/^\d{4}-\d{2}-\d{2}$/.test(calculation?.date ?? '') ||
@@ -150,6 +154,7 @@ export function createQueuedScan({
     id_peserta: String(id_peserta),
     id_perangkat: id_perangkat == null ? null : String(id_perangkat),
     jenis_absen,
+    scan_method,
     attendance_date: calculation.date,
     client_timestamp: new Date(client_timestamp).toISOString(),
     status_kehadiran: calculation.status,

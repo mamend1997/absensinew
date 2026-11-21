@@ -360,6 +360,32 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
   .scan-history-card th, .scan-history-card td { padding: 6px 5px; font-size: 8px; }
   .scan-resume-button { min-height: 38px; height: 38px; margin-top: 7px; }
 }
+.scan-manual-button { min-height: 36px; border: 1px solid rgba(45,212,191,.45); background: rgba(45,212,191,.15); color: #d7fff6; padding: 0 12px; font-size: 10px; }
+.manual-attendance-modal { width: min(460px, 100%); justify-items: stretch; text-align: left; }
+.manual-attendance-modal h2, .manual-attendance-modal p { text-align: center; }
+.manual-attendance-modal label { display: grid; gap: 6px; color: #37463f; font-size: 12px; font-weight: 700; }
+.manual-attendance-modal input, .manual-attendance-modal select { width: 100%; }
+.role-list-panel { display: grid; gap: 12px; }
+.role-card { display: grid; gap: 12px; border: 1px solid #dfe8e2; border-radius: 12px; background: #fbfdfb; padding: 14px; }
+.role-card-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.role-card-heading > div { display: grid; flex: 1 1 180px; gap: 4px; }
+.role-card-heading code { color: #63716a; font-size: 11px; }
+.role-permission-matrix { display: grid; gap: 6px; }
+.role-permission-row { display: grid; grid-template-columns: minmax(130px, 1fr) repeat(3, minmax(64px, auto)); align-items: center; gap: 8px; border-top: 1px solid #e8eee9; padding: 7px 0; }
+.role-permission-row > strong { color: #34443c; font-size: 12px; }
+.role-permission-row label { display: inline-flex; align-items: center; gap: 5px; color: #586760; font-size: 11px; }
+.role-permission-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: #176f4c; }
+.google-sheets-panel { display: grid; grid-template-columns: minmax(0, .85fr) minmax(320px, 1.15fr); gap: 18px; }
+.google-sheets-panel .muted { margin: 5px 0 8px; font-size: 10px; }
+.google-sheets-panel .school-whatsapp-form { display: grid; gap: 10px; }
+.google-sheets-panel .school-whatsapp-form > label { display: grid; gap: 5px; font-size: 11px; font-weight: 700; }
+.google-sheets-panel .gateway-hint { display: block; margin-top: 8px; }
+@media (max-width: 700px) {
+  .google-sheets-panel { grid-template-columns: 1fr; }
+  .role-permission-row { grid-template-columns: minmax(90px, 1fr) repeat(3, minmax(46px, auto)); gap: 4px; }
+  .role-permission-row label { font-size: 9px; }
+  .scan-manual-button { min-height: 34px; padding: 0 8px; font-size: 9px; }
+}
 @media print {
   body { background: #fff; }
   .topbar, .side-nav, .no-print, .page-heading, .alert, .filter-form, .scanner-page, .quick-panel { display: none !important; }
