@@ -539,6 +539,15 @@ export default function App() {
   const validResetPassword = Object.values(resetPasswordChecks).every(Boolean);
 
   useEffect(() => {
+    if (!error && !notice) return;
+    const timer = window.setTimeout(() => {
+      setError('');
+      setNotice('');
+    }, error ? 6000 : 4000);
+    return () => window.clearTimeout(timer);
+  }, [session, error, notice]);
+
+  useEffect(() => {
     let active = true;
     let objectUrl = '';
     fetch(`${API_BASE}/branding/logo`, { cache: 'no-store' })
@@ -583,6 +592,7 @@ export default function App() {
 
   const permissions = session?.user.permissions ?? [];
   const can = (permission: Permission) => hasPermission(permissions, permission);
+  const connected = online && !offlineMode;
   useEffect(() => {
     if (!session) return;
     void request<{ session?: SchoolSession; school?: SchoolInfo; user?: UserInfo }>(
@@ -1774,8 +1784,6 @@ export default function App() {
           <div className="brand-mark">RH</div>
           <p className="eyebrow">PORTAL SEKOLAH</p>
           <h1>Masuk ke {applicationName}</h1>
-          {error && <div className="alert error">{error}</div>}
-          {notice && <div className="alert success">{notice}</div>}
           <label>Kode sekolah
             <input inputMode="numeric" autoComplete="organization" maxLength={4} pattern="\d{4}" required value={loginForm.school_code} onChange={(event) => setLoginForm((current) => ({ ...current, school_code: event.target.value.replace(/\D/g, '').slice(0, 4) }))} placeholder="Contoh: 4829" />
           </label>
@@ -1810,8 +1818,6 @@ export default function App() {
           <div className="brand-mark">RH</div>
           <h1>Daftarkan sekolah</h1>
           <p className="muted">Kode sekolah 4 digit dibuat otomatis setelah verifikasi dan digunakan saat login.</p>
-          {error && <div className="alert error">{error}</div>}
-          {notice && <div className="alert success">{notice}</div>}
           <label>Nama sekolah<input autoComplete="organization" maxLength={180} required value={registrationForm.school_name} onChange={(event) => setRegistrationForm((current) => ({ ...current, school_name: event.target.value }))} /></label>
           <label>Username<input autoComplete="username" maxLength={80} pattern="[A-Za-z0-9._-]{3,80}" required value={registrationForm.username} onChange={(event) => setRegistrationForm((current) => ({ ...current, username: event.target.value }))} /></label>
           <label>Nomor WhatsApp admin
@@ -1841,8 +1847,6 @@ export default function App() {
           <p className="eyebrow">VERIFIKASI WHATSAPP</p>
           <h1>Masukkan kode OTP</h1>
           <p className="muted">Kode dikirim ke +62 {registrationForm.whatsapp_phone} dan berlaku selama 5 menit.</p>
-          {error && <div className="alert error">{error}</div>}
-          {notice && <div className="alert success">{notice}</div>}
           <label>Kode OTP<input autoComplete="one-time-code" inputMode="numeric" pattern="\d{6}" maxLength={6} required value={registrationOtp} onChange={(event) => setRegistrationOtp(event.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="6 digit" /></label>
           <button className="button primary" disabled={busy || registrationOtp.length !== 6}>{busy ? 'Memverifikasi…' : 'Verifikasi dan buat akun'}</button>
           <button className="text-button register-link" type="button" disabled={busy} onClick={() => void startRegistration()}>{busy ? 'Mengirim…' : 'Kirim ulang OTP'}</button>
@@ -1853,8 +1857,6 @@ export default function App() {
           <p className="eyebrow">PEMULIHAN AKUN</p>
           <h1>Lupa kata sandi?</h1>
           <p className="muted">Masukkan kode sekolah dan nomor WhatsApp yang terdaftar. Jika cocok dengan akun aktif, kode verifikasi akan dikirim ke nomor tersebut.</p>
-          {error && <div className="alert error">{error}</div>}
-          {notice && <div className="alert success">{notice}</div>}
           <label>Kode sekolah
             <input inputMode="numeric" autoComplete="organization" maxLength={4} pattern="\d{4}" required value={passwordResetForm.school_code} onChange={(event) => setPasswordResetForm((current) => ({ ...current, school_code: event.target.value.replace(/\D/g, '').slice(0, 4) }))} placeholder="Contoh: 4829" />
           </label>
@@ -1871,8 +1873,6 @@ export default function App() {
           <div className="brand-mark">RH</div>
           <p className="eyebrow">PEMULIHAN AKUN</p>
           <h1>Buat kata sandi baru</h1>
-          {error && <div className="alert error">{error}</div>}
-          {notice && <div className="alert success">{notice}</div>}
           <label>Kode OTP WhatsApp
             <input autoComplete="one-time-code" inputMode="numeric" pattern="\d{6}" maxLength={6} required value={passwordResetForm.otp} onChange={(event) => setPasswordResetForm((current) => ({ ...current, otp: event.target.value.replace(/\D/g, '').slice(0, 6) }))} placeholder="6 digit" />
           </label>
@@ -1894,6 +1894,12 @@ export default function App() {
           </button>
           <button className="text-button register-link" type="button" disabled={busy} onClick={() => void startPasswordReset()}>{busy ? 'Mengirim…' : 'Kirim ulang kode OTP'}</button>
         </form>}
+        {(error || notice) && <div className="toast-layer" aria-live={error ? 'assertive' : 'polite'}>
+          <div className={`toast-popup ${error ? 'error' : 'success'}`} role={error ? 'alert' : 'status'}>
+            <span>{error || notice}</span>
+            <button type="button" aria-label="Tutup notifikasi" onClick={() => { setError(''); setNotice(''); }}>×</button>
+          </div>
+        </div>}
       </main>
     );
   }
@@ -1903,7 +1909,7 @@ export default function App() {
       <header className="topbar">
         <div className="brand"><div className="brand-mark">RH</div><div><strong>{session.school.name}</strong><small>Kode sekolah · {session.school.school_code}</small></div></div>
         <div className="top-actions">
-          <span className={`connection ${online ? 'online' : 'offline'}`}><i />{online ? 'Online' : 'Offline'}</span>
+          <span className={`connection ${connected ? 'online' : 'offline'}`}><i />{connected ? 'Online' : 'Offline'}</span>
           <span className="pending-pill">{pendingCount} pending</span>
           {!page ? null : page === 'scanner'
             ? <button className="button scanner-menu-button" type="button" onClick={() => requestScannerMenu('dashboard')}>Menu</button>
@@ -1919,10 +1925,6 @@ export default function App() {
           ))}
         </nav>}
         <main className={page === 'scanner' ? 'content scanner-kiosk' : 'content'}>
-          {offlineMode && <div className="alert warning">Mode offline: scanner memakai master peserta lokal. Perubahan data dan login baru membutuhkan jaringan.</div>}
-          {error && <div className="alert error">{error}<button onClick={() => setError('')} aria-label="Tutup">×</button></div>}
-          {notice && <div className="alert success">{notice}<button onClick={() => setNotice('')} aria-label="Tutup">×</button></div>}
-
           {page === 'dashboard' && (
             <section>
               <p className="eyebrow">DASHBOARD SEKOLAH</p>
@@ -1931,7 +1933,7 @@ export default function App() {
               <div className="metric-grid">
                 <article className="metric-card"><span>Peserta aktif lokal</span><strong>{participants.length}</strong></article>
                 <article className="metric-card"><span>Antrean belum terkirim</span><strong>{pendingCount}</strong></article>
-                <article className="metric-card"><span>Status koneksi</span><strong className={online ? 'text-green' : 'text-red'}>{online ? 'Online' : 'Offline'}</strong></article>
+                <article className="metric-card"><span>Status koneksi</span><strong className={connected ? 'text-green' : 'text-red'}>{connected ? 'Online' : 'Offline'}</strong></article>
               </div>
               <div className="panel quick-panel"><h2>Akses cepat</h2><p className="muted">Buka scanner untuk absensi atau rekap untuk memantau kehadiran.</p><div className="heading-actions">{can('scanner.use') && <button className="button primary" onClick={() => setPage('scanner')}>Buka Scanner</button>}{can('attendance.view') && <button className="button secondary" onClick={() => { setPage('reports'); void loadReport(); }}>Lihat Rekap</button>}</div></div>
             </section>
@@ -1952,7 +1954,7 @@ export default function App() {
                     </div>
                   </div>
                   <div className="scan-header-actions">
-                    <div className={`connection-chip ${online ? 'is-online' : 'is-offline'}`}><span />{online ? 'Online' : 'Offline'}</div>
+                    <div className={`connection-chip ${connected ? 'is-online' : 'is-offline'}`}><span />{connected ? 'Online' : 'Offline'}</div>
                     <button className="button scan-manual-button" type="button" onClick={() => requestScannerMenu('manual-attendance')}>Absensi Manual</button>
                     <button className="scan-menu-trigger" type="button" aria-label="Buka menu dengan PIN" onClick={() => requestScannerMenu('dashboard')}><span className="hamburger-icon" aria-hidden="true"><i /><i /><i /></span></button>
                   </div>
@@ -2298,6 +2300,12 @@ export default function App() {
           )}
         </main>
       </div>
+      {(error || notice) && <div className="toast-layer" aria-live={error ? 'assertive' : 'polite'}>
+        <div className={`toast-popup ${error ? 'error' : 'success'}`} role={error ? 'alert' : 'status'}>
+          <span>{error || notice}</span>
+          <button type="button" aria-label="Tutup notifikasi" onClick={() => { setError(''); setNotice(''); }}>×</button>
+        </div>
+      </div>}
       {scannerMenuOpen && <div className="pin-modal-backdrop" role="presentation">
         <form className="pin-modal" onSubmit={(event) => void unlockScannerMenu(event)} role="dialog" aria-modal="true" aria-labelledby="scanner-pin-title">
           <div className="pin-modal-icon" aria-hidden="true">PIN</div>
