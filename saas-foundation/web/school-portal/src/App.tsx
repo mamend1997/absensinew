@@ -1,4 +1,6 @@
+import { TextToSpeech } from '@capacitor-community/text-to-speech';
 import { BrowserMultiFormatReader } from '@zxing/browser';
+import { Capacitor } from '@capacitor/core';
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 import QRCode from 'qrcode';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
@@ -210,7 +212,7 @@ interface Participant {
   classroom_name: string;
   qr_code: string;
   participant_phone?: string | null;
-  is_active?: boolean | number;
+  is_active?: boolean | number | string;
 }
 interface Classroom { id: string; name: string; unit_id: string; unit_name?: string }
 interface WeeklySchedule {
@@ -256,7 +258,6 @@ interface ParticipantImportDraft {
   classroom_id: string;
   qr_code: string;
   participant_phone: string;
-  guardian_phone: string;
 }
 interface ReportRow {
   attendance_date: string;
@@ -423,7 +424,50 @@ function attendanceMessage(
   );
 }
 
+function normalizeScanCode(value: unknown) {
+  return String(value ?? '').normalize('NFKC').trim();
+}
+
+function isActiveParticipant(participant: Participant) {
+  const active = participant.is_active;
+  return active == null || active === true || active === 1 ||
+    (typeof active === 'string' && ['1', 'true'].includes(active.toLowerCase()));
+}
+
+function findParticipantByScanCode(participants: Participant[], rawCode: string) {
+  const code = normalizeScanCode(rawCode);
+  const activeParticipants = participants.filter(isActiveParticipant);
+  const exactMatches = activeParticipants.filter((participant) =>
+    [participant.qr_code, participant.participant_code]
+      .some((candidate) => normalizeScanCode(candidate) === code));
+  if (exactMatches.length > 1) {
+    throw new Error('QR/barcode ini terdaftar pada lebih dari satu peserta.');
+  }
+  if (exactMatches.length === 1) return exactMatches[0];
+
+  const foldedCode = code.toLocaleUpperCase('id-ID');
+  const caseInsensitiveMatches = activeParticipants.filter((participant) =>
+    [participant.qr_code, participant.participant_code]
+      .some((candidate) => normalizeScanCode(candidate).toLocaleUpperCase('id-ID') === foldedCode));
+  if (caseInsensitiveMatches.length > 1) {
+    throw new Error('QR/barcode cocok dengan lebih dari satu peserta.');
+  }
+  return caseInsensitiveMatches[0];
+}
+
 async function speakAttendanceMessage(text: string) {
+  if (Capacitor.isNativePlatform()) {
+    await TextToSpeech.speak({
+      text,
+      lang: 'id-ID',
+      rate: 0.92,
+      pitch: 1.05,
+      volume: 1,
+      queueStrategy: 0,
+    });
+    return;
+  }
+
   if (!('speechSynthesis' in window) || !('SpeechSynthesisUtterance' in window)) {
     throw new Error('TTS tidak tersedia pada perangkat ini.');
   }
@@ -782,7 +826,7 @@ export default function App() {
     const timer = window.setTimeout(() => {
       setError('');
       setNotice('');
-    }, error ? 6000 : 4000);
+    }, 3000);
     return () => window.clearTimeout(timer);
   }, [session, error, notice]);
 
@@ -1382,8 +1426,6 @@ export default function App() {
     await refreshPendingCount();
     if (result.rejected_ids.length) {
       setMessage(`${result.accepted_ids.length} scan tersinkron; ${result.rejected_ids.length} tetap pending untuk diperiksa.`, true);
-    } else if (result.accepted_ids.length) {
-      setMessage(`${result.accepted_ids.length} scan berhasil disinkronkan.`);
     }
     return result;
   }
@@ -1413,33 +1455,45 @@ export default function App() {
       setPage('billing');
       return false;
     }
-    const value = rawValue.trim();
+    const value = normalizeScanCode(rawValue);
     if (!value) return false;
     const now = Date.now();
     const previous = lastScanAtRef.current.get(value) ?? 0;
     if (now - previous < 3000) return false;
     lastScanAtRef.current.set(value, now);
-    const participant = participants.find((item) =>
-      (item.qr_code === value || item.participant_code === value) &&
-      (item.is_active == null || item.is_active === true || Number(item.is_active) === 1));
+    let participant: Participant | undefined;
     try {
+      participant = findParticipantByScanCode(participants, value);
+      if (!participant && online) {
+        const result = await request<unknown>('/school/participants', session.token);
+        const refreshedParticipants = unwrapArray<Participant>(result, 'participants')
+          .map((item) => ({ ...item, id: String(item.id) }));
+        setParticipants(refreshedParticipants);
+        const db = await database(session.school.id);
+        const transaction = db.transaction('participants', 'readwrite');
+        await transaction.store.clear();
+        for (const item of refreshedParticipants) await transaction.store.put(item);
+        await transaction.done;
+        participant = findParticipantByScanCode(refreshedParticipants, value);
+      }
       if (!participant) throw new Error('QR/barcode tidak ditemukan di master peserta lokal.');
+      const matchedParticipant = participant;
       const db = await database(session.school.id);
       const allScans = await db.getAll('queue');
       const initialCalculation = calculateAttendance({
         eventType: 'check_in',
         clientTimestamp: new Date().toISOString(),
-        participantId: participant.id,
+        participantId: matchedParticipant.id,
         settings,
       }) as ScanResult;
       const hasCheckIn = allScans.some((record) =>
-        record.id_peserta === participant.id &&
+        record.id_peserta === matchedParticipant.id &&
         record.attendance_date === initialCalculation.date &&
         record.jenis_absen === 'check_in',
       );
       const eventType = hasCheckIn ? 'check_out' : 'check_in';
       const duplicate = allScans.some((record) =>
-        record.id_peserta === participant.id &&
+        record.id_peserta === matchedParticipant.id &&
         record.attendance_date === initialCalculation.date &&
         record.jenis_absen === eventType,
       );
@@ -1450,7 +1504,7 @@ export default function App() {
         : calculateAttendance({
           eventType,
           clientTimestamp: new Date().toISOString(),
-          participantId: participant.id,
+          participantId: matchedParticipant.id,
           settings,
         }) as ScanResult;
       if (calculation.reason) {
@@ -1460,13 +1514,13 @@ export default function App() {
       }
       const scan = createQueuedScan({
         sekolah_id: String(session.school.id),
-        id_peserta: participant.id,
+        id_peserta: matchedParticipant.id,
         id_perangkat: null,
         jenis_absen: eventType,
         scan_method: scanMethod,
         calculation,
       }) as QueuedScan;
-      scan.participant_name = participant.full_name;
+      scan.participant_name = matchedParticipant.full_name;
       await syncManager().enqueue(scan);
       const attendanceStatus = calculation.status === 'check_out' || calculation.status === 'pulang'
         ? 'pulang'
@@ -1474,7 +1528,7 @@ export default function App() {
           ? `terlambat${calculation.lateMinutes ? ` ${calculation.lateMinutes} menit` : ''}`
           : 'hadir tepat waktu';
       const successMessage = attendanceMessage(settings.scan_success_message, {
-        name: participant.full_name,
+        name: matchedParticipant.full_name,
         status: attendanceStatus,
         reason: '',
       });
@@ -1529,7 +1583,7 @@ export default function App() {
     scanPopupTimerRef.current = window.setTimeout(() => {
       setScanPopup(null);
       scanPopupTimerRef.current = undefined;
-    }, 1000);
+    }, 3000);
   }
 
   function handleWedgeChange(value: string) {
@@ -1832,7 +1886,6 @@ export default function App() {
         { header: 'Nama Kelas', key: 'classroom_id', width: 24 },
         { header: 'QR / Barcode', key: 'qr_code', width: 28 },
         { header: 'No WA Peserta', key: 'participant_phone', width: 20 },
-        { header: 'No WA Wali', key: 'guardian_phone', width: 20 },
       ];
       participantSheet.views = [{ state: 'frozen', ySplit: 1 }];
       participantSheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
@@ -1896,7 +1949,6 @@ export default function App() {
       const classroomColumn = findColumn('id kelas', 'classroom_id', 'kelas', 'nama kelas');
       const qrColumn = findColumn('qr / barcode', 'qr_code');
       const participantPhoneColumn = findColumn('no wa peserta', 'participant_phone');
-      const phoneColumn = findColumn('no wa wali', 'guardian_phone');
       if (!nameColumn || !classroomColumn) {
         throw new Error('Kolom wajib: Nama Lengkap dan ID Kelas atau Nama Kelas.');
       }
@@ -1933,11 +1985,9 @@ export default function App() {
           classroom_id: resolveClassroomId(classroomReference),
           qr_code: value(qrColumn),
           participant_phone: value(participantPhoneColumn),
-          guardian_phone: value(phoneColumn),
         };
         if (![participant.full_name, participant.classroom_id, participant.qr_code,
-          participant.participant_phone, participant.guardian_phone,
-          participant.participant_code, classroomReference].some(Boolean)) continue;
+          participant.participant_phone, participant.participant_code, classroomReference].some(Boolean)) continue;
         rows.push(participant);
         if (rows.length > 500) throw new Error('Impor dibatasi maksimal 500 peserta per file.');
       }
@@ -2947,7 +2997,7 @@ export default function App() {
                     </div>
                   </div>
                   {invalidImportRowCount > 0 && <p className="import-preview-warning">Lengkapi nama dan pilih kelas untuk {invalidImportRowCount} baris sebelum menyimpan.</p>}
-                  <div className="table-scroll"><table className="import-preview-table"><thead><tr><th>Baris</th><th>Kode peserta</th><th>Nama peserta</th><th>Kelas</th><th>QR / Barcode</th><th>No. WA peserta</th><th>No. WA wali</th><th>Aksi</th></tr></thead><tbody>
+                  <div className="table-scroll"><table className="import-preview-table"><thead><tr><th>Baris</th><th>Kode peserta</th><th>Nama peserta</th><th>Kelas</th><th>QR / Barcode</th><th>No. WA peserta</th><th>Aksi</th></tr></thead><tbody>
                     {participantImportPreview.map((row) => <tr key={row.source_row}>
                       <td>{row.source_row}</td>
                       <td><input aria-label={`Kode peserta baris ${row.source_row}`} maxLength={60} value={row.participant_code} onChange={(event) => {
@@ -2972,10 +3022,6 @@ export default function App() {
                       <td><input aria-label={`Nomor WA peserta baris ${row.source_row}`} type="tel" maxLength={32} value={row.participant_phone} onChange={(event) => {
                         setParticipantImportResult(null);
                         setParticipantImportPreview((current) => current.map((item) => item.source_row === row.source_row ? { ...item, participant_phone: event.target.value } : item));
-                      }} /></td>
-                      <td><input aria-label={`Nomor wali baris ${row.source_row}`} maxLength={32} value={row.guardian_phone} onChange={(event) => {
-                        setParticipantImportResult(null);
-                        setParticipantImportPreview((current) => current.map((item) => item.source_row === row.source_row ? { ...item, guardian_phone: event.target.value } : item));
                       }} /></td>
                       <td><button type="button" className="button danger small" disabled={busy} onClick={() => {
                         setParticipantImportResult(null);
@@ -3323,7 +3369,7 @@ export default function App() {
                   return <article className="role-card" key={roleId}>
                     <div className="role-card-heading"><div><strong>{String(role.role_name ?? role.name ?? '—')}</strong><code>{String(role.role_key ?? '')}</code></div>
                       {can('school.roles.edit') && <button className="button primary small" disabled={roleSavingId === roleId} onClick={() => void saveExistingRole(role)}>{roleSavingId === roleId ? 'Menyimpan…' : 'Simpan izin'}</button>}
-                      {can('school.roles.delete') && !Number(role.is_system) && <button className="button danger small" onClick={() => void deleteRole(role)}>Hapus role</button>}
+                      {can('school.roles.delete') && String(role.role_key) !== 'admin-sekolah' && <button className="button danger small" onClick={() => void deleteRole(role)}>Hapus role</button>}
                     </div>
                     <div className="role-permission-matrix">{ROLE_PERMISSION_GROUPS.map((group) => <div className="role-permission-row" key={group.key}>
                       <strong>{group.label}</strong>

@@ -1,7 +1,12 @@
 import { inTransaction, pool } from '../db.js';
+import { normalizeWhatsappPhone } from './school-registration.js';
 import { decryptGatewayToken, sendWhatsappMessage } from './whatsapp-gateway.js';
 
 const MAX_ATTEMPTS = 6;
+
+export function normalizeLateAttendanceRecipientPhone(participantPhone) {
+  return typeof participantPhone === 'string' ? normalizeWhatsappPhone(participantPhone) : null;
+}
 
 export function shouldQueueLateAttendanceNotification({ eventType, status, participantPhone }) {
   return eventType === 'check_in' && status === 'terlambat' &&

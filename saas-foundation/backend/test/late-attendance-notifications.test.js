@@ -5,14 +5,21 @@ import { test } from 'node:test';
 process.env.JWT_SECRET ??= randomBytes(48).toString('base64url');
 const {
   createLateAttendanceMessage,
+  normalizeLateAttendanceRecipientPhone,
   shouldQueueLateAttendanceNotification,
 } = await import('../src/core/late-attendance-notifications.js');
+
+test('late notification recipient is a normalized participant WhatsApp number', () => {
+  assert.equal(normalizeLateAttendanceRecipientPhone('08123456789'), '+628123456789');
+  assert.equal(normalizeLateAttendanceRecipientPhone('not a phone number'), null);
+  assert.equal(normalizeLateAttendanceRecipientPhone(null), null);
+});
 
 test('only late check-ins with a participant phone are queued', () => {
   assert.equal(shouldQueueLateAttendanceNotification({
     eventType: 'check_in',
     status: 'terlambat',
-    participantPhone: '+628123456789',
+    participantPhone: normalizeLateAttendanceRecipientPhone('08123456789'),
   }), true);
   assert.equal(shouldQueueLateAttendanceNotification({
     eventType: 'check_in',
@@ -27,7 +34,7 @@ test('only late check-ins with a participant phone are queued', () => {
   assert.equal(shouldQueueLateAttendanceNotification({
     eventType: 'check_in',
     status: 'terlambat',
-    participantPhone: null,
+    participantPhone: normalizeLateAttendanceRecipientPhone('not a phone number'),
   }), false);
 });
 

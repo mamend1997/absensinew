@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { hasSchoolPermission, normalizeSchoolPermissions } from '../src/core/school-permissions.js';
+import { canDeleteSchoolRole } from '../src/core/school-roles.js';
 
 test('legacy school permissions keep their existing access while becoming granular', () => {
   const permissions = normalizeSchoolPermissions(['participants.manage']);
@@ -20,4 +21,10 @@ test('edit and delete permissions include the view access required by their scre
   assert.equal(hasSchoolPermission(permissions, 'attendance.view'), true);
   assert.equal(hasSchoolPermission(permissions, 'school.users.view'), true);
   assert.equal(hasSchoolPermission(permissions, 'school.roles.view'), true);
+});
+
+test('only the school admin role is protected from deletion', () => {
+  assert.equal(canDeleteSchoolRole('admin-sekolah'), false);
+  assert.equal(canDeleteSchoolRole('operator-scanner'), true);
+  assert.equal(canDeleteSchoolRole('custom-role'), true);
 });
