@@ -775,6 +775,7 @@ export default function App() {
   const [operationalForm, setOperationalForm] = useState(initialSettings);
   const [scannerPreferences, setScannerPreferences] = useState(initialScannerPreferences);
   const [scannerPreferencesReady, setScannerPreferencesReady] = useState(false);
+  const scannerPreferencesRef = useRef(scannerPreferences);
   const [scannerPinForm, setScannerPinForm] = useState('');
   const [scannerMenuOpen, setScannerMenuOpen] = useState(false);
   const [scannerMenuPin, setScannerMenuPin] = useState('');
@@ -789,6 +790,7 @@ export default function App() {
   const [offlineMode, setOfflineMode] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const controlsRef = useRef<{ stop: () => void } | null>(null);
+  const cameraStartGenerationRef = useRef(0);
   const wedgeTimerRef = useRef<number | undefined>(undefined);
   const scanFeedbackTimerRef = useRef<number | undefined>(undefined);
   const scanPopupTimerRef = useRef<number | undefined>(undefined);
@@ -1040,13 +1042,39 @@ export default function App() {
 
   useEffect(() => {
     if (!session || page !== 'scanner' || !scannerPreferencesReady) return;
+    let orientationTimer: number | undefined;
+    let isLandscape = window.matchMedia('(orientation: landscape)').matches;
+    const handleOrientationChange = () => {
+      const nextIsLandscape = window.matchMedia('(orientation: landscape)').matches;
+      if (nextIsLandscape === isLandscape) return;
+      isLandscape = nextIsLandscape;
+      if (orientationTimer !== undefined) window.clearTimeout(orientationTimer);
+      orientationTimer = window.setTimeout(() => {
+        orientationTimer = undefined;
+        controlsRef.current?.stop();
+        controlsRef.current = null;
+        cameraStartGenerationRef.current += 1;
+        setCameraActive(false);
+        void startCamera(scannerPreferencesRef.current);
+      }, 300);
+    };
+    window.addEventListener('orientationchange', handleOrientationChange);
+    window.addEventListener('resize', handleOrientationChange);
     void startCamera(scannerPreferences);
     return () => {
+      window.removeEventListener('orientationchange', handleOrientationChange);
+      window.removeEventListener('resize', handleOrientationChange);
+      if (orientationTimer !== undefined) window.clearTimeout(orientationTimer);
+      cameraStartGenerationRef.current += 1;
       controlsRef.current?.stop();
       controlsRef.current = null;
       setCameraActive(false);
     };
   }, [page, session?.school.id, scannerPreferencesReady]);
+
+  useEffect(() => {
+    scannerPreferencesRef.current = scannerPreferences;
+  }, [scannerPreferences]);
 
   useEffect(() => {
     if (!session) {
@@ -1423,9 +1451,6 @@ export default function App() {
   async function syncPending() {
     const result = await syncManager().syncPending();
     await refreshPendingCount();
-    if (result.rejected_ids.length) {
-      setMessage(`${result.accepted_ids.length} scan tersinkron; ${result.rejected_ids.length} tetap pending untuk diperiksa.`, true);
-    }
     return result;
   }
 
@@ -1609,8 +1634,10 @@ export default function App() {
 
   async function startCamera(preferences = scannerPreferences) {
     if (!videoRef.current) return;
+    const generation = ++cameraStartGenerationRef.current;
     try {
       const fastScan = preferences.scanSpeed === 'fast';
+      const isLandscape = window.matchMedia('(orientation: landscape)').matches;
       const reader = new BrowserMultiFormatReader(undefined, {
         delayBetweenScanAttempts: fastScan ? 100 : 350,
         delayBetweenScanSuccess: fastScan ? 250 : 500,
@@ -1620,8 +1647,8 @@ export default function App() {
           audio: false,
           video: {
             facingMode: { ideal: preferences.cameraFacing },
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
+            width: { ideal: isLandscape ? 1280 : 720 },
+            height: { ideal: isLandscape ? 720 : 1280 },
           },
         },
         videoRef.current,
@@ -1629,10 +1656,15 @@ export default function App() {
           if (result) void handleScan(result.getText());
         },
       );
+      if (cameraStartGenerationRef.current !== generation) {
+        controls.stop();
+        return;
+      }
       controlsRef.current = controls;
       setCameraActive(true);
       setError('');
     } catch (reason) {
+      if (cameraStartGenerationRef.current !== generation) return;
       setMessage(reason instanceof Error ? reason.message : 'Kamera tidak dapat dibuka. Periksa izin kamera.', true);
     }
   }
@@ -2894,8 +2926,6 @@ export default function App() {
                 </div>
                 <div className={`scan-welcome${lastScan ? ' scan-welcome-feedback' : ''}`} aria-live="polite"><span className="scan-welcome-track">{lastScan || settings.scan_welcome_message}</span></div>
               </header>
-
-              {pendingCount > 0 && <div className="scan-controls-row"><div className="scan-queue-summary"><span className="queue-mini-count">{pendingCount}</span><span>belum ke server · dikirim otomatis</span></div></div>}
 
               <div className="scan-camera-shell">
                 <div className={`scan-camera-frame ${cameraActive ? 'camera-live' : ''}`}>
