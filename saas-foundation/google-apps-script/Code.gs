@@ -1,6 +1,7 @@
 const DATA_SHEET_NAME = 'Absensi';
 const SUMMARY_SHEET_NAME = 'Rekap Bulanan';
 const CLEAR_CUTOFF_PROPERTY = 'ATTENDANCE_CLEAR_CUTOFF_MS';
+const RESET_PIN_PROPERTY = 'RESET_PIN';
 const DATA_HEADERS = [
   'id_unik',
   'participant_code',
@@ -27,6 +28,23 @@ function onOpen() {
 
 function clearAllAttendanceHistory() {
   const ui = SpreadsheetApp.getUi();
+  const resetPin = PropertiesService.getScriptProperties()
+    .getProperty(RESET_PIN_PROPERTY);
+  if (!isValidResetPin(resetPin)) {
+    ui.alert('PIN reset belum diatur. Atur Script Property RESET_PIN dengan 4–6 angka.');
+    return;
+  }
+  const pinPrompt = ui.prompt(
+    'Verifikasi reset riwayat',
+    'Masukkan PIN reset riwayat (4–6 angka):',
+    ui.ButtonSet.OK_CANCEL,
+  );
+  if (pinPrompt.getSelectedButton() !== ui.Button.OK) return;
+  if (pinPrompt.getResponseText() !== resetPin) {
+    ui.alert('PIN salah. Riwayat tidak dihapus.');
+    return;
+  }
+
   const confirmation = ui.alert(
     'Hapus seluruh riwayat absensi?',
     'Data sumber dan rekap akan dihapus. Riwayat lama yang dikirim ulang dari backend juga akan diabaikan; scan baru setelah penghapusan tetap diterima.',
@@ -53,6 +71,10 @@ function clearAllAttendanceHistory() {
     if (lock.hasLock()) lock.releaseLock();
   }
   ui.alert('Riwayat absensi berhasil dihapus.');
+}
+
+function isValidResetPin(value) {
+  return typeof value === 'string' && /^\d{4,6}$/.test(value);
 }
 
 function doPost(event) {

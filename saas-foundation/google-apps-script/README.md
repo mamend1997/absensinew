@@ -32,6 +32,9 @@ berjalan dan diperbarui setiap batch absensi diterima.
      [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
      [Convert]::ToBase64String($bytes)
      ```
+   - Property: `RESET_PIN`
+   - Value: PIN pilihan Anda, 4–6 angka. PIN ini diminta sebelum reset riwayat
+     dan berbeda dari secret sinkronisasi.
 4. Di editor Apps Script, pilih fungsi `installDailyRefreshTrigger`, klik
    **Run**, lalu berikan izin Google yang diminta. Ini membuat tab rekap dan
    pemicu penyegaran harian. Pastikan zona waktu proyek Apps Script juga sama
@@ -48,7 +51,8 @@ berjalan dan diperbarui setiap batch absensi diterima.
    satu kali dan jam masuk/keluar berada pada baris nama yang benar di tab
    **Rekap Bulanan**.
 8. Muat ulang spreadsheet setelah deployment. Untuk menghapus riwayat secara
-   permanen, pilih **Rekap Absensi → Reset semua riwayat** dan konfirmasi.
+   permanen, pilih **Rekap Absensi → Reset semua riwayat**, masukkan `RESET_PIN`,
+   lalu konfirmasi.
    Menu ini menghapus tab sumber serta rekap, dan menandai waktu penghapusan
    agar backfill lama dari backend tidak mengembalikan catatan tersebut.
 

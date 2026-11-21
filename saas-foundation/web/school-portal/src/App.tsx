@@ -32,6 +32,7 @@ async function loadExcelJS() {
 }
 
 type Page = 'dashboard' | 'scanner' | 'reports' | 'participants' | 'settings' | 'roles' | 'downloads' | 'billing';
+type ScannerMenuTarget = Page | 'manual-attendance' | 'reset-history';
 type Permission =
   | 'dashboard.read'
   | 'dashboard.view'
@@ -791,7 +792,7 @@ export default function App() {
   const [scannerPinForm, setScannerPinForm] = useState('');
   const [scannerMenuOpen, setScannerMenuOpen] = useState(false);
   const [scannerMenuPin, setScannerMenuPin] = useState('');
-  const [scannerMenuTarget, setScannerMenuTarget] = useState<Page | 'manual-attendance' | null>(null);
+  const [scannerMenuTarget, setScannerMenuTarget] = useState<ScannerMenuTarget | null>(null);
   const [scannerUnlockBusy, setScannerUnlockBusy] = useState(false);
   const [holidayForm, setHolidayForm] = useState({ date: '', name: '' });
   const [cameraActive, setCameraActive] = useState(false);
@@ -2339,7 +2340,7 @@ export default function App() {
     }
   }
 
-  function requestScannerMenu(target: Page | 'manual-attendance' = 'dashboard') {
+  function requestScannerMenu(target: ScannerMenuTarget = 'dashboard') {
     setScannerMenuTarget(target);
     setScannerMenuPin('');
     setScannerMenuOpen(true);
@@ -2348,6 +2349,7 @@ export default function App() {
   async function unlockScannerMenu(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!session || !scannerMenuTarget) return;
+    const target = scannerMenuTarget;
     setScannerUnlockBusy(true);
     try {
       await request('/school/settings/scanner-pin/verify', session.token, {
@@ -2356,12 +2358,16 @@ export default function App() {
       });
       setScannerMenuOpen(false);
       setScannerMenuPin('');
-      if (scannerMenuTarget === 'manual-attendance') {
+      if (target === 'manual-attendance') {
         setManualAttendanceQuery('');
         setManualParticipantId('');
         setManualAttendanceOpen(true);
+      } else if (target === 'reset-history') {
+        setError('');
+        setNotice('');
+        void resetLocalHistory();
       } else {
-        setPage(scannerMenuTarget);
+        setPage(target);
       }
       setError('');
       setNotice('');
@@ -2966,7 +2972,7 @@ export default function App() {
                   <div><h2>Log kehadiran terbaru</h2><p>Riwayat scan yang tersimpan di perangkat ini</p></div>
                   <div className="scan-history-actions">
                     {pendingCount > 0 && <span className="history-pending">{pendingCount} pending</span>}
-                    <button type="button" className="button secondary small history-reset-button" onClick={() => void resetLocalHistory()}>Reset riwayat</button>
+                    <button type="button" className="button secondary small history-reset-button" onClick={() => requestScannerMenu('reset-history')}>Reset riwayat</button>
                   </div>
                 </div>
                 <LocalQueueList schoolId={session.school.id} refreshKey={`${lastScan}:${historyResetVersion}`} />
@@ -3545,13 +3551,17 @@ export default function App() {
       {scannerMenuOpen && <div className="pin-modal-backdrop" role="presentation">
         <form className="pin-modal" onSubmit={(event) => void unlockScannerMenu(event)} role="dialog" aria-modal="true" aria-labelledby="scanner-pin-title">
           <div className="pin-modal-icon" aria-hidden="true">PIN</div>
-          <h2 id="scanner-pin-title">{scannerMenuTarget === 'manual-attendance' ? 'Konfirmasi absensi manual' : 'Masuk ke menu sekolah'}</h2>
+          <h2 id="scanner-pin-title">{scannerMenuTarget === 'manual-attendance'
+            ? 'Konfirmasi absensi manual'
+            : scannerMenuTarget === 'reset-history'
+              ? 'Konfirmasi reset riwayat'
+              : 'Masuk ke menu sekolah'}</h2>
           <p>Masukkan PIN scanner untuk melanjutkan.</p>
           <input className="pin-modal-input" type="password" inputMode="numeric" pattern="\d{4,6}" minLength={4} maxLength={6} autoComplete="off" required autoFocus value={scannerMenuPin} onChange={(event) => setScannerMenuPin(event.target.value.replace(/\D/g, '').slice(0, 6))} />
           {error && <div className="pin-modal-error">{error}</div>}
           <div className="pin-modal-actions">
             <button type="button" className="button secondary" onClick={() => { setScannerMenuOpen(false); setScannerMenuPin(''); setError(''); }}>Batal</button>
-            <button className="button primary" disabled={scannerUnlockBusy}>{scannerUnlockBusy ? 'Memeriksa…' : 'Buka menu'}</button>
+            <button className="button primary" disabled={scannerUnlockBusy}>{scannerUnlockBusy ? 'Memeriksa…' : scannerMenuTarget === 'reset-history' ? 'Lanjutkan' : 'Buka menu'}</button>
           </div>
         </form>
       </div>}

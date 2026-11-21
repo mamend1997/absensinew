@@ -32,7 +32,7 @@ const sandbox = {
   },
 };
 runInNewContext(
-  `${script}\nthis.buildMonthlySummary = buildMonthlySummary;\nthis.formatDateLabel = formatDateLabel;\nthis.shouldIncludeAfterClear = shouldIncludeAfterClear;\nthis.unmergeSummaryHeaders = unmergeSummaryHeaders;`,
+  `${script}\nthis.buildMonthlySummary = buildMonthlySummary;\nthis.formatDateLabel = formatDateLabel;\nthis.shouldIncludeAfterClear = shouldIncludeAfterClear;\nthis.unmergeSummaryHeaders = unmergeSummaryHeaders;\nthis.isValidResetPin = isValidResetPin;`,
   sandbox,
 );
 
@@ -163,4 +163,12 @@ test('Apps Script unmerges every complete summary header range before rebuilding
   });
   assert.deepEqual(requestedRange, [1, 1, 2, 120]);
   assert.equal(unmergedRanges, 2);
+});
+
+test('Apps Script reset PIN must contain four to six digits', () => {
+  assert.equal(sandbox.isValidResetPin('1234'), true);
+  assert.equal(sandbox.isValidResetPin('123456'), true);
+  assert.equal(sandbox.isValidResetPin('123'), false);
+  assert.equal(sandbox.isValidResetPin('1234567'), false);
+  assert.equal(sandbox.isValidResetPin('12ab'), false);
 });
