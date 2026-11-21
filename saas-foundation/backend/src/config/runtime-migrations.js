@@ -204,12 +204,20 @@ export async function ensureRuntimeMigrations(pool) {
       application_name VARCHAR(120) NOT NULL,
       logo_mime_type VARCHAR(32) NULL,
       logo_data MEDIUMBLOB NULL,
+      theme VARCHAR(16) NOT NULL DEFAULT 'current',
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       PRIMARY KEY (sekolah_id),
       CONSTRAINT fk_school_branding_school FOREIGN KEY (sekolah_id)
         REFERENCES schools (id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+  const [schoolBrandingColumns] = await pool.execute(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'school_branding_config'`,
+  );
+  if (!schoolBrandingColumns.some((column) => column.COLUMN_NAME === 'theme')) {
+    await pool.execute("ALTER TABLE school_branding_config ADD COLUMN theme VARCHAR(16) NOT NULL DEFAULT 'current'");
+  }
 
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS school_google_sheets_config (

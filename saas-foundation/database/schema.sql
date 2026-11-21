@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS school_branding_config (
     application_name VARCHAR(120) NOT NULL,
     logo_mime_type VARCHAR(32) NULL,
     logo_data MEDIUMBLOB NULL,
+    theme VARCHAR(16) NOT NULL DEFAULT 'current',
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (sekolah_id),
     CONSTRAINT fk_school_branding_school FOREIGN KEY (sekolah_id)

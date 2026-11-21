@@ -72,9 +72,21 @@ interface GoogleSheetsSettings {
   last_sync_at: string | null;
   sync_error: string | null;
 }
+type SchoolTheme = 'current' | 'orange' | 'white';
 interface SchoolBranding {
   application_name: string;
   logo_data_url: string | null;
+  theme: SchoolTheme;
+}
+function schoolThemeFromValue(value: string): SchoolTheme | null {
+  switch (value) {
+    case 'current':
+    case 'orange':
+    case 'white':
+      return value;
+    default:
+      return null;
+  }
 }
 const ROLE_PERMISSION_GROUPS: RolePermissionGroup[] = [
   { key: 'dashboard', label: 'Ringkasan', view: 'dashboard.view' },
@@ -257,6 +269,10 @@ interface ReportRow {
   late_minutes?: number;
   menit_terlambat?: number;
 }
+interface MonthlyReportRow extends ReportRow {
+  monthly_attendance_count: number;
+  monthly_late_minutes: number;
+}
 interface SchoolWhatsappGatewaySettings {
   endpoint_url: string;
   is_enabled: boolean;
@@ -417,6 +433,13 @@ function speakAttendanceMessage(text: string) {
   }
 }
 
+class ApiError extends Error {
+  constructor(message: string, readonly status: number, readonly code: string) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 async function request<T>(
   path: string,
   token?: string,
@@ -440,13 +463,16 @@ async function request<T>(
   const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
   if (!response.ok) {
     const apiError = payload.error;
+    const errorDetails = apiError && typeof apiError === 'object'
+      ? apiError as Record<string, unknown>
+      : null;
     const message = typeof apiError === 'string'
       ? apiError
-      : apiError && typeof apiError === 'object' &&
-        typeof (apiError as Record<string, unknown>).message === 'string'
-        ? (apiError as Record<string, unknown>).message as string
+      : typeof errorDetails?.message === 'string'
+        ? errorDetails.message
         : `Permintaan gagal (${response.status}).`;
-    throw new Error(message);
+    const code = typeof errorDetails?.code === 'string' ? errorDetails.code : 'REQUEST_ERROR';
+    throw new ApiError(message, response.status, code);
   }
   return payload as T;
 }
@@ -515,18 +541,37 @@ function rupiah(value: number) {
   }).format(value);
 }
 
-function downloadReport(rows: ReportRow[]) {
+function aggregateMonthlyReport(rows: ReportRow[]): MonthlyReportRow[] {
+  const totals = new Map<string, { attendanceCount: number; lateMinutes: number }>();
+  for (const row of rows) {
+    const total = totals.get(row.participant_id) ?? { attendanceCount: 0, lateMinutes: 0 };
+    if (row.check_in_at) total.attendanceCount += 1;
+    total.lateMinutes += Number(row.late_minutes ?? row.menit_terlambat ?? 0);
+    totals.set(row.participant_id, total);
+  }
+  return rows.map((row) => {
+    const total = totals.get(row.participant_id) ?? { attendanceCount: 0, lateMinutes: 0 };
+    return {
+      ...row,
+      monthly_attendance_count: total.attendanceCount,
+      monthly_late_minutes: total.lateMinutes,
+    };
+  });
+}
+
+function downloadReport(rows: MonthlyReportRow[]) {
   const table = [
-    ['Tanggal', 'Kode', 'Nama', 'Kelas', 'Masuk', 'Keluar', 'Status', 'Menit terlambat'],
-    ...rows.map((row) => [
-      row.attendance_date,
-      row.participant_code,
+    ['No', 'Nama', 'Kelas', 'Tanggal', 'Masuk', 'Menit telat', 'Keluar', 'Total kehadiran bulanan', 'Total menit telat bulanan'],
+    ...rows.map((row, index) => [
+      index + 1,
       row.participant_name,
       row.classroom_name,
-      row.check_in_at ?? '',
-      row.check_out_at ?? '',
-      row.attendance_status ?? '',
+      row.attendance_date,
+      row.check_in_at ? toLocalTime(row.check_in_at) : '',
       row.late_minutes ?? row.menit_terlambat ?? 0,
+      row.check_out_at ? toLocalTime(row.check_out_at) : '',
+      row.monthly_attendance_count,
+      row.monthly_late_minutes,
     ]),
   ];
   const blob = new Blob(
@@ -602,9 +647,7 @@ export default function App() {
   const [googleSheetsSecret, setGoogleSheetsSecret] = useState('');
   const [googleSheetsBusy, setGoogleSheetsBusy] = useState(false);
   const [reportRows, setReportRows] = useState<ReportRow[]>([]);
-  const [reportFrom, setReportFrom] = useState(initialDate);
-  const [reportTo, setReportTo] = useState(initialDate);
-  const [reportStatus, setReportStatus] = useState('');
+  const [reportMonth, setReportMonth] = useState(initialDate.slice(0, 7));
   const [reportClassroom, setReportClassroom] = useState('');
   const [selectedReportEntries, setSelectedReportEntries] = useState<Set<string>>(new Set());
   const [pendingCount, setPendingCount] = useState(0);
@@ -645,9 +688,16 @@ export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const controlsRef = useRef<{ stop: () => void } | null>(null);
   const wedgeTimerRef = useRef<number | undefined>(undefined);
+  const scanFeedbackTimerRef = useRef<number | undefined>(undefined);
   const lastScanAtRef = useRef(new Map<string, number>());
   const confirmationResolverRef = useRef<((accepted: boolean) => void) | null>(null);
   const reportAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => {
+    if (scanFeedbackTimerRef.current !== undefined) {
+      window.clearTimeout(scanFeedbackTimerRef.current);
+    }
+  }, []);
+
   const passwordChecks = {
     length: registrationForm.password.length >= 8,
     uppercase: /[A-Z]/.test(registrationForm.password),
@@ -729,29 +779,50 @@ export default function App() {
   const displayApplicationName = session
     ? schoolBranding?.application_name || session.school.name
     : applicationName;
+  const monthlyReportRows = useMemo(() => aggregateMonthlyReport(reportRows), [reportRows]);
   const invalidImportRowCount = participantImportPreview.filter((row) =>
     !row.full_name.trim() || !classrooms.some((classroom) => classroom.id === row.classroom_id)).length;
   const connected = online && !offlineMode;
   useEffect(() => {
     if (!session) return;
-    void request<{ session?: SchoolSession; school?: SchoolInfo; user?: UserInfo }>(
-      '/school/auth/me',
-      session.token,
-    ).then((result) => {
-      const refreshed = result.session ?? (result.school && result.user
-        ? { ...session, school: result.school, user: result.user }
-        : session);
-      setSession(refreshed);
-      localStorage.setItem(SESSION_KEY, JSON.stringify(refreshed));
-      setOfflineMode(false);
-      setPage(initialPage(refreshed));
-      if (!refreshed.school.subscription_expired) {
-        void loadSchoolData(refreshed);
+    let active = true;
+    let firstCheck = true;
+    const refreshSchoolSession = async () => {
+      try {
+        const result = await request<{ session?: SchoolSession; school?: SchoolInfo; user?: UserInfo }>(
+          '/school/auth/me',
+          session.token,
+        );
+        if (!active) return;
+        const refreshed = result.session ?? (result.school && result.user
+          ? {
+            ...session,
+            school: { ...session.school, ...result.school },
+            user: { ...session.user, ...result.user },
+          }
+          : session);
+        setSession(refreshed);
+        localStorage.setItem(SESSION_KEY, JSON.stringify(refreshed));
+        setOfflineMode(false);
+        if (firstCheck) {
+          setPage(initialPage(refreshed));
+          if (!refreshed.school.subscription_expired) void loadSchoolData(refreshed);
+        } else if (refreshed.school.subscription_expired) {
+          setPage('billing');
+        }
+        firstCheck = false;
+      } catch (reason) {
+        if (!active) return;
+        setOfflineMode(true);
+        setError(reason instanceof Error ? reason.message : 'Sesi sekolah gagal diperbarui.');
       }
-    }).catch((reason: unknown) => {
-      setOfflineMode(true);
-      setError(reason instanceof Error ? reason.message : 'Sesi sekolah gagal diperbarui.');
-    });
+    };
+    void refreshSchoolSession();
+    const timer = window.setInterval(() => void refreshSchoolSession(), 30000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
   }, [session?.token]);
 
   useEffect(() => {
@@ -1254,8 +1325,31 @@ export default function App() {
     return result;
   }
 
+  function markSubscriptionExpired() {
+    if (session) {
+      const refreshed = {
+        ...session,
+        school: { ...session.school, subscription_expired: true },
+      };
+      setSession(refreshed);
+      localStorage.setItem(SESSION_KEY, JSON.stringify(refreshed));
+    }
+    setPage('billing');
+  }
+
+  async function removeQueuedScan(id: string) {
+    if (!session) return;
+    const db = await database(session.school.id);
+    await db.delete('queue', id);
+    await refreshPendingCount(session.school.id);
+  }
+
   async function handleScan(rawValue: string, scanMethod: 'SCAN_QR' | 'MANUAL_INPUT' = 'SCAN_QR'): Promise<boolean> {
     if (!session) return false;
+    if (session.school.subscription_expired) {
+      setPage('billing');
+      return false;
+    }
     const value = rawValue.trim();
     if (!value) return false;
     const now = Date.now();
@@ -1321,7 +1415,7 @@ export default function App() {
         status: attendanceStatus,
         reason: '',
       });
-      setLastScan(successMessage);
+      showScanFeedback(successMessage);
       playAttendanceTone(true);
       speakAttendanceMessage(successMessage);
       await refreshPendingCount();
@@ -1329,6 +1423,16 @@ export default function App() {
         try {
           await syncPending();
         } catch (reason) {
+          if (reason instanceof ApiError && reason.code === 'SUBSCRIPTION_EXPIRED') {
+            markSubscriptionExpired();
+            try {
+              await removeQueuedScan(scan.id_unik);
+            } catch (cleanupError) {
+              console.error('Scan yang ditolak tidak dapat dihapus dari antrean perangkat.', cleanupError);
+              setMessage('Masa aktif sekolah habis. Perpanjang langganan; scan terakhir belum tercatat dan masih tersimpan di antrean perangkat.', true);
+            }
+            return false;
+          }
           setMessage(reason instanceof Error ? reason.message : 'Scan tersimpan lokal; sinkronisasi akan dicoba ulang.');
         }
       }
@@ -1341,12 +1445,23 @@ export default function App() {
         status: '',
         reason: message,
       });
-      setLastScan(failureMessage);
+      showScanFeedback(failureMessage);
       playAttendanceTone(false);
       speakAttendanceMessage(failureMessage);
       setMessage(message, true);
       return false;
     }
+  }
+
+  function showScanFeedback(message: string) {
+    setLastScan(message);
+    if (scanFeedbackTimerRef.current !== undefined) {
+      window.clearTimeout(scanFeedbackTimerRef.current);
+    }
+    scanFeedbackTimerRef.current = window.setTimeout(() => {
+      setLastScan('');
+      scanFeedbackTimerRef.current = undefined;
+    }, 5000);
   }
 
   function handleWedgeChange(value: string) {
@@ -1436,8 +1551,11 @@ export default function App() {
     reportAbortRef.current?.abort();
     const controller = new AbortController();
     reportAbortRef.current = controller;
-    const query = new URLSearchParams({ from: reportFrom, to: reportTo });
-    if (reportStatus) query.set('status', reportStatus);
+    const [year, month] = reportMonth.split('-').map(Number);
+    const from = `${reportMonth}-01`;
+    const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const to = `${reportMonth}-${String(lastDay).padStart(2, '0')}`;
+    const query = new URLSearchParams({ from, to });
     if (reportClassroom) query.set('classroom_id', reportClassroom);
     setBusy(showLoading);
     try {
@@ -1461,11 +1579,11 @@ export default function App() {
         setBusy(false);
       }
     }
-  }, [reportClassroom, reportFrom, reportStatus, reportTo, session?.token]);
+  }, [reportClassroom, reportMonth, session?.token]);
 
   useEffect(() => {
     setSelectedReportEntries(new Set());
-  }, [reportClassroom, reportFrom, reportStatus, reportTo]);
+  }, [reportClassroom, reportMonth]);
 
   useEffect(() => {
     if (!session || (page !== 'dashboard' && page !== 'reports') ||
@@ -2150,6 +2268,7 @@ export default function App() {
         method: 'PUT',
         body: {
           application_name: schoolBrandingName.trim(),
+          theme: schoolBranding?.theme ?? 'current',
           ...(schoolLogoUpload ? { logo_data_url: schoolLogoUpload } : {}),
         },
       });
@@ -2497,9 +2616,9 @@ export default function App() {
   }
 
   return (
-    <div className={page === 'scanner' ? 'portal-shell scanner-active' : 'portal-shell'}>
+    <div className={page === 'scanner' ? 'portal-shell scanner-active' : 'portal-shell'} data-school-theme={schoolBranding?.theme ?? 'current'}>
       <header className="topbar">
-        <div className="brand"><div className="brand-mark">{schoolBranding?.logo_data_url ? <img src={schoolBranding.logo_data_url} alt="" /> : 'RH'}</div><div><strong>{session.school.name}</strong><small>Kode sekolah · {session.school.school_code}</small></div></div>
+        <div className="brand"><div className={`brand-mark${schoolBranding?.logo_data_url ? ' has-logo' : ''}`}>{schoolBranding?.logo_data_url ? <img src={schoolBranding.logo_data_url} alt="" /> : 'RH'}</div><div><strong>{session.school.name}</strong><small>Kode sekolah · {session.school.school_code}</small></div></div>
         <div className="top-actions">
           <span className={`connection ${connected ? 'online' : 'offline'}`}><i />{connected ? 'Online' : 'Offline'}</span>
           <span className="pending-pill">{pendingCount} pending</span>
@@ -2527,16 +2646,15 @@ export default function App() {
                 <article className="metric-card"><span>Antrean belum terkirim</span><strong>{pendingCount}</strong></article>
                 <article className="metric-card"><span>Status koneksi</span><strong className={connected ? 'text-green' : 'text-red'}>{connected ? 'Online' : 'Offline'}</strong></article>
               </div>
-              <div className="panel quick-panel"><h2>Akses cepat</h2><p className="muted">Buka scanner untuk mencatat absensi. Rekap tersedia di halaman ini.</p><div className="heading-actions">{can('scanner.use') && <button className="button primary" onClick={() => setPage('scanner')}>Buka Scanner</button>}</div></div>
             </section>
           )}
 
           {page === 'scanner' && (
-            <section className="scanner-page">
+            <section className="scanner-page" data-school-theme={schoolBranding?.theme ?? 'current'}>
               <header className="scan-screen-header">
                 <div className="scan-header-top">
                   <div className="scan-brand">
-                    <div className="brand-mark">{schoolBranding?.logo_data_url ? <img src={schoolBranding.logo_data_url} alt="" /> : 'RH'}</div>
+                    <div className={`brand-mark${schoolBranding?.logo_data_url ? ' has-logo' : ''}`}>{schoolBranding?.logo_data_url ? <img src={schoolBranding.logo_data_url} alt="" /> : 'RH'}</div>
                     <div className="scan-brand-copy">
                       <strong>{displayApplicationName}</strong>
                       <div className="scan-date-time">
@@ -2551,7 +2669,7 @@ export default function App() {
                     <button className="scan-menu-trigger" type="button" aria-label="Buka menu dengan PIN" onClick={() => requestScannerMenu('dashboard')}><span className="hamburger-icon" aria-hidden="true"><i /><i /><i /></span></button>
                   </div>
                 </div>
-                <div className="scan-welcome" aria-live="polite"><span className="scan-welcome-track">{lastScan || settings.scan_welcome_message}</span></div>
+                <div className={`scan-welcome${lastScan ? ' scan-welcome-feedback' : ''}`} aria-live="polite"><span className="scan-welcome-track">{lastScan || settings.scan_welcome_message}</span></div>
               </header>
 
               {pendingCount > 0 && <div className="scan-controls-row"><div className="scan-queue-summary"><span className="queue-mini-count">{pendingCount}</span><span>belum ke server · dikirim otomatis</span></div></div>}
@@ -2588,19 +2706,17 @@ export default function App() {
 
           {(page === 'dashboard' || page === 'reports') && can('attendance.view') && (
             <section className="report-page">
-              <div className="page-heading"><div><p className="eyebrow">LAPORAN</p><h1>{page === 'dashboard' ? 'Rekap absensi' : 'Ringkasan & Rekap'}</h1><p className="muted">Data dimuat otomatis saat menu dibuka, diperbarui setiap 30 detik, dan mengikuti filter tanggal, kelas, serta status.</p></div></div>
+              <div className="page-heading"><div><p className="eyebrow">LAPORAN</p><h1>{page === 'dashboard' ? 'Rekap absensi' : 'Ringkasan & Rekap'}</h1><p className="muted">Data dimuat otomatis saat menu dibuka, diperbarui setiap 30 detik, dan mengikuti filter bulan serta kelas.</p></div></div>
               <form className="filter-form panel no-print" onSubmit={(event) => void loadReport(event)}>
-                <label>Dari tanggal<input type="date" required value={reportFrom} onChange={(event) => setReportFrom(event.target.value)} /></label>
-                <label>Sampai tanggal<input type="date" required value={reportTo} onChange={(event) => setReportTo(event.target.value)} /></label>
+                <label>Bulan<input type="month" required value={reportMonth} onChange={(event) => setReportMonth(event.target.value)} /></label>
                 <label>Kelas<select value={reportClassroom} onChange={(event) => setReportClassroom(event.target.value)}><option value="">Semua kelas</option>{classrooms.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-                <label>Status<select value={reportStatus} onChange={(event) => setReportStatus(event.target.value)}><option value="">Semua status</option><option value="hadir">Hadir</option><option value="terlambat">Terlambat</option><option value="pulang">Pulang</option><option value="belum_hadir">Tidak hadir</option></select></label>
-                <div className="heading-actions"><button className="button primary" disabled={busy}>{busy ? 'Memuat…' : 'Tampilkan'}</button>{can('attendance.export') && <button type="button" className="button secondary" onClick={() => downloadReport(reportRows)}>Ekspor CSV</button>}{can('attendance.export') && <button type="button" className="button secondary" onClick={() => window.print()}>Cetak / PDF</button>}{can('attendance.edit') && selectedReportEntries.size > 0 && <button type="button" className="button danger" disabled={busy} onClick={() => void deleteReportEntries(reportRows.filter((row) => selectedReportEntries.has(`${row.attendance_date}:${row.participant_id}`)).map(({ participant_id, attendance_date }) => ({ participant_id, attendance_date })))}>Hapus terpilih ({selectedReportEntries.size})</button>}</div>
+                <div className="heading-actions"><button className="button primary" disabled={busy}>{busy ? 'Memuat…' : 'Tampilkan'}</button>{can('attendance.export') && <button type="button" className="button secondary" onClick={() => downloadReport(monthlyReportRows)}>Ekspor CSV</button>}{can('attendance.export') && <button type="button" className="button secondary" onClick={() => window.print()}>Cetak / PDF</button>}{can('attendance.edit') && selectedReportEntries.size > 0 && <button type="button" className="button danger" disabled={busy} onClick={() => void deleteReportEntries(reportRows.filter((row) => selectedReportEntries.has(`${row.attendance_date}:${row.participant_id}`)).map(({ participant_id, attendance_date }) => ({ participant_id, attendance_date })))}>Hapus terpilih ({selectedReportEntries.size})</button>}</div>
               </form>
               <div className="panel report-print-area">
-                <div className="print-heading"><h2>{session.school.name} · Rekap Absensi</h2><p>{reportFrom} sampai {reportTo}</p></div>
-                <div className="table-scroll"><table className="report-table"><thead><tr>{can('attendance.edit') && <th className="no-print"><input type="checkbox" aria-label="Pilih semua riwayat rekap" checked={reportRows.length > 0 && reportRows.every((row) => selectedReportEntries.has(`${row.attendance_date}:${row.participant_id}`))} onChange={(event) => setSelectedReportEntries(event.target.checked ? new Set(reportRows.map((row) => `${row.attendance_date}:${row.participant_id}`)) : new Set())} /></th>}<th>Tanggal</th><th>Nama</th><th>Kelas</th><th>Masuk</th><th>Keluar</th><th>Status</th><th>Menit telat</th>{can('attendance.edit') && <th className="no-print">Aksi</th>}</tr></thead><tbody>
-                  {reportRows.map((row, index) => <tr key={`${row.attendance_date}-${row.participant_id}-${index}`}>{can('attendance.edit') && <td className="no-print"><input type="checkbox" aria-label={`Pilih rekap ${row.participant_name} tanggal ${row.attendance_date}`} checked={selectedReportEntries.has(`${row.attendance_date}:${row.participant_id}`)} onChange={(event) => setSelectedReportEntries((current) => { const next = new Set(current); const key = `${row.attendance_date}:${row.participant_id}`; if (event.target.checked) next.add(key); else next.delete(key); return next; })} /></td>}<td>{row.attendance_date}</td><td>{row.participant_name}</td><td>{row.classroom_name}</td><td>{toLocalTime(row.check_in_at)}</td><td>{toLocalTime(row.check_out_at)}</td><td>{row.attendance_status ?? '—'}</td><td>{row.late_minutes ?? row.menit_terlambat ?? 0}</td>{can('attendance.edit') && <td className="no-print"><button type="button" className="button danger small" disabled={busy} onClick={() => void deleteReportEntries([{ participant_id: row.participant_id, attendance_date: row.attendance_date }])}>Hapus</button></td>}</tr>)}
-                  {!reportRows.length && <tr><td colSpan={can('attendance.edit') ? 9 : 7} className="empty">Belum ada data untuk filter ini.</td></tr>}
+                <div className="print-heading"><h2>{session.school.name} · Rekap Absensi</h2><p>{reportMonth}</p></div>
+                <div className="table-scroll"><table className="report-table"><thead><tr>{can('attendance.edit') && <th className="no-print"><input type="checkbox" aria-label="Pilih semua riwayat rekap" checked={reportRows.length > 0 && reportRows.every((row) => selectedReportEntries.has(`${row.attendance_date}:${row.participant_id}`))} onChange={(event) => setSelectedReportEntries(event.target.checked ? new Set(reportRows.map((row) => `${row.attendance_date}:${row.participant_id}`)) : new Set())} /></th>}<th>No</th><th>Nama</th><th>Kelas</th><th>Tanggal</th><th>Masuk</th><th>Menit telat</th><th>Keluar</th><th>Total kehadiran bulanan</th><th>Total menit telat bulanan</th>{can('attendance.edit') && <th className="no-print">Aksi</th>}</tr></thead><tbody>
+                  {monthlyReportRows.map((row, index) => <tr key={`${row.attendance_date}-${row.participant_id}-${index}`}>{can('attendance.edit') && <td className="no-print"><input type="checkbox" aria-label={`Pilih rekap ${row.participant_name} tanggal ${row.attendance_date}`} checked={selectedReportEntries.has(`${row.attendance_date}:${row.participant_id}`)} onChange={(event) => setSelectedReportEntries((current) => { const next = new Set(current); const key = `${row.attendance_date}:${row.participant_id}`; if (event.target.checked) next.add(key); else next.delete(key); return next; })} /></td>}<td>{index + 1}</td><td>{row.participant_name}</td><td>{row.classroom_name}</td><td>{row.attendance_date}</td><td>{toLocalTime(row.check_in_at)}</td><td>{row.late_minutes ?? row.menit_terlambat ?? 0}</td><td>{toLocalTime(row.check_out_at)}</td><td>{row.monthly_attendance_count}</td><td>{row.monthly_late_minutes}</td>{can('attendance.edit') && <td className="no-print"><button type="button" className="button danger small" disabled={busy} onClick={() => void deleteReportEntries([{ participant_id: row.participant_id, attendance_date: row.attendance_date }])}>Hapus</button></td>}</tr>)}
+                  {!monthlyReportRows.length && <tr><td colSpan={can('attendance.edit') ? 11 : 9} className="empty">Belum ada data untuk bulan dan filter ini.</td></tr>}
                 </tbody></table></div>
               </div>
             </section>
@@ -2750,6 +2866,22 @@ export default function App() {
                 {can('settings.operational.edit') ? <form className="school-branding-form" onSubmit={(event) => void saveSchoolBranding(event)}>
                   <label>Nama aplikasi sekolah
                     <input required maxLength={120} value={schoolBrandingName} onChange={(event) => setSchoolBrandingName(event.target.value)} />
+                  </label>
+                  <label>Tema warna scanner
+                    <select value={schoolBranding?.theme ?? 'current'} disabled={schoolBrandingBusy} onChange={(event) => {
+                      const theme = schoolThemeFromValue(event.currentTarget.value);
+                      if (!theme) {
+                        setMessage('Tema warna tidak valid.', true);
+                        return;
+                      }
+                      setSchoolBranding((current) => current
+                        ? { ...current, theme }
+                        : { application_name: schoolBrandingName, logo_data_url: null, theme });
+                    }}>
+                      <option value="current">Warna dasar saat ini</option>
+                      <option value="orange">Warna dasar oranye</option>
+                      <option value="white">Warna dasar putih</option>
+                    </select>
                   </label>
                   <div className="school-branding-logo-row">
                     <div className="school-branding-preview">
@@ -3022,6 +3154,8 @@ export default function App() {
           {page === 'billing' && (
             <section>
               <div className="page-heading"><div><p className="eyebrow">AKUN SEKOLAH</p><h1>Langganan &amp; pembayaran</h1><p className="muted">Kelola akses dan perpanjang layanan sekolah.</p></div></div>
+              {session.school.subscription_expired && <div className="alert warning"><strong>Masa aktif sekolah telah berakhir.</strong> Scan dan fitur operasional dihentikan sampai langganan diperpanjang. Silakan lanjutkan pembayaran di halaman ini.</div>}
+              {session.school.subscription_expired && session.user.role_key !== 'admin-sekolah' && <div className="panel"><p className="muted">Hubungi Admin Sekolah untuk melakukan pembayaran perpanjangan langganan.</p></div>}
               {billingData && (
                 <>
                   <div className="panel billing-status-panel">

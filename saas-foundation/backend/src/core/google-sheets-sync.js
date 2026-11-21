@@ -8,6 +8,13 @@ export { validateAppsScriptWebAppUrl } from './google-sheets-url.js';
 const SYNC_BATCH_SIZE = 100;
 const MAX_BATCHES_PER_RUN = 5;
 
+export function describeAppsScriptResponse(responseStatus, contentType, text) {
+  if (/file yang anda minta tidak ada|file you have requested does not exist/i.test(text)) {
+    return 'URL Web App Apps Script tidak ditemukan. Salin ulang URL dari Apps Script > Deploy > Manage deployments, lalu pastikan deployment aktif dan aksesnya Anyone.';
+  }
+  return `Apps Script membalas bukan JSON (HTTP ${responseStatus}, ${contentType}). Pastikan Web App sudah di-deploy, dijalankan sebagai pemilik spreadsheet, dapat diakses Anyone, dan URL berakhir dengan /exec.`;
+}
+
 export async function sendAttendanceToGoogleSheets({ schoolId, ids, connection = pool }) {
   if (!ids.length) return;
   const [[settings]] = await connection.execute(
@@ -64,7 +71,7 @@ export async function sendAttendanceToGoogleSheets({ schoolId, ids, connection =
     const contentType = response.headers.get('content-type') ?? 'tidak diketahui';
     throw fail(
       502,
-      `Apps Script membalas bukan JSON (HTTP ${response.status}, ${contentType}). Pastikan Web App sudah di-deploy, dijalankan sebagai pemilik spreadsheet, dapat diakses Anyone, dan URL berakhir dengan /exec.`,
+      describeAppsScriptResponse(response.status, contentType, text),
       'GOOGLE_SHEETS_SYNC_FAILED',
     );
   }

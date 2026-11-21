@@ -13,13 +13,15 @@ const DATA_HEADERS = [
   'scan_method',
 ];
 const SUMMARY_HEADERS = [
-  'Tanggal',
-  'Nama peserta',
+  'No',
+  'Nama',
   'Kelas',
+  'Tanggal',
   'Masuk',
-  'Pulang',
-  'Status',
-  'Menit terlambat',
+  'Menit telat',
+  'Keluar',
+  'Total kehadiran bulanan',
+  'Total menit telat bulanan',
 ];
 
 function doPost(event) {
@@ -131,7 +133,6 @@ function getSummarySheet(spreadsheet) {
 
 function renderMonthlySummary(spreadsheet, dataSheet, summarySheet) {
   const timeZone = spreadsheet.getSpreadsheetTimeZone() || 'Asia/Jakarta';
-  const monthKey = Utilities.formatDate(new Date(), timeZone, 'yyyy-MM');
   const records = dataSheet.getLastRow() > 1
     ? dataSheet.getRange(2, 1, dataSheet.getLastRow() - 1, DATA_HEADERS.length).getValues()
     : [];
@@ -140,13 +141,13 @@ function renderMonthlySummary(spreadsheet, dataSheet, summarySheet) {
 
   for (const row of records) {
     const date = String(row[columns.attendance_date] || '').slice(0, 10);
-    if (!date.startsWith(`${monthKey}-`)) continue;
     const participantCode = String(row[columns.participant_code] || '');
     const key = `${date}\u0000${participantCode}`;
     let day = days.get(key);
     if (!day) {
       day = {
         date,
+        participantCode,
         name: String(row[columns.participant_name] || ''),
         classroom: String(row[columns.classroom_name] || ''),
         checkIn: '',
@@ -174,23 +175,36 @@ function renderMonthlySummary(spreadsheet, dataSheet, summarySheet) {
     }
   }
 
-  const rows = Array.from(days.values())
+  const sortedDays = Array.from(days.values())
     .sort((left, right) => left.date.localeCompare(right.date) ||
-      left.classroom.localeCompare(right.classroom) || left.name.localeCompare(right.name))
-    .map((day) => [
-      day.date,
+      left.classroom.localeCompare(right.classroom) || left.name.localeCompare(right.name));
+  const participantTotals = new Map();
+  for (const day of sortedDays) {
+    const monthlyKey = `${day.date.slice(0, 7)}\u0000${day.participantCode}`;
+    const total = participantTotals.get(monthlyKey) || { attendanceCount: 0, lateMinutes: 0 };
+    if (day.checkIn) total.attendanceCount += 1;
+    total.lateMinutes += day.lateMinutes;
+    participantTotals.set(monthlyKey, total);
+  }
+  const rows = sortedDays.map((day, index) => {
+    const total = participantTotals.get(`${day.date.slice(0, 7)}\u0000${day.participantCode}`);
+    return [
+      index + 1,
       day.name,
       day.classroom,
+      day.date,
       day.checkIn,
-      day.checkOut,
-      day.status,
       day.lateMinutes,
-    ]);
+      day.checkOut,
+      total.attendanceCount,
+      total.lateMinutes,
+    ];
+  });
 
   const filter = summarySheet.getFilter();
   if (filter) filter.remove();
   summarySheet.clearContents();
-  summarySheet.getRange(1, 1).setValue(`Rekap Absensi Bulan ${monthKey}`);
+  summarySheet.getRange(1, 1).setValue('Rekap Absensi Bulanan');
   summarySheet.getRange(2, 1, 1, SUMMARY_HEADERS.length).setValues([SUMMARY_HEADERS]);
   if (rows.length) summarySheet.getRange(3, 1, rows.length, SUMMARY_HEADERS.length).setValues(rows);
   summarySheet.setFrozenRows(2);

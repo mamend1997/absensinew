@@ -9,6 +9,8 @@ button { cursor: pointer; }
 .login-card { display: grid; width: min(420px, 100%); gap: 15px; border: 1px solid #dfe7df; border-radius: 22px; background: #fff; padding: 34px; box-shadow: 0 24px 80px #06120f55; }
 .brand-mark { display: grid; width: 42px; height: 42px; place-items: center; border-radius: 13px; background: #d7f0dc; color: #1c6b46; font: 800 14px Manrope, sans-serif; }
 .brand-mark img { width: 100%; height: 100%; border-radius: inherit; object-fit: contain; }
+.brand-mark.has-logo { background: transparent; color: inherit; }
+.brand-mark.has-logo img { border-radius: 0; }
 .eyebrow { margin: 0 0 8px; color: #36795b; font-size: 10px; font-weight: 800; letter-spacing: .13em; }
 h1, h2, h3, strong { font-family: Manrope, sans-serif; }
 h1 { margin: 0 0 6px; font-size: clamp(24px, 3vw, 34px); letter-spacing: -.04em; }
@@ -108,7 +110,7 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
 .filter-form .heading-actions { grid-column: 1 / -1; justify-content: flex-start; }
 .report-print-area { min-height: 180px; }
 .print-heading { display: none; }
-.report-table { min-width: 720px; }
+.report-table { min-width: 1050px; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; gap: 11px; }
 .form-grid > h2 { grid-column: 1 / -1; }
 .form-grid .wide { grid-column: 1 / -1; }
@@ -193,6 +195,7 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
 .scan-welcome { overflow: hidden; margin-top: 12px; border-radius: 14px; background: linear-gradient(100deg, #0e604e, #157b63); padding: 9px 13px; color: #fff; font-size: 12px; box-shadow: 0 7px 18px rgba(45,212,191,.2); }
 .scan-welcome-track { display: block; width: max-content; white-space: nowrap; animation: scan-welcome-marquee 18s linear infinite; }
 @keyframes scan-welcome-marquee { from { transform: translateX(100vw); } to { transform: translateX(-100%); } }
+.scan-welcome-feedback .scan-welcome-track { width: auto; overflow-wrap: anywhere; white-space: normal; line-height: 1.45; animation: none; }
 .scan-controls-row { display: flex; align-items: end; gap: 10px; margin: 13px 3px; color: var(--scan-content); }
 .scan-queue-summary { display: flex; align-items: center; gap: 5px; margin-left: auto; color: var(--scan-muted); font-size: 9px; }
 .queue-mini-count { display: grid; width: 23px; height: 23px; place-items: center; border-radius: 50%; background: #f4a92f; color: #412e13; font-weight: 800; }
@@ -206,7 +209,7 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
 @keyframes scan-line { from { transform: translateY(-42px); } to { transform: translateY(42px); } }
 .scan-camera-paused { position: absolute; inset: 0; display: grid; place-items: center; background: #121e31; color: var(--scan-content); font-size: 12px; }
 .scanner-wedge-form { display: grid; flex-shrink: 0; gap: 5px; margin: 10px 3px 0; color: var(--scan-content); }
-.scanner-wedge-form > label { font-size: 10px; font-weight: 700; }
+.scanner-wedge-form > label { color: var(--scan-content); font-size: 10px; font-weight: 700; }
 .scanner-wedge-controls { display: flex; gap: 8px; }
 .scanner-wedge-controls input { min-width: 0; min-height: 38px; flex: 1; border: 1px solid var(--scan-line); border-radius: 10px; background: rgba(255,255,255,.13); padding: 8px 11px; color: var(--scan-content); outline: none; }
 .scanner-wedge-controls input:focus { border-color: var(--scan-accent); box-shadow: 0 0 0 3px rgba(45,212,191,.15); }
@@ -224,6 +227,58 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
 .scan-history-card td { border-bottom-color: rgba(148,163,184,.12); color: #cbd5e1; }
 .scan-history-card td code { background: transparent; }
 .scan-resume-button { height: 42px; margin-top: 10px; border: 0; background: #157b63; color: #fff; }
+.scanner-page[data-school-theme="orange"] {
+  --scan-content: #fff7ed;
+  --scan-muted: #fed7aa;
+  --scan-accent: #fb923c;
+  --scan-line: rgba(253,186,116,.24);
+  --scan-line-soft: rgba(253,186,116,.16);
+  background: linear-gradient(145deg, #261405, #3b1f0a 58%, #1d1107);
+}
+.scanner-page[data-school-theme="orange"] .scan-screen-header { background: linear-gradient(145deg, rgba(73,43,20,.98), rgba(53,32,14,.98)); }
+.scanner-page[data-school-theme="orange"] .brand-mark:not(.has-logo) { background: #fdba74; color: #7c2d12; }
+.scanner-page[data-school-theme="orange"] .connection-chip { color: #ffedd5; }
+.scanner-page[data-school-theme="orange"] .scan-camera-select,
+.scanner-page[data-school-theme="orange"] .scan-menu-trigger { background: rgba(255,247,237,.1); color: #fff7ed; }
+.scanner-page[data-school-theme="orange"] .hamburger-icon i { background: #fff7ed; }
+.scanner-page[data-school-theme="orange"] .scan-welcome { background: linear-gradient(100deg, #c2410c, #ea580c); color: #fff; box-shadow: 0 7px 18px rgba(249,115,22,.22); }
+.scanner-page[data-school-theme="orange"] .queue-mini-count { background: #fdba74; color: #7c2d12; }
+.scanner-page[data-school-theme="orange"] .scan-camera-shell { background: linear-gradient(135deg, #fb923c, #c2410c); box-shadow: 0 16px 38px rgba(0,0,0,.24), 0 0 26px rgba(251,146,60,.18); }
+.scanner-page[data-school-theme="orange"] .scan-target-line { box-shadow: 0 0 12px rgba(251,146,60,.8); }
+.scanner-page[data-school-theme="orange"] .scan-history-card { background: linear-gradient(145deg, rgba(55,34,17,.98), rgba(40,25,13,.98)); }
+.scanner-page[data-school-theme="orange"] .scan-history-card .table-scroll { background: rgba(22,12,5,.62); }
+.scanner-page[data-school-theme="orange"] .scan-history-card th { color: #fed7aa; }
+.scanner-page[data-school-theme="orange"] .scan-history-card td { border-bottom-color: rgba(253,186,116,.16); color: #ffedd5; }
+.scanner-page[data-school-theme="orange"] .history-reset-button { border-color: rgba(255,237,213,.28); background: rgba(255,247,237,.1); color: #fff7ed; }
+.scanner-page[data-school-theme="orange"] .scan-camera-paused { background: #321d0d; }
+.scanner-page[data-school-theme="orange"] .scan-manual-button { border-color: rgba(251,146,60,.55); background: rgba(251,146,60,.2); color: #fff7ed; }
+.scanner-page[data-school-theme="white"] {
+  --scan-content: #172b27;
+  --scan-muted: #586b62;
+  --scan-accent: #0f766e;
+  --scan-line: rgba(51,65,85,.18);
+  --scan-line-soft: rgba(51,65,85,.12);
+  background: linear-gradient(145deg, #f8faf9, #edf2ef 58%, #e8efeb);
+}
+.scanner-page[data-school-theme="white"] .scan-screen-header { background: #fff; box-shadow: 0 8px 26px rgba(31,65,53,.08); }
+.scanner-page[data-school-theme="white"] .brand-mark:not(.has-logo) { background: #e4f3e8; color: #14532d; }
+.scanner-page[data-school-theme="white"] .connection-chip { background: #f1f5f2; color: #43554c; }
+.scanner-page[data-school-theme="white"] .scan-camera-select,
+.scanner-page[data-school-theme="white"] .scan-menu-trigger { background: #f8faf9; color: #25352d; }
+.scanner-page[data-school-theme="white"] .hamburger-icon i { background: #334940; }
+.scanner-page[data-school-theme="white"] .scan-welcome { background: #e4f3e8; color: #14532d; box-shadow: 0 6px 16px rgba(34,92,55,.1); }
+.scanner-page[data-school-theme="white"] .queue-mini-count { background: #f4a92f; color: #412e13; }
+.scanner-page[data-school-theme="white"] .scan-camera-shell { background: #cbd5d2; box-shadow: 0 12px 30px rgba(31,65,53,.12); }
+.scanner-page[data-school-theme="white"] .scan-history-card { background: #fff; box-shadow: 0 8px 26px rgba(31,65,53,.08); }
+.scanner-page[data-school-theme="white"] .scan-history-card .table-scroll { background: #f7faf8; }
+.scanner-page[data-school-theme="white"] .scan-history-card th { color: #52635b; }
+.scanner-page[data-school-theme="white"] .scan-history-card td { border-bottom-color: #e7eeea; color: #34483e; }
+.scanner-page[data-school-theme="white"] .history-pending { background: #fff1d2; color: #8a641c; }
+.scanner-page[data-school-theme="white"] .history-reset-button { border-color: #cbd5d1; background: #fff; color: #334940; }
+.scanner-page[data-school-theme="white"] .scan-camera-paused { background: #e5ece8; }
+.scanner-page[data-school-theme="white"] .scanner-wedge-controls input { background: #fff; color: #172b27; }
+.scanner-page[data-school-theme="white"] .scanner-wedge-controls .button { background: #e3ebe6; color: #25352d; }
+.scanner-page[data-school-theme="white"] .scan-manual-button { border-color: #b6d8c0; background: #e6f4eb; color: #14532d; }
 .participant-import, .participant-schedule-editor { display: grid; gap: 12px; }
 .school-branding-panel, .school-branding-form { display: grid; gap: 12px; }
 .school-branding-logo-row { display: flex; align-items: center; gap: 14px; }

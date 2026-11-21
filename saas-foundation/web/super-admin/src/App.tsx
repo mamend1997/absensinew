@@ -18,6 +18,18 @@ interface School {
   admin_whatsapp_phone: string | null;
 }
 
+interface SubscriptionPayment {
+  order_id: string;
+  school_id: string;
+  school_name: string;
+  provider: 'xendit' | 'duitku' | 'kasera';
+  plan: 'monthly' | 'lifetime';
+  amount: number;
+  provider_reference: string | null;
+  paid_at: string | null;
+  created_at: string;
+}
+
 interface WhatsappGatewaySettings {
   endpoint_url: string;
   is_enabled: boolean;
@@ -43,6 +55,7 @@ interface SchoolForm {
 interface SchoolEditForm {
   name: string;
   subscription_status: SubscriptionStatus;
+  subscription_expires_at: string;
   participant_quota: number;
   admin_username: string;
   admin_whatsapp_phone: string;
@@ -192,9 +205,18 @@ function validAdminPassword(value: string) {
     /[A-Z]/.test(value) && /\d/.test(value) && /[^A-Za-z0-9\s]/.test(value);
 }
 
+function utcDateTimeInput(value: string | null) {
+  if (!value) return '';
+  const date = new Date(/(?:Z|[+-]\d{2}:\d{2})$/.test(value)
+    ? value
+    : `${value.replace(' ', 'T')}Z`);
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 16);
+}
+
 export default function App() {
   const [token, setToken] = useState(() => sessionStorage.getItem(TOKEN_KEY) ?? '');
   const [schools, setSchools] = useState<School[]>([]);
+  const [subscriptionPayments, setSubscriptionPayments] = useState<SubscriptionPayment[]>([]);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loginView, setLoginView] = useState<LoginView>('login');
@@ -276,6 +298,7 @@ export default function App() {
   const [schoolEditForm, setSchoolEditForm] = useState<SchoolEditForm>({
     name: '',
     subscription_status: 'trial',
+    subscription_expires_at: '',
     participant_quota: 500,
     admin_username: '',
     admin_whatsapp_phone: '',
@@ -350,9 +373,23 @@ export default function App() {
     }
   }, [token]);
 
+  const loadSubscriptionPayments = useCallback(async () => {
+    if (!token) return;
+    try {
+      const result = await request<{ payments: SubscriptionPayment[] }>('/super-admin/subscription-payments', token);
+      setSubscriptionPayments(result.payments);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Daftar pembayaran langganan gagal dimuat.');
+    }
+  }, [token]);
+
   useEffect(() => {
     void loadSchools();
   }, [loadSchools]);
+
+  useEffect(() => {
+    void loadSubscriptionPayments();
+  }, [loadSubscriptionPayments]);
 
   useEffect(() => {
     if (!token) return;
@@ -563,6 +600,10 @@ export default function App() {
   }
 
   async function updateSchool(school: School) {
+    if (school.subscription_status === 'aktif' && !school.subscription_expires_at) {
+      setError(`Atur tanggal akhir masa aktif ${school.name} melalui Edit sekolah.`);
+      return;
+    }
     setBusy(true);
     setError('');
     try {
@@ -587,6 +628,7 @@ export default function App() {
     setSchoolEditForm({
       name: school.name,
       subscription_status: school.subscription_status,
+      subscription_expires_at: utcDateTimeInput(school.subscription_expires_at),
       participant_quota: Number(school.participant_quota),
       admin_username: school.admin_username ?? '',
       admin_whatsapp_phone: phoneNationalDigits(school.admin_whatsapp_phone ?? ''),
@@ -596,6 +638,10 @@ export default function App() {
   async function saveSchoolEdit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!editingSchool) return;
+    if (schoolEditForm.subscription_status === 'aktif' && !schoolEditForm.subscription_expires_at) {
+      setError('Tanggal akhir masa aktif wajib diisi untuk langganan aktif.');
+      return;
+    }
     setBusy(true);
     setError('');
     setNotice('');
@@ -605,6 +651,9 @@ export default function App() {
         subscription_status: schoolEditForm.subscription_status,
         participant_quota: Number(schoolEditForm.participant_quota),
       };
+      if (schoolEditForm.subscription_status === 'aktif') {
+        body.subscription_expires_at = `${schoolEditForm.subscription_expires_at.replace('T', ' ')}:00`;
+      }
       const adminUsername = schoolEditForm.admin_username.trim();
       if (adminUsername !== (editingSchool.admin_username ?? '')) {
         body.admin_username = adminUsername;
@@ -1162,6 +1211,7 @@ export default function App() {
           <a href="#automatic-backup">Backup otomatis</a>
           <a href="#otp-rate-limit">Batas OTP</a>
           <a href="#school-tenants">Akun sekolah</a>
+          <a href="#subscription-payments">Pembayaran</a>
         </nav>
         {error && <div className="alert error">{error}</div>}
         {notice && <div className="alert success">{notice}</div>}
@@ -1467,6 +1517,31 @@ export default function App() {
           </div>
           <p className="fine-print">Perubahan kode membatalkan login sekolah yang memakai kode lama. Sampaikan kode terbaru ke operator sekolah.</p>
         </section>
+        <section id="subscription-payments" className="panel">
+          <div className="section-title">
+            <div><h2>Pembayaran dan perpanjangan</h2><p className="muted">{subscriptionPayments.length} pembayaran berhasil</p></div>
+            <button className="button secondary" onClick={() => void loadSubscriptionPayments()}>Muat ulang</button>
+          </div>
+          <div className="table-scroll">
+            <table className="tenant-table">
+              <thead><tr><th>Sekolah</th><th>Paket</th><th>Provider</th><th>Nominal</th><th>Referensi</th><th>Dibayar</th></tr></thead>
+              <tbody>
+                {subscriptionPayments.map((payment) => (
+                  <tr key={payment.order_id}>
+                    <td><strong>{payment.school_name}</strong><small>{payment.order_id}</small></td>
+                    <td>{payment.plan === 'lifetime' ? 'Lifetime' : 'Bulanan'}</td>
+                    <td>{payment.provider}</td>
+                    <td>Rp{payment.amount.toLocaleString('id-ID')}</td>
+                    <td>{payment.provider_reference ?? '—'}</td>
+                    <td>{payment.paid_at ? new Date(payment.paid_at).toLocaleString('id-ID') : '—'}</td>
+                  </tr>
+                ))}
+                {!subscriptionPayments.length && <tr><td colSpan={6} className="empty">Belum ada pembayaran berhasil.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <p className="fine-print">Pembayaran terverifikasi otomatis memperpanjang masa aktif sesuai paket. Tidak diperlukan persetujuan manual.</p>
+        </section>
       </div>
       {editingSchool && (
         <div className="modal-backdrop" role="presentation">
@@ -1485,6 +1560,14 @@ export default function App() {
               <select value={schoolEditForm.subscription_status} onChange={(event) => setSchoolEditForm((current) => ({ ...current, subscription_status: event.target.value as SubscriptionStatus }))}>
                 <option value="trial">Uji coba</option><option value="aktif">Aktif</option><option value="lifetime">Lifetime</option><option value="suspend">Ditangguhkan</option>
               </select>
+            </label>
+            <label>Masa aktif hingga (UTC)
+              <input
+                type="datetime-local"
+                required={schoolEditForm.subscription_status === 'aktif'}
+                value={schoolEditForm.subscription_expires_at}
+                onChange={(event) => setSchoolEditForm((current) => ({ ...current, subscription_expires_at: event.target.value }))}
+              />
             </label>
             <label>Kuota peserta<input type="number" min={1} max={1000000} required value={schoolEditForm.participant_quota} onChange={(event) => setSchoolEditForm((current) => ({ ...current, participant_quota: Number(event.target.value) }))} /></label>
             <div className="edit-school-password">

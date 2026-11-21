@@ -80,17 +80,20 @@ export const requireDevice = asyncRoute(async (req, res, next) => {
     throw fail(401, 'Kunci perangkat tidak valid.', 'UNAUTHENTICATED');
   }
   const [rows] = await pool.execute(
-    `SELECT d.id, d.sekolah_id, d.device_name
+    `SELECT d.id, d.sekolah_id, d.device_name,
+            ((s.subscription_status = 'trial' AND s.trial_ends_at IS NOT NULL
+              AND s.trial_ends_at <= UTC_TIMESTAMP()) OR
+             (s.subscription_expires_at IS NOT NULL
+              AND s.subscription_expires_at <= UTC_TIMESTAMP())) AS subscription_expired
        FROM scanner_devices d JOIN schools s ON s.id = d.sekolah_id
       WHERE d.api_key_hash = ? AND d.is_active = TRUE AND s.is_active = TRUE
-        AND s.subscription_status <> 'suspend'
-        AND (s.subscription_status <> 'trial' OR s.trial_ends_at IS NULL
-             OR s.trial_ends_at > UTC_TIMESTAMP())
-        AND (s.subscription_expires_at IS NULL
-             OR s.subscription_expires_at > UTC_TIMESTAMP())`,
+        AND s.subscription_status <> 'suspend'`,
     [hashDeviceApiKey(key)],
   );
   if (!rows.length) throw fail(401, 'Kunci perangkat tidak aktif.', 'UNAUTHENTICATED');
+  if (Boolean(Number(rows[0].subscription_expired))) {
+    throw fail(402, 'Langganan sekolah telah berakhir. Perpanjang untuk melanjutkan.', 'SUBSCRIPTION_EXPIRED');
+  }
   req.device = { ...rows[0], sekolah_id: String(rows[0].sekolah_id) };
   next();
 });

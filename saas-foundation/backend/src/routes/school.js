@@ -990,7 +990,7 @@ router.delete('/participants', requireSchoolUser, requirePermission('participant
 
 router.get('/branding', requireSchoolUser, asyncRoute(async (req, res) => {
   const [[branding]] = await pool.execute(
-    `SELECT application_name, logo_mime_type, logo_data
+    `SELECT application_name, logo_mime_type, logo_data, theme
        FROM school_branding_config WHERE sekolah_id = ?`,
     [req.schoolUser.sekolah_id],
   );
@@ -1000,34 +1000,43 @@ router.get('/branding', requireSchoolUser, asyncRoute(async (req, res) => {
       logo_data_url: branding?.logo_data && branding.logo_mime_type
         ? `data:${branding.logo_mime_type};base64,${Buffer.from(branding.logo_data).toString('base64')}`
         : null,
+      theme: branding?.theme ?? 'current',
     },
   });
 }));
 
 router.put('/branding', requireSchoolUser, requirePermission('settings.operational.edit'), asyncRoute(async (req, res) => {
   const applicationName = string(req.body?.application_name, 'Nama aplikasi', 120);
+  const [[existingBranding]] = await pool.execute(
+    'SELECT theme FROM school_branding_config WHERE sekolah_id = ?',
+    [req.schoolUser.sekolah_id],
+  );
+  const theme = req.body?.theme ?? existingBranding?.theme ?? 'current';
+  if (!['current', 'orange', 'white'].includes(theme)) {
+    throw fail(400, 'Tema aplikasi tidak valid.', 'VALIDATION_ERROR');
+  }
   const logoDataUrl = req.body?.logo_data_url;
   if (logoDataUrl !== undefined && logoDataUrl !== null && logoDataUrl !== '') {
     const { mimeType, data } = parseLogoDataUrl(logoDataUrl);
     await pool.execute(
       `INSERT INTO school_branding_config
-         (sekolah_id, application_name, logo_mime_type, logo_data)
-       VALUES (?, ?, ?, ?)
+         (sekolah_id, application_name, logo_mime_type, logo_data, theme)
+       VALUES (?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE application_name = VALUES(application_name),
                                logo_mime_type = VALUES(logo_mime_type),
-                               logo_data = VALUES(logo_data)`,
-      [req.schoolUser.sekolah_id, applicationName, mimeType, data],
+                               logo_data = VALUES(logo_data), theme = VALUES(theme)`,
+      [req.schoolUser.sekolah_id, applicationName, mimeType, data, theme],
     );
   } else {
     await pool.execute(
-      `INSERT INTO school_branding_config (sekolah_id, application_name)
-       VALUES (?, ?)
-       ON DUPLICATE KEY UPDATE application_name = VALUES(application_name)`,
-      [req.schoolUser.sekolah_id, applicationName],
+      `INSERT INTO school_branding_config (sekolah_id, application_name, theme)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE application_name = VALUES(application_name), theme = VALUES(theme)`,
+      [req.schoolUser.sekolah_id, applicationName, theme],
     );
   }
   const [[branding]] = await pool.execute(
-    `SELECT application_name, logo_mime_type, logo_data
+    `SELECT application_name, logo_mime_type, logo_data, theme
        FROM school_branding_config WHERE sekolah_id = ?`,
     [req.schoolUser.sekolah_id],
   );
@@ -1037,6 +1046,7 @@ router.put('/branding', requireSchoolUser, requirePermission('settings.operation
       logo_data_url: branding.logo_data && branding.logo_mime_type
         ? `data:${branding.logo_mime_type};base64,${Buffer.from(branding.logo_data).toString('base64')}`
         : null,
+      theme: branding.theme,
     },
     message: 'Identitas aplikasi sekolah berhasil disimpan.',
   });

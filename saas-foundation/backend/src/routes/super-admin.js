@@ -601,6 +601,22 @@ router.get('/schools', asyncRoute(async (req, res) => {
   res.json({ schools: rows });
 }));
 
+router.get('/subscription-payments', asyncRoute(async (req, res) => {
+  const [rows] = await pool.execute(
+    `SELECT o.order_id, o.sekolah_id AS school_id, s.name AS school_name,
+            o.provider, o.plan, o.amount, o.status, o.provider_reference,
+            o.paid_at, o.created_at
+       FROM subscription_payment_orders o
+       JOIN schools s ON s.id = o.sekolah_id
+      WHERE o.status = 'paid'
+      ORDER BY o.paid_at DESC, o.created_at DESC
+      LIMIT 200`,
+  );
+  res.json({
+    payments: rows.map((row) => ({ ...row, amount: Number(row.amount) })),
+  });
+}));
+
 router.post('/schools', asyncRoute(async (req, res) => {
   requireFields(req.body, ['slug', 'name', 'initial_admin']);
   const slug = validateString(req.body.slug, 'slug', 100).toLowerCase();
@@ -666,6 +682,14 @@ router.patch('/schools/:id', asyncRoute(async (req, res) => {
   const adminPhone = hasAdminPhone ? normalizeWhatsappPhone(changes.admin_whatsapp_phone) : null;
   delete changes.admin_username;
   delete changes.admin_whatsapp_phone;
+  if (changes.subscription_status === 'trial') {
+    changes.subscription_expires_at = null;
+  }
+  if (changes.subscription_expires_at !== undefined &&
+      changes.subscription_expires_at !== null) {
+    changes.subscription_status = 'aktif';
+    changes.trial_ends_at = null;
+  }
   if (hasAdminUsername && !validateRegistrationUsername(adminUsername)) {
     throw fail(400, 'Username Admin harus terdiri dari 3-80 huruf, angka, titik, garis bawah, atau tanda hubung.', 'VALIDATION_ERROR');
   }
@@ -700,6 +724,15 @@ router.patch('/schools/:id', asyncRoute(async (req, res) => {
       if (value !== null && (typeof value !== 'string' ||
           !/^\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2}:\d{2})?$/.test(value))) {
         throw fail(400, `${key} tidak valid.`);
+      }
+      if (key === 'subscription_expires_at' && value !== null) {
+        const parsed = new Date(`${value.replace(' ', 'T')}Z`);
+        const normalized = Number.isNaN(parsed.getTime())
+          ? ''
+          : parsed.toISOString().slice(0, 19).replace('T', ' ');
+        if (normalized !== (value.length === 10 ? `${value} 00:00:00` : value)) {
+          throw fail(400, `${key} tidak valid.`, 'VALIDATION_ERROR');
+        }
       }
       values.push(value);
     }

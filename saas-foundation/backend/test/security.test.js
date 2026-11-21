@@ -21,7 +21,8 @@ function secondsForDuration(value) {
 test('signed bearer tokens reject tampering and expired claims', () => {
   const token = signToken({ kind: 'school_user', sub: '1', schoolId: '2', schoolCode: '0042' });
   assert.equal(verifyToken(token).schoolCode, '0042');
-  assert.throws(() => verifyToken(`${token.slice(0, -1)}x`));
+  const replacementCharacter = token.endsWith('x') ? 'y' : 'x';
+  assert.throws(() => verifyToken(`${token.slice(0, -1)}${replacementCharacter}`));
   assert.throws(() => verifyToken(`v1.${Buffer.from(JSON.stringify({ exp: 1 })).toString('base64url')}.invalid`));
 });
 
