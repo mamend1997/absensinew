@@ -496,7 +496,7 @@ export default function App() {
   const [selectedParticipantIds, setSelectedParticipantIds] = useState<Set<string>>(new Set());
   const [scanClock, setScanClock] = useState(() => new Date());
   const [participantForm, setParticipantForm] = useState({
-    participant_code: '', full_name: '', classroom_id: '', qr_code: '',
+    full_name: '', classroom_id: '', qr_code: '',
   });
   const [classroomForm, setClassroomForm] = useState({ id: '', name: '' });
   const [roleForm, setRoleForm] = useState<{ role_key: string; role_name: string; permissions: Permission[] }>({
@@ -1224,7 +1224,7 @@ export default function App() {
     setBusy(true);
     try {
       await request('/school/participants', session.token, { method: 'POST', body: participantForm });
-      setParticipantForm({ participant_code: '', full_name: '', classroom_id: '', qr_code: '' });
+      setParticipantForm({ full_name: '', classroom_id: '', qr_code: '' });
       await loadSchoolData(session);
       setMessage('Peserta berhasil ditambahkan.');
     } catch (reason) {
@@ -1281,7 +1281,6 @@ export default function App() {
       const workbook = new ExcelJS.Workbook();
       const participantSheet = workbook.addWorksheet('Peserta');
       participantSheet.columns = [
-        { header: 'Kode Peserta', key: 'participant_code', width: 22 },
         { header: 'Nama Lengkap', key: 'full_name', width: 32 },
         { header: 'ID Kelas', key: 'classroom_id', width: 16 },
         { header: 'QR / Barcode', key: 'qr_code', width: 28 },
@@ -1346,8 +1345,8 @@ export default function App() {
       const classroomColumn = findColumn('id kelas', 'classroom_id');
       const qrColumn = findColumn('qr / barcode', 'qr_code');
       const phoneColumn = findColumn('no wa wali', 'guardian_phone');
-      if (!codeColumn || !nameColumn || !classroomColumn) {
-        throw new Error('Kolom wajib: Kode Peserta, Nama Lengkap, dan ID Kelas.');
+      if (!nameColumn || !classroomColumn) {
+        throw new Error('Kolom wajib: Nama Lengkap dan ID Kelas.');
       }
       const rows: Array<Record<string, string>> = [];
       for (let rowNumber = 2; rowNumber <= sheet.rowCount; rowNumber += 1) {
@@ -1361,8 +1360,8 @@ export default function App() {
           guardian_phone: value(phoneColumn),
           source_row: String(rowNumber),
         };
-        if (![participant.participant_code, participant.full_name, participant.classroom_id,
-          participant.qr_code, participant.guardian_phone].some(Boolean)) continue;
+        if (![participant.full_name, participant.classroom_id, participant.qr_code,
+          participant.guardian_phone].some(Boolean)) continue;
         rows.push(participant);
         if (rows.length > 500) throw new Error('Impor dibatasi maksimal 500 peserta per file.');
       }
@@ -2013,7 +2012,6 @@ export default function App() {
             <section>
               <div className="page-heading"><div><p className="eyebrow">DATA SEKOLAH</p><h1>Master peserta</h1><p className="muted">Master lokal digunakan untuk validasi scan saat offline.</p></div></div>
               {can('participants.edit') && <form className="panel form-grid" onSubmit={(event) => void createParticipant(event)}>
-                <label>Kode peserta<input required value={participantForm.participant_code} onChange={(event) => setParticipantForm((current) => ({ ...current, participant_code: event.target.value }))} /></label>
                 <label>Nama lengkap<input required value={participantForm.full_name} onChange={(event) => setParticipantForm((current) => ({ ...current, full_name: event.target.value }))} /></label>
                 <label>Kelas<select required value={participantForm.classroom_id} onChange={(event) => setParticipantForm((current) => ({ ...current, classroom_id: event.target.value }))}><option value="">Pilih kelas</option>{classrooms.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
                 <label>QR / Barcode<input required value={participantForm.qr_code} onChange={(event) => setParticipantForm((current) => ({ ...current, qr_code: event.target.value }))} /></label>
@@ -2059,9 +2057,9 @@ export default function App() {
               </div>}
               <div className="panel">
                 <div className="section-title"><div><h2>{participants.length} peserta lokal</h2><p className="muted">Data di-cache per sekolah pada perangkat ini.</p></div><div className="heading-actions">{can('participants.qr.print') && <button className="button secondary" onClick={() => void printSelectedQrs()}>Cetak QR terpilih</button>}<button className="button secondary" onClick={() => session && void loadSchoolData(session)}>Sinkronkan master</button></div></div>
-                <div className="table-scroll"><table><thead><tr><th><input type="checkbox" aria-label="Pilih semua peserta" checked={participants.length > 0 && selectedParticipantIds.size === participants.length} onChange={(event) => setSelectedParticipantIds(event.target.checked ? new Set(participants.map((item) => item.id)) : new Set())} /></th><th>Kode</th><th>Nama</th><th>Kelas</th><th>QR</th><th className="no-print">Aksi</th></tr></thead><tbody>
-                  {participants.map((participant) => <tr key={participant.id}><td><input type="checkbox" aria-label={`Pilih ${participant.full_name}`} checked={selectedParticipantIds.has(participant.id)} onChange={(event) => setSelectedParticipantIds((current) => { const next = new Set(current); if (event.target.checked) next.add(participant.id); else next.delete(participant.id); return next; })} /></td><td>{participant.participant_code}</td><td>{participant.full_name}</td><td>{participant.classroom_name ?? classrooms.find((item) => item.id === participant.classroom_id)?.name ?? '—'}</td><td><code>{participant.qr_code}</code></td><td className="no-print"><div className="participant-actions">{can('participants.edit') && <button className="button secondary small" onClick={() => openParticipantSchedule(participant.id)}>Atur jam</button>}{can('participants.delete') && <button className="button danger small" onClick={() => void removeParticipant(participant)}>Nonaktifkan</button>}</div></td></tr>)}
-                  {!participants.length && <tr><td colSpan={6} className="empty">Master peserta belum tersedia. Hubungkan jaringan untuk mengambil data sekolah.</td></tr>}
+                <div className="table-scroll"><table><thead><tr><th><input type="checkbox" aria-label="Pilih semua peserta" checked={participants.length > 0 && selectedParticipantIds.size === participants.length} onChange={(event) => setSelectedParticipantIds(event.target.checked ? new Set(participants.map((item) => item.id)) : new Set())} /></th><th>Nama</th><th>Kelas</th><th>QR / Barcode</th><th className="no-print">Aksi</th></tr></thead><tbody>
+                  {participants.map((participant) => <tr key={participant.id}><td><input type="checkbox" aria-label={`Pilih ${participant.full_name}`} checked={selectedParticipantIds.has(participant.id)} onChange={(event) => setSelectedParticipantIds((current) => { const next = new Set(current); if (event.target.checked) next.add(participant.id); else next.delete(participant.id); return next; })} /></td><td>{participant.full_name}</td><td>{participant.classroom_name ?? classrooms.find((item) => item.id === participant.classroom_id)?.name ?? '—'}</td><td><code>{participant.qr_code}</code></td><td className="no-print"><div className="participant-actions">{can('participants.edit') && <button className="button secondary small" onClick={() => openParticipantSchedule(participant.id)}>Atur jam</button>}{can('participants.delete') && <button className="button danger small" onClick={() => void removeParticipant(participant)}>Nonaktifkan</button>}</div></td></tr>)}
+                  {!participants.length && <tr><td colSpan={5} className="empty">Master peserta belum tersedia. Hubungkan jaringan untuk mengambil data sekolah.</td></tr>}
                 </tbody></table></div>
               </div>
             </section>
@@ -2122,7 +2120,7 @@ export default function App() {
                 <label>Pilih peserta
                   <select value={scheduleParticipantId} onChange={(event) => openParticipantSchedule(event.target.value)}>
                     <option value="">Pilih peserta</option>
-                    {participants.map((participant) => <option key={participant.id} value={participant.id}>{participant.full_name} — {participant.participant_code}</option>)}
+                    {participants.map((participant) => <option key={participant.id} value={participant.id}>{participant.full_name}</option>)}
                   </select>
                 </label>
                 {scheduleParticipantId && <>
@@ -2331,11 +2329,11 @@ export default function App() {
               <option value="">Pilih peserta</option>
               {participants.filter((participant) => {
                 const search = manualAttendanceQuery.trim().toLocaleLowerCase();
-                return !search || [participant.full_name, participant.participant_code, participant.classroom_name]
+                return !search || [participant.full_name, participant.classroom_name]
                   .some((value) => String(value ?? '').toLocaleLowerCase().includes(search));
               }).map((participant) => (
                 <option key={participant.id} value={String(participant.id)}>
-                  {participant.full_name} · {participant.participant_code} · {participant.classroom_name}
+                  {participant.full_name} · {participant.classroom_name}
                 </option>
               ))}
             </select>

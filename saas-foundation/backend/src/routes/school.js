@@ -744,7 +744,7 @@ router.post('/participants/import', requireSchoolUser, requirePermission('partic
         ? sourceRow
         : index + 2;
       try {
-        requireFields(record, ['classroom_id', 'participant_code', 'full_name']);
+        requireFields(record, ['classroom_id', 'full_name']);
         const classroomId = String(record.classroom_id);
         if (!/^[1-9]\d*$/.test(classroomId)) {
           throw fail(400, 'ID kelas tidak valid.', 'VALIDATION_ERROR');
@@ -753,7 +753,9 @@ router.post('/participants/import', requireSchoolUser, requirePermission('partic
           throw fail(400, 'Kelas tidak tersedia untuk akun ini.', 'VALIDATION_ERROR');
         }
 
-        const participantCode = string(record.participant_code, 'Kode peserta', 60);
+        const participantCode = record.participant_code == null || record.participant_code === ''
+          ? `AUTO-${randomUUID()}`
+          : string(record.participant_code, 'Kode peserta', 60);
         const fullName = string(record.full_name, 'Nama lengkap', 150);
         const qrCode = record.qr_code == null || record.qr_code === ''
           ? `SAAS-${randomUUID()}`
@@ -810,14 +812,16 @@ router.post('/participants/import', requireSchoolUser, requirePermission('partic
 }));
 
 router.post('/participants', requireSchoolUser, requirePermission('participants.edit'), asyncRoute(async (req, res) => {
-  requireFields(req.body, ['classroom_id', 'participant_code', 'full_name']);
+  requireFields(req.body, ['classroom_id', 'full_name']);
   scopedClassroom(req.schoolUser, req.body.classroom_id);
   const [classrooms] = await pool.execute(
     'SELECT id FROM classrooms WHERE sekolah_id = ? AND id = ?',
     [req.schoolUser.sekolah_id, req.body.classroom_id],
   );
   if (!classrooms.length) throw fail(400, 'Kelas tidak ditemukan di sekolah ini.', 'VALIDATION_ERROR');
-  const participantCode = string(req.body.participant_code, 'participant_code', 60);
+  const participantCode = req.body.participant_code == null || req.body.participant_code === ''
+    ? `AUTO-${randomUUID()}`
+    : string(req.body.participant_code, 'participant_code', 60);
   const fullName = string(req.body.full_name, 'full_name', 150);
   const qrCode = req.body.qr_code === undefined ? `SAAS-${randomUUID()}` : string(req.body.qr_code, 'qr_code', 160);
   const guardianPhone = req.body.guardian_phone == null ? null : string(req.body.guardian_phone, 'guardian_phone', 32);
