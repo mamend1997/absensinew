@@ -574,6 +574,82 @@ router.get('/classrooms', requireSchoolUser,
   res.json({ classrooms: rows });
 }));
 
+router.post('/classrooms', requireSchoolUser, requirePermission('participants.manage'), asyncRoute(async (req, res) => {
+  const name = string(req.body?.name, 'Nama kelas', 100);
+  let unitId;
+  if (req.body?.unit_id != null) {
+    if (!/^[1-9]\d*$/.test(String(req.body.unit_id))) {
+      throw fail(400, 'Unit kelas tidak valid.', 'VALIDATION_ERROR');
+    }
+    const [units] = await pool.execute(
+      'SELECT id FROM units WHERE sekolah_id = ? AND id = ?',
+      [req.schoolUser.sekolah_id, req.body.unit_id],
+    );
+    if (!units.length) throw fail(400, 'Unit kelas tidak ditemukan.', 'VALIDATION_ERROR');
+    unitId = String(units[0].id);
+  } else {
+    const [units] = await pool.execute(
+      'SELECT id FROM units WHERE sekolah_id = ? ORDER BY id LIMIT 1',
+      [req.schoolUser.sekolah_id],
+    );
+    if (units.length) unitId = String(units[0].id);
+    else {
+      const [created] = await pool.execute(
+        'INSERT INTO units (sekolah_id, name) VALUES (?, ?)',
+        [req.schoolUser.sekolah_id, 'Umum'],
+      );
+      unitId = String(created.insertId);
+    }
+  }
+  const [existing] = await pool.execute(
+    'SELECT id FROM classrooms WHERE sekolah_id = ? AND unit_id = ? AND name = ?',
+    [req.schoolUser.sekolah_id, unitId, name],
+  );
+  if (existing.length) throw fail(409, 'Nama kelas sudah ada.', 'CONFLICT');
+  const [result] = await pool.execute(
+    'INSERT INTO classrooms (sekolah_id, unit_id, name) VALUES (?, ?, ?)',
+    [req.schoolUser.sekolah_id, unitId, name],
+  );
+  res.status(201).json({ classroom: { id: String(result.insertId), unit_id: unitId, name } });
+}));
+
+router.put('/classrooms/:id', requireSchoolUser, requirePermission('participants.manage'), asyncRoute(async (req, res) => {
+  const classroomId = req.params.id;
+  if (!/^[1-9]\d*$/.test(classroomId)) throw fail(400, 'ID kelas tidak valid.', 'VALIDATION_ERROR');
+  const name = string(req.body?.name, 'Nama kelas', 100);
+  const [found] = await pool.execute(
+    'SELECT id, unit_id FROM classrooms WHERE sekolah_id = ? AND id = ?',
+    [req.schoolUser.sekolah_id, classroomId],
+  );
+  if (!found.length) throw fail(404, 'Kelas tidak ditemukan.', 'NOT_FOUND');
+  await pool.execute(
+    'UPDATE classrooms SET name = ? WHERE sekolah_id = ? AND id = ?',
+    [name, req.schoolUser.sekolah_id, classroomId],
+  );
+  res.json({ classroom: { id: classroomId, unit_id: String(found[0].unit_id), name } });
+}));
+
+router.delete('/classrooms/:id', requireSchoolUser, requirePermission('participants.manage'), asyncRoute(async (req, res) => {
+  const classroomId = req.params.id;
+  if (!/^[1-9]\d*$/.test(classroomId)) throw fail(400, 'ID kelas tidak valid.', 'VALIDATION_ERROR');
+  const [participants] = await pool.execute(
+    'SELECT id FROM participants WHERE sekolah_id = ? AND classroom_id = ? LIMIT 1',
+    [req.schoolUser.sekolah_id, classroomId],
+  );
+  if (participants.length) throw fail(409, 'Kelas masih digunakan oleh peserta dan tidak dapat dihapus.', 'CONFLICT');
+  const [users] = await pool.execute(
+    'SELECT id FROM users WHERE sekolah_id = ? AND classroom_id = ? LIMIT 1',
+    [req.schoolUser.sekolah_id, classroomId],
+  );
+  if (users.length) throw fail(409, 'Kelas masih digunakan oleh akun operator dan tidak dapat dihapus.', 'CONFLICT');
+  const [result] = await pool.execute(
+    'DELETE FROM classrooms WHERE sekolah_id = ? AND id = ?',
+    [req.schoolUser.sekolah_id, classroomId],
+  );
+  if (!result.affectedRows) throw fail(404, 'Kelas tidak ditemukan.', 'NOT_FOUND');
+  res.status(204).end();
+}));
+
 router.get('/participants', requireSchoolUser,
   requireAnyPermission('participants.read', 'scanner.use'), asyncRoute(async (req, res) => {
   const scope = classroomScope(req.schoolUser);

@@ -361,9 +361,11 @@ export default function App() {
   const [lastScan, setLastScan] = useState('');
   const [manualCode, setManualCode] = useState('');
   const [selectedParticipantIds, setSelectedParticipantIds] = useState<Set<string>>(new Set());
+  const [scanClock, setScanClock] = useState(() => new Date());
   const [participantForm, setParticipantForm] = useState({
     participant_code: '', full_name: '', classroom_id: '', qr_code: '',
   });
+  const [classroomForm, setClassroomForm] = useState({ id: '', name: '' });
   const [roleForm, setRoleForm] = useState({ role_key: '', role_name: '', permissions: '' });
   const [userForm, setUserForm] = useState({ username: '', display_name: '', password: '', role_id: '' });
   const [deviceName, setDeviceName] = useState('Scanner sekolah');
@@ -548,6 +550,21 @@ export default function App() {
     void syncPending().catch((reason: unknown) => {
       setError(reason instanceof Error ? reason.message : 'Sinkronisasi otomatis gagal.');
     });
+  }, [online, deviceKey, page, session?.school.id]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setScanClock(new Date()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!session || page !== 'scanner' || !online || !deviceKey) return;
+    const timer = window.setInterval(() => {
+      void syncPending().catch((reason: unknown) => {
+        setError(reason instanceof Error ? reason.message : 'Sinkronisasi otomatis gagal.');
+      });
+    }, 10000);
+    return () => window.clearInterval(timer);
   }, [online, deviceKey, page, session?.school.id]);
 
   async function loadSchoolData(currentSession: SchoolSession) {
@@ -959,12 +976,6 @@ export default function App() {
     }
   }
 
-  function stopCamera() {
-    controlsRef.current?.stop();
-    controlsRef.current = null;
-    setCameraActive(false);
-  }
-
   async function loadReport(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
     if (!session) return;
@@ -994,6 +1005,47 @@ export default function App() {
       setMessage('Peserta berhasil ditambahkan.');
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : 'Peserta gagal ditambahkan.', true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveClassroom(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session || !classroomForm.name.trim()) return;
+    setBusy(true);
+    try {
+      const isEdit = Boolean(classroomForm.id);
+      if (classroomForm.id) {
+        await request(`/school/classrooms/${classroomForm.id}`, session.token, {
+          method: 'PUT',
+          body: { name: classroomForm.name.trim() },
+        });
+      } else {
+        await request('/school/classrooms', session.token, {
+          method: 'POST',
+          body: { name: classroomForm.name.trim() },
+        });
+      }
+      setClassroomForm({ id: '', name: '' });
+      await loadSchoolData(session);
+      setMessage(isEdit ? 'Nama kelas diperbarui.' : 'Kelas berhasil ditambahkan.');
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Kelas gagal disimpan.', true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteClassroom(classroom: Classroom) {
+    if (!session || !window.confirm(`Hapus kelas ${classroom.name}?`)) return;
+    setBusy(true);
+    try {
+      await request(`/school/classrooms/${classroom.id}`, session.token, { method: 'DELETE' });
+      await loadSchoolData(session);
+      setMessage('Kelas berhasil dihapus.');
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Kelas gagal dihapus.', true);
     } finally {
       setBusy(false);
     }
@@ -1579,7 +1631,7 @@ export default function App() {
   }
 
   return (
-    <div className="portal-shell">
+    <div className={page === 'scanner' ? 'portal-shell scanner-active' : 'portal-shell'}>
       <header className="topbar">
         <div className="brand"><div className="brand-mark">RH</div><div><strong>{session.school.name}</strong><small>Kode sekolah · {session.school.school_code}</small></div></div>
         <div className="top-actions">
@@ -1619,39 +1671,52 @@ export default function App() {
 
           {page === 'scanner' && (
             <section className="scanner-page">
-              <div className="page-heading"><div><p className="eyebrow">SCANNER SEMI-ONLINE</p><h1>Absensi peserta</h1><p className="muted">Pindai QR peserta. Scan lokal tersimpan sebelum mencoba sinkronisasi.</p></div><div className={`connection large ${online ? 'online' : 'offline'}`}><i />{online ? 'Online' : 'Offline'}</div></div>
-              <div className="scanner-grid">
-                <div className="panel camera-panel">
-                  <div className="scanner-toolbar">
-                    <label>Kamera
-                      <select value={cameraId} onChange={(event) => setCameraId(event.target.value)}>
-                        <option value="">Pilih otomatis</option>
-                        {cameraDevices.map((device, index) => <option key={device.deviceId} value={device.deviceId}>{device.label || `Kamera ${index + 1}`}</option>)}
-                      </select>
-                    </label>
-                    <button className="button primary" onClick={() => cameraActive ? stopCamera() : void startCamera()}>{cameraActive ? 'Matikan kamera' : 'Nyalakan kamera'}</button>
+              <header className="scan-screen-header">
+                <div className="scan-header-top">
+                  <div className="scan-brand">
+                    <div className="brand-mark">RH</div>
+                    <div className="scan-brand-copy">
+                      <strong>{applicationName}</strong>
+                      <div className="scan-date-time">
+                        <span className="scan-date">{scanClock.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</span>
+                        <span className="scan-clock">{scanClock.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+                      </div>
+                    </div>
                   </div>
-                  <video ref={videoRef} className="camera-view" muted playsInline />
-                  <form className="manual-scan" onSubmit={submitWedge}>
-                    <label>Scanner USB/Bluetooth<input value={manualCode} onChange={(event) => handleWedgeChange(event.target.value)} placeholder="Arahkan scanner ke kolom ini" autoComplete="off" /></label>
-                  </form>
-                  <div className="device-key-card">
-                    <label>API Key perangkat<input type="password" value={deviceKey} onChange={(event) => { setDeviceKey(event.target.value); sessionStorage.setItem(deviceStorageKey, event.target.value); }} placeholder="Tempel key perangkat terdaftar" autoComplete="off" /></label>
-                    <small>Key diikat ke sekolah dan dapat dicabut oleh Admin. Untuk APK, simpan key di secure storage.</small>
+                  <div className="scan-header-actions">
+                    <div className={`connection-chip ${online ? 'is-online' : 'is-offline'}`}><span />{online ? 'Online' : 'Offline'}</div>
+                    {cameraDevices.length > 0 && <select className="scan-camera-select" aria-label="Pilih kamera" value={cameraId} onChange={(event) => setCameraId(event.target.value)}><option value="">Kamera otomatis</option>{cameraDevices.map((device, index) => <option key={device.deviceId} value={device.deviceId}>{device.label || `Kamera ${index + 1}`}</option>)}</select>}
+                    <button className="scan-menu-trigger" type="button" aria-label="Buka menu dengan PIN" onClick={() => requestScannerMenu('dashboard')}><span className="hamburger-icon" aria-hidden="true"><i /><i /><i /></span></button>
                   </div>
                 </div>
-                <aside className="panel scan-state">
-                  <span className="status-label"><i className={online ? 'status-dot online' : 'status-dot offline'} />{online ? 'Jaringan tersedia' : 'Tanpa jaringan'}</span>
-                  <strong className="queue-number">{pendingCount}</strong><span className="muted">scan menunggu sync</span>
-                  <button className="button primary" disabled={!online || !deviceKey || pendingCount === 0} onClick={() => void syncPending()}>Sync sekarang</button>
-                  {lastScan && <div className="last-scan"><small>Scan terakhir</small><strong>{lastScan}</strong></div>}
-                  {!deviceKey && <p className="fine-print">Masukkan API Key dari menu Perangkat untuk mengirim scan. Scan tetap bisa disimpan lokal.</p>}
-                </aside>
+                {lastScan && <div className="scan-welcome" aria-live="polite"><span className="scan-welcome-track">{lastScan}</span></div>}
+                {!lastScan && <div className="scan-welcome"><span className="scan-welcome-track">Pindai kartu atau barcode peserta saat melaksanakan absensi</span></div>}
+              </header>
+
+              {pendingCount > 0 && <div className="scan-controls-row"><div className="scan-queue-summary"><span className="queue-mini-count">{pendingCount}</span><span>pending · sinkron otomatis</span></div></div>}
+
+              <div className="scan-camera-shell">
+                <div className={`scan-camera-frame ${cameraActive ? 'camera-live' : ''}`}>
+                  <video ref={videoRef} className="camera-video" muted playsInline />
+                  {cameraActive && <div className="scan-target"><span className="scan-target-line" /></div>}
+                  {!cameraActive && <div className="scan-camera-paused">Kamera dijeda</div>}
+                </div>
               </div>
-              <section className="panel local-list">
-                <div className="section-title"><div><h2>Riwayat di perangkat</h2><p className="muted">Entri pending tetap ada sampai diterima server.</p></div><button className="button secondary" onClick={() => void refreshPendingCount()}>Muat ulang</button></div>
+
+              <form className="scanner-wedge-form" onSubmit={submitWedge}>
+                <label htmlFor="scanner-wedge-code">Scanner barcode USB / Bluetooth</label>
+                <div className="scanner-wedge-controls">
+                  <input id="scanner-wedge-code" value={manualCode} onChange={(event) => handleWedgeChange(event.target.value)} placeholder="Fokuskan bidang ini, lalu scan kartu" autoComplete="off" autoFocus />
+                  <button className="button secondary" type="submit" disabled={!manualCode.trim()}>Proses kode</button>
+                </div>
+              </form>
+
+              <section className="scan-history-card">
+                <div className="scan-history-heading"><div><h2>Log kehadiran terbaru</h2><p>Riwayat scan yang tersimpan di perangkat ini</p></div>{pendingCount > 0 && <span className="history-pending">{pendingCount} pending</span>}</div>
                 <LocalQueueList schoolId={session.school.id} />
               </section>
+
+              {!cameraActive && <button className="button primary wide scan-resume-button" onClick={() => void startCamera()}>{cameraDevices.length ? 'Lanjutkan kamera' : 'Buka kamera'}</button>}
             </section>
           )}
 
@@ -1685,6 +1750,15 @@ export default function App() {
                 <label>QR / Barcode<input required value={participantForm.qr_code} onChange={(event) => setParticipantForm((current) => ({ ...current, qr_code: event.target.value }))} /></label>
                 <button className="button primary" disabled={busy}>Tambah peserta</button>
               </form>}
+              {can('participants.manage') && <div className="panel classroom-manager">
+                <div className="section-title"><div><h2>Nama kelas / unit</h2><p className="muted">Kelola nama kelas yang digunakan pada master peserta.</p></div></div>
+                <form className="classroom-form" onSubmit={(event) => void saveClassroom(event)}>
+                  <label>Nama kelas<input required maxLength={100} value={classroomForm.name} onChange={(event) => setClassroomForm((current) => ({ ...current, name: event.target.value }))} placeholder="Contoh: Kelas 7A" /></label>
+                  <button className="button primary" disabled={busy}>{classroomForm.id ? 'Simpan nama' : 'Tambah kelas'}</button>
+                  {classroomForm.id && <button type="button" className="button secondary" onClick={() => setClassroomForm({ id: '', name: '' })}>Batal</button>}
+                </form>
+                <div className="classroom-list">{classrooms.map((classroom) => <div className="classroom-row" key={classroom.id}><div><strong>{classroom.name}</strong><small>{classroom.unit_name ?? 'Umum'}</small></div><div className="heading-actions"><button type="button" className="button secondary small" onClick={() => setClassroomForm({ id: classroom.id, name: classroom.name })}>Edit</button><button type="button" className="button danger small" onClick={() => void deleteClassroom(classroom)}>Hapus</button></div></div>)}</div>
+              </div>}
               {can('participants.manage') && <div className="panel participant-import">
                 <div><h2>Impor dari Excel</h2><p className="muted">Gunakan template agar kolom dan ID kelas sesuai. Maksimal 500 baris per impor.</p></div>
                 <div className="heading-actions">
@@ -1752,6 +1826,21 @@ export default function App() {
                 <div className="form-grid"><label>Tanggal<input type="date" required value={holidayForm.date} onChange={(event) => setHolidayForm((current) => ({ ...current, date: event.target.value }))} /></label><label>Nama libur<input required value={holidayForm.name} onChange={(event) => setHolidayForm((current) => ({ ...current, name: event.target.value }))} /></label><button className="button secondary">Tambah libur</button></div>
                 <ul className="holiday-list">{operationalForm.holidays.map((holiday) => <li key={`${holiday.date}-${holiday.name}`}><span>{holiday.date} · {holiday.name}</span><button type="button" className="text-button" onClick={() => setOperationalForm((current) => ({ ...current, holidays: current.holidays.filter((item) => item !== holiday) }))}>Hapus</button></li>)}</ul>
               </form>
+              {can('participants.manage') && <section className="panel participant-schedule-settings">
+                <div><h2>Batas masuk khusus peserta</h2><p className="muted">Pilih peserta dan atur batas waktu masuk untuk hari tertentu. Hari kosong memakai jadwal sekolah.</p></div>
+                <label>Pilih peserta
+                  <select value={scheduleParticipantId} onChange={(event) => openParticipantSchedule(event.target.value)}>
+                    <option value="">Pilih peserta</option>
+                    {participants.map((participant) => <option key={participant.id} value={participant.id}>{participant.full_name} — {participant.participant_code}</option>)}
+                  </select>
+                </label>
+                {scheduleParticipantId && <>
+                  <div className="participant-schedule-grid">{weekDays.map((name, weekday) => <label key={weekday}>{name}
+                    <input type="time" value={scheduleOverrides[weekday] ?? ''} onChange={(event) => setScheduleOverrides((current) => ({ ...current, [weekday]: event.target.value }))} />
+                  </label>)}</div>
+                  <div className="heading-actions"><button type="button" className="button primary" disabled={busy} onClick={() => void saveParticipantSchedule()}>{busy ? 'Menyimpan…' : 'Simpan jadwal peserta'}</button><button type="button" className="button secondary" onClick={() => { setScheduleParticipantId(''); setScheduleOverrides({}); }}>Batal</button></div>
+                </>}
+              </section>}
               {can('settings.operational.manage') && <section className="panel school-whatsapp-panel">
                 <div>
                   <h2>Gateway WhatsApp sekolah</h2>
