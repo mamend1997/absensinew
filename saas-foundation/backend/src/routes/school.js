@@ -1299,7 +1299,7 @@ router.post('/settings/whatsapp-gateway/test', requireSchoolUser, requirePermiss
   let message = 'Gateway WhatsApp sekolah belum dikonfigurasi.';
   if (gateway?.endpoint_url && gateway.token_ciphertext) {
     try {
-      await sendWhatsappMessage(
+      const delivery = await sendWhatsappMessage(
         gateway.endpoint_url,
         decryptGatewayToken(gateway),
         phone,
