@@ -45,6 +45,24 @@ export function decryptPlatformBackupCredentials(value) {
   return JSON.parse(open(value));
 }
 
+export function extractTelegramSendError(statusCode, body, botToken, chatId) {
+  let payload;
+  try { payload = JSON.parse(body); } catch { payload = null; }
+  if (statusCode >= 200 && statusCode < 300 && payload?.ok === true) return null;
+
+  const description = typeof payload?.description === 'string'
+    ? payload.description
+    : '';
+  let safeDescription = description.replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
+  for (const secret of [botToken, chatId]) {
+    if (secret) safeDescription = safeDescription.split(secret).join('[redacted]');
+  }
+  safeDescription = safeDescription.slice(0, 300);
+  const apiCode = Number.isInteger(payload?.error_code) ? `, kode ${payload.error_code}` : '';
+  const detail = safeDescription ? `: ${safeDescription}` : '.';
+  return `Telegram menolak notifikasi (HTTP ${statusCode}${apiCode})${detail}`;
+}
+
 function localClock(date = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: config.backupTimezone,
@@ -86,7 +104,12 @@ async function snapshotDatabase() {
 
 async function notifyTelegram(credentials, text) {
   const hostname = 'api.telegram.org';
-  const addresses = await lookup(hostname, { all: true, verbatim: true });
+  let addresses;
+  try {
+    addresses = await lookup(hostname, { all: true, verbatim: true });
+  } catch {
+    throw new Error('DNS api.telegram.org gagal. Periksa koneksi jaringan backend.');
+  }
   const address = addresses.find(({ family }) => family === 4) ?? addresses[0];
   if (!address) throw new Error('Telegram tidak dapat dihubungi.');
   const body = JSON.stringify({ chat_id: credentials.chat_id, text });
@@ -106,13 +129,36 @@ async function notifyTelegram(credentials, text) {
       },
       timeout: 10000,
     }, (response) => {
-      response.resume();
-      response.on('end', () => response.statusCode >= 200 && response.statusCode < 300
-        ? resolvePromise()
-        : reject(new Error(`Telegram mengembalikan HTTP ${response.statusCode}.`)));
+      const responseChunks = [];
+      let responseBytes = 0;
+      response.on('data', (chunk) => {
+        if (responseBytes >= 4096) return;
+        const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        const boundedData = data.subarray(0, 4096 - responseBytes);
+        responseChunks.push(boundedData);
+        responseBytes += boundedData.length;
+      });
+      response.on('end', () => {
+        const error = extractTelegramSendError(
+          response.statusCode ?? 0,
+          Buffer.concat(responseChunks).toString('utf8'),
+          credentials.bot_token,
+          credentials.chat_id,
+        );
+        if (error) reject(new Error(error));
+        else resolvePromise();
+      });
     });
-    request.on('timeout', () => request.destroy(new Error('Telegram timeout.')));
-    request.on('error', () => reject(new Error('Notifikasi Telegram gagal dikirim.')));
+    let timedOut = false;
+    request.on('timeout', () => {
+      timedOut = true;
+      request.destroy(new Error('Telegram timeout.'));
+    });
+    request.on('error', () => reject(new Error(
+      timedOut
+        ? 'Koneksi Telegram timeout setelah 10 detik.'
+        : 'Koneksi ke Telegram gagal. Periksa akses jaringan backend.',
+    )));
     request.end(body);
   });
 }
