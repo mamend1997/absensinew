@@ -147,9 +147,11 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
 .confirm-modal .pin-modal-icon { background: #b5473c; }
 .confirm-modal .pin-modal-actions { margin-top: 8px; }
 .scanner-active { position: fixed; inset: 0; z-index: 20; width: 100%; height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; background: #0b1424; }
+.scanner-active[data-school-theme="white"] { background: #fff; }
 .scanner-active .topbar { display: none; }
-.scanner-active .kiosk-layout { max-width: none; height: 100%; min-height: 0; padding: 22px 24px 34px; }
-.scanner-active .scanner-kiosk { height: 100%; min-height: 0; padding: 0; }
+.scanner-active .kiosk-layout { max-width: none; height: 100%; min-height: 0; grid-template-rows: minmax(0, 1fr); padding: 22px 24px 34px; }
+.scanner-active .scanner-kiosk { display: flex; height: 100%; min-height: 0; flex-direction: column; padding: 0; }
+.scanner-active .scanner-page { display: flex; min-height: 0; flex: 1 1 auto; }
 .scanner-page {
   --scan-content: #e2e8f0;
   --scan-muted: #94a3b8;
@@ -161,7 +163,7 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
   min-height: 0;
   width: 100%;
   flex-direction: column;
-  overflow: hidden;
+  overflow: auto;
   background:
     radial-gradient(ellipse at 12% 0%, rgba(45,212,191,.19), transparent 34%),
     radial-gradient(ellipse at 95% 78%, rgba(99,102,241,.17), transparent 34%),
@@ -258,27 +260,43 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
   --scan-accent: #0f766e;
   --scan-line: rgba(51,65,85,.18);
   --scan-line-soft: rgba(51,65,85,.12);
-  background: linear-gradient(145deg, #f8faf9, #edf2ef 58%, #e8efeb);
+  background: #fff;
 }
-.scanner-page[data-school-theme="white"] .scan-screen-header { background: #fff; box-shadow: 0 8px 26px rgba(31,65,53,.08); }
-.scanner-page[data-school-theme="white"] .brand-mark:not(.has-logo) { background: #e4f3e8; color: #14532d; }
-.scanner-page[data-school-theme="white"] .connection-chip { background: #f1f5f2; color: #43554c; }
+.scanner-page[data-school-theme="white"] .scan-welcome,
+.scanner-page[data-school-theme="white"] .connection-chip,
 .scanner-page[data-school-theme="white"] .scan-camera-select,
-.scanner-page[data-school-theme="white"] .scan-menu-trigger { background: #f8faf9; color: #25352d; }
+.scanner-page[data-school-theme="white"] .scan-menu-trigger,
+.scanner-page[data-school-theme="white"] .scan-camera-shell,
+.scanner-page[data-school-theme="white"] .scan-camera-frame,
+.scanner-page[data-school-theme="white"] .scan-camera-paused,
+.scanner-page[data-school-theme="white"] .scanner-wedge-controls input,
+.scanner-page[data-school-theme="white"] .scanner-wedge-controls .button,
+.scanner-page[data-school-theme="white"] .scan-history-card,
+.scanner-page[data-school-theme="white"] .scan-history-card .table-scroll,
+.scanner-page[data-school-theme="white"] .scan-history-card .tag,
+.scanner-page[data-school-theme="white"] .history-pending,
+.scanner-page[data-school-theme="white"] .history-reset-button {
+  background: #fff;
+}
+.scanner-page[data-school-theme="white"] .scan-brand .brand-mark:not(.has-logo) { background: #fff; }
+.scanner-page[data-school-theme="white"] .scan-screen-header { background: #fff; box-shadow: 0 8px 26px rgba(31,65,53,.08); }
+.scanner-page[data-school-theme="white"] .brand-mark:not(.has-logo) { color: #14532d; }
+.scanner-page[data-school-theme="white"] .connection-chip { color: #43554c; }
+.scanner-page[data-school-theme="white"] .scan-camera-select,
+.scanner-page[data-school-theme="white"] .scan-menu-trigger { color: #25352d; }
 .scanner-page[data-school-theme="white"] .hamburger-icon i { background: #334940; }
-.scanner-page[data-school-theme="white"] .scan-welcome { background: #e4f3e8; color: #14532d; box-shadow: 0 6px 16px rgba(34,92,55,.1); }
-.scanner-page[data-school-theme="white"] .queue-mini-count { background: #f4a92f; color: #412e13; }
-.scanner-page[data-school-theme="white"] .scan-camera-shell { background: #cbd5d2; box-shadow: 0 12px 30px rgba(31,65,53,.12); }
+.scanner-page[data-school-theme="white"] .scan-welcome { color: #14532d; box-shadow: none; }
+.scanner-page[data-school-theme="white"] .queue-mini-count { background: #fff; color: #412e13; }
+.scanner-page[data-school-theme="white"] .scan-camera-shell { box-shadow: 0 8px 24px rgba(31,65,53,.08); }
 .scanner-page[data-school-theme="white"] .scan-history-card { background: #fff; box-shadow: 0 8px 26px rgba(31,65,53,.08); }
-.scanner-page[data-school-theme="white"] .scan-history-card .table-scroll { background: #f7faf8; }
 .scanner-page[data-school-theme="white"] .scan-history-card th { color: #52635b; }
 .scanner-page[data-school-theme="white"] .scan-history-card td { border-bottom-color: #e7eeea; color: #34483e; }
-.scanner-page[data-school-theme="white"] .history-pending { background: #fff1d2; color: #8a641c; }
-.scanner-page[data-school-theme="white"] .history-reset-button { border-color: #cbd5d1; background: #fff; color: #334940; }
-.scanner-page[data-school-theme="white"] .scan-camera-paused { background: #e5ece8; }
-.scanner-page[data-school-theme="white"] .scanner-wedge-controls input { background: #fff; color: #172b27; }
-.scanner-page[data-school-theme="white"] .scanner-wedge-controls .button { background: #e3ebe6; color: #25352d; }
-.scanner-page[data-school-theme="white"] .scan-manual-button { border-color: #b6d8c0; background: #e6f4eb; color: #14532d; }
+.scanner-page[data-school-theme="white"] .history-pending { color: #8a641c; }
+.scanner-page[data-school-theme="white"] .history-reset-button { border-color: #cbd5d1; color: #334940; }
+.scanner-page[data-school-theme="white"] .scan-camera-paused { color: #172b27; }
+.scanner-page[data-school-theme="white"] .scanner-wedge-controls input { color: #172b27; }
+.scanner-page[data-school-theme="white"] .scanner-wedge-controls .button { color: #25352d; }
+.scanner-page[data-school-theme="white"] .scan-manual-button { border-color: #b6d8c0; background: #fff; color: #14532d; }
 .participant-import, .participant-schedule-editor { display: grid; gap: 12px; }
 .school-branding-panel, .school-branding-form { display: grid; gap: 12px; }
 .school-branding-logo-row { display: flex; align-items: center; gap: 14px; }
