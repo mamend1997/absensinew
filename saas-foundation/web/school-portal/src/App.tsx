@@ -50,6 +50,8 @@ interface GoogleSheetsSettings {
   is_enabled: boolean;
   is_configured: boolean;
   secret_hint: string;
+  last_sync_at: string | null;
+  sync_error: string | null;
 }
 const ROLE_PERMISSION_GROUPS: RolePermissionGroup[] = [
   { key: 'dashboard', label: 'Ringkasan', view: 'dashboard.view' },
@@ -439,7 +441,10 @@ function database(schoolId: string | number): Promise<IDBPDatabase<ScannerCache>
 
 function toLocalTime(value?: string | null) {
   if (!value) return '—';
-  const date = new Date(value);
+  const timestamp = /(?:Z|[+-]\d{2}:\d{2})$/i.test(value)
+    ? value
+    : `${value.replace(' ', 'T')}Z`;
+  const date = new Date(timestamp);
   return Number.isNaN(date.getTime())
     ? value
     : date.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
@@ -540,6 +545,8 @@ export default function App() {
     is_enabled: false,
     is_configured: false,
     secret_hint: '',
+    last_sync_at: null,
+    sync_error: null,
   });
   const [googleSheetsSecret, setGoogleSheetsSecret] = useState('');
   const [googleSheetsBusy, setGoogleSheetsBusy] = useState(false);
@@ -724,6 +731,29 @@ export default function App() {
       .then((result) => setGoogleSheetsSettings(result.settings))
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Pengaturan Google Sheets gagal dimuat.'));
   }, [session?.token]);
+
+  useEffect(() => {
+    if (!session || page !== 'settings' || !googleSheetsSettings.is_enabled) return;
+    let active = true;
+    const timer = window.setInterval(() => {
+      request<{ settings: GoogleSheetsSettings }>('/school/settings/google-sheets', session.token)
+        .then(({ settings: latest }) => {
+          if (!active) return;
+          setGoogleSheetsSettings((current) => ({
+            ...current,
+            last_sync_at: latest.last_sync_at,
+            sync_error: latest.sync_error,
+          }));
+        })
+        .catch((reason: unknown) => {
+          if (active) setError(reason instanceof Error ? reason.message : 'Status sinkronisasi Google Sheets gagal dimuat.');
+        });
+    }, 15000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [page, session?.token, googleSheetsSettings.is_enabled]);
 
   useEffect(() => {
     const onOnline = () => setOnline(true);
@@ -1291,7 +1321,7 @@ export default function App() {
     setBusy(true);
     try {
       const result = await request<unknown>(`/school/attendance/report?${query}`, session.token);
-      setReportRows(unwrapArray<ReportRow>(result, 'rows'));
+      setReportRows(unwrapArray<ReportRow>(result, 'attendance'));
       setError('');
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : 'Rekap tidak dapat dimuat.', true);
@@ -2371,11 +2401,22 @@ export default function App() {
               {can('settings.operational.view') && <section className="panel google-sheets-panel">
                 <div>
                   <h2>Sinkronisasi Google Sheets</h2>
-                  <p className="muted">Tab Rekap Bulanan menampilkan bulan berjalan dan diperbarui otomatis setiap sinkronisasi absensi. Data scan offline masuk setelah perangkat kembali online.</p>
+                  <p className="muted">Riwayat lama dan absensi baru dikirim otomatis di latar belakang. Data scan offline masuk setelah perangkat kembali online.</p>
                   <span className={`gateway-status ${googleSheetsSettings.is_enabled && googleSheetsSettings.is_configured ? 'ready' : ''}`}>
                     {googleSheetsSettings.is_enabled && googleSheetsSettings.is_configured ? '● Aktif' : '○ Belum aktif'}
                   </span>
                   {googleSheetsSettings.secret_hint && <small className="gateway-hint">Secret: {googleSheetsSettings.secret_hint}</small>}
+                  {googleSheetsSettings.is_enabled && googleSheetsSettings.is_configured && googleSheetsSettings.sync_error &&
+                    <div className="gateway-test-log failed">
+                      <strong>Sinkronisasi gagal; akan dicoba ulang otomatis</strong>
+                      <p>{googleSheetsSettings.sync_error}</p>
+                    </div>}
+                  {googleSheetsSettings.is_enabled && googleSheetsSettings.is_configured && !googleSheetsSettings.sync_error &&
+                    <small className="gateway-hint">
+                      {googleSheetsSettings.last_sync_at
+                        ? `Sinkronisasi terakhir berhasil: ${googleSheetsSettings.last_sync_at} UTC`
+                        : 'Riwayat absensi sedang menunggu sinkronisasi otomatis.'}
+                    </small>}
                 </div>
                 {can('settings.operational.edit') ? <form className="school-whatsapp-form" onSubmit={(event) => void saveGoogleSheetsSettings(event)}>
                   <label>URL Web App Apps Script<input type="url" required placeholder="https://script.google.com/macros/s/.../exec" value={googleSheetsSettings.web_app_url} onChange={(event) => setGoogleSheetsSettings((current) => ({ ...current, web_app_url: event.target.value }))} /></label>

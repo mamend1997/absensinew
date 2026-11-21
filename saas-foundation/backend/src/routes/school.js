@@ -31,8 +31,9 @@ import {
   decryptGatewayToken, encryptGatewayToken, sendWhatsappMessage, validateGatewayUrl,
 } from '../core/whatsapp-gateway.js';
 import {
-  sendAttendanceToGoogleSheets, validateAppsScriptWebAppUrl,
+  validateAppsScriptWebAppUrl,
 } from '../core/google-sheets-sync.js';
+import { aggregateAttendanceReport } from '../core/attendance-report.js';
 import { config } from '../config.js';
 import { createDeviceApiKey, hashPassword, signToken, verifyPassword } from '../security.js';
 import { getPlatformPaymentSettings } from '../core/platform-payment-settings.js';
@@ -1217,8 +1218,11 @@ router.delete('/settings/whatsapp-gateway', requireSchoolUser, requirePermission
 router.get('/settings/google-sheets', requireSchoolUser,
   requirePermission('settings.operational.view'), asyncRoute(async (req, res) => {
     const [[settings]] = await pool.execute(
-      `SELECT web_app_url, token_ciphertext, is_enabled
-         FROM school_google_sheets_config WHERE sekolah_id = ?`,
+      `SELECT c.web_app_url, c.token_ciphertext, c.is_enabled,
+              s.last_success_at, s.last_error
+         FROM school_google_sheets_config c
+         LEFT JOIN school_google_sheets_sync_state s ON s.sekolah_id = c.sekolah_id
+        WHERE c.sekolah_id = ?`,
       [req.schoolUser.sekolah_id],
     );
     res.json({
@@ -1227,6 +1231,8 @@ router.get('/settings/google-sheets', requireSchoolUser,
         is_enabled: Boolean(settings?.is_enabled),
         is_configured: Boolean(settings?.web_app_url && settings?.token_ciphertext),
         secret_hint: settings?.token_ciphertext ? 'Secret tersimpan terenkripsi' : '',
+        last_sync_at: settings?.last_success_at ?? null,
+        sync_error: settings?.last_error ?? null,
       },
     });
   }));
@@ -1267,7 +1273,10 @@ router.put('/settings/google-sheets', requireSchoolUser,
         req.schoolUser.sekolah_id,
       ]);
       return res.json({
-        settings: { web_app_url: '', is_enabled: false, is_configured: false, secret_hint: '' },
+        settings: {
+          web_app_url: '', is_enabled: false, is_configured: false, secret_hint: '',
+          last_sync_at: null, sync_error: null,
+        },
       });
     }
     await pool.execute(
@@ -1280,12 +1289,30 @@ router.put('/settings/google-sheets', requireSchoolUser,
       [req.schoolUser.sekolah_id, webAppUrl, encrypted.ciphertext,
         encrypted.iv, encrypted.authTag, body.is_enabled],
     );
+    const resetSyncCursor = !existing || webAppUrl !== existing.web_app_url || Boolean(sharedSecret);
+    await pool.execute(
+      `INSERT INTO school_google_sheets_sync_state (sekolah_id)
+       VALUES (?)
+       ON DUPLICATE KEY UPDATE
+         last_synced_id = IF(?, 0, last_synced_id),
+         last_attempt_at = IF(?, NULL, last_attempt_at),
+         last_success_at = IF(?, NULL, last_success_at),
+         last_error = IF(?, NULL, last_error)`,
+      [req.schoolUser.sekolah_id, resetSyncCursor, resetSyncCursor, resetSyncCursor, resetSyncCursor],
+    );
+    const [[syncState]] = await pool.execute(
+      `SELECT last_success_at, last_error
+         FROM school_google_sheets_sync_state WHERE sekolah_id = ?`,
+      [req.schoolUser.sekolah_id],
+    );
     res.json({
       settings: {
         web_app_url: webAppUrl,
         is_enabled: body.is_enabled,
         is_configured: true,
         secret_hint: 'Secret tersimpan terenkripsi',
+        last_sync_at: syncState?.last_success_at ?? null,
+        sync_error: syncState?.last_error ?? null,
       },
     });
   }));
@@ -1559,7 +1586,6 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
   if (deviceId) {
     await pool.execute('UPDATE scanner_devices SET last_synced_at = CURRENT_TIMESTAMP WHERE id = ?', [deviceId]);
   }
-  await sendAttendanceToGoogleSheets({ schoolId, ids: acceptedIds });
   res.json({ accepted_ids: acceptedIds, rejected_ids: rejectedIds, rejected });
 });
 
@@ -1586,7 +1612,7 @@ router.get('/attendance/report', requireSchoolUser, requirePermission('attendanc
       ORDER BY a.attendance_date, a.server_received_at, a.id`,
     [req.schoolUser.sekolah_id, from, to, ...scope.params],
   );
-  res.json({ from, to, attendance: rows });
+  res.json({ from, to, attendance: aggregateAttendanceReport(rows) });
 }));
 
 export default router;

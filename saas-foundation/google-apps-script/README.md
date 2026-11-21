@@ -47,12 +47,14 @@ ID sinkronisasi agar kiriman ulang tidak membuat data ganda.
   tetap sama.
 - Sheet menampilkan bulan berjalan saja; saat bulan berganti, tab rekap akan
   menampilkan bulan baru setelah penyegaran harian atau batch absensi berikutnya.
-- Riwayat sebelum integrasi diaktifkan tidak dikirim otomatis. Integrasi
-  mengirim absensi baru yang diterima server setelah konfigurasi aktif.
+- Setelah integrasi diaktifkan dan disimpan, backend otomatis mengirim riwayat
+  absensi lama secara bertahap serta meneruskan absensi baru. Tidak diperlukan
+  tombol kirim riwayat. Jika Google sementara tidak dapat dijangkau, backend
+  menyimpan posisi sinkronisasi dan mencoba kembali otomatis.
 - Jika ada scan offline, tanggal dan waktu kejadian asli tetap dipakai saat
   catatan akhirnya masuk ke server dan Google Sheets.
-- Jika backend tidak mendapat respons sukses dari Apps Script, sinkron batch
-  dilaporkan gagal agar scanner dapat mencoba kembali. Jangan menghapus tab
-  **Absensi**; tab tersebut dibutuhkan untuk mencegah duplikasi.
+- Jika sinkronisasi gagal, lihat status sinkronisasi di pengaturan portal;
+  backend akan mencoba kembali otomatis. Jangan menghapus tab **Absensi**;
+  tab tersebut dibutuhkan untuk mencegah duplikasi.
 - Jangan membagikan secret. Backend menyimpannya terenkripsi dan tidak
   menanamkannya di APK.

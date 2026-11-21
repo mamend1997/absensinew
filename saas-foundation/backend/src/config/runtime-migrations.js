@@ -180,6 +180,22 @@ export async function ensureRuntimeMigrations(pool) {
         REFERENCES schools (id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS school_google_sheets_sync_state (
+      sekolah_id BIGINT UNSIGNED NOT NULL,
+      last_synced_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+      last_attempt_at DATETIME NULL,
+      last_success_at DATETIME NULL,
+      last_error VARCHAR(500) NULL,
+      PRIMARY KEY (sekolah_id),
+      CONSTRAINT fk_school_google_sheets_sync_state_school FOREIGN KEY (sekolah_id)
+        REFERENCES schools (id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+  await pool.execute(
+    `INSERT IGNORE INTO school_google_sheets_sync_state (sekolah_id)
+     SELECT sekolah_id FROM school_google_sheets_config WHERE is_enabled = TRUE`,
+  );
 
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS platform_billing_settings (

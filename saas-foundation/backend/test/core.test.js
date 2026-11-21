@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { calculateAttendance, createQueuedScan } from '../src/core/attendance.js';
+import { aggregateAttendanceReport } from '../src/core/attendance-report.js';
 import {
   calculateAttendance as calculateBrowserAttendance,
   createQueuedScan as createBrowserQueuedScan,
@@ -150,6 +151,39 @@ test('attendance calculation respects non-working days and checkout start', () =
     settings,
   });
   assert.equal(earlyCheckout.reason, 'checkout_too_early');
+});
+
+test('attendance report groups check-in and check-out into a participant day', () => {
+  const rows = aggregateAttendanceReport([
+    {
+      attendance_date: '2026-11-23',
+      participant_id: 'p1',
+      participant_code: 'P1',
+      participant_name: 'Peserta Satu',
+      classroom_name: 'Kelas 1',
+      event_type: 'check_out',
+      client_timestamp_utc: '2026-11-23 08:00:00',
+      attendance_status: 'pulang',
+      late_minutes: 0,
+    },
+    {
+      attendance_date: '2026-11-23',
+      participant_id: 'p1',
+      participant_code: 'P1',
+      participant_name: 'Peserta Satu',
+      classroom_name: 'Kelas 1',
+      event_type: 'check_in',
+      client_timestamp_utc: '2026-11-23 01:10:00',
+      attendance_status: 'terlambat',
+      late_minutes: 10,
+    },
+  ]);
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].check_in_at, '2026-11-23 01:10:00');
+  assert.equal(rows[0].check_out_at, '2026-11-23 08:00:00');
+  assert.equal(rows[0].attendance_status, 'terlambat');
+  assert.equal(rows[0].late_minutes, 10);
 });
 
 const scan = (id, sekolah_id = '10') => ({
