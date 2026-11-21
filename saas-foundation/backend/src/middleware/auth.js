@@ -36,7 +36,7 @@ export const requireSchoolUser = asyncRoute(async (req, res, next) => {
     throw fail(401, 'Autentikasi sekolah wajib.', 'UNAUTHENTICATED');
   }
   const [rows] = await pool.execute(
-    `SELECT u.id, u.sekolah_id, u.role_id, u.classroom_id, u.username, u.whatsapp_phone,
+    `SELECT u.id, u.sekolah_id, u.role_id, u.classroom_id, u.username, u.whatsapp_phone, u.auth_version,
             u.display_name, r.role_key, r.role_name, r.permissions, r.sekolah_id AS role_sekolah_id,
             s.school_code, s.name AS school_name, s.timezone, s.subscription_status,
             s.trial_ends_at, s.subscription_expires_at,
@@ -52,7 +52,8 @@ export const requireSchoolUser = asyncRoute(async (req, res, next) => {
     [claims.sub, claims.schoolId],
   );
   const row = rows[0];
-  if (!row || row.school_code !== claims.schoolCode) {
+  if (!row || row.school_code !== claims.schoolCode ||
+      Number(row.auth_version ?? 0) !== Number(claims.authVersion ?? 0)) {
     throw fail(401, 'Sesi sekolah tidak valid atau kode sekolah telah berubah.', 'UNAUTHENTICATED');
   }
   const permissions = parseJson(row.permissions);

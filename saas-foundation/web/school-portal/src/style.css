@@ -17,9 +17,13 @@ h3 { margin: 0; font-size: 13px; }
 .login-card .muted { margin: -7px 0 0; }
 .registration-card { max-height: calc(100dvh - 28px); overflow-y: auto; }
 .register-link, .back-link { justify-self: center; padding: 5px 0; color: #176f4c; font-size: 11px; }
+.forgot-password-button { width: 100%; }
 .back-link { justify-self: start; }
 .register-school-button { width: 100%; white-space: normal; }
 .password-input-wrap { position: relative; display: block; }
+.phone-input-wrap { display: flex; min-width: 0; }
+.phone-prefix { display: inline-flex; min-width: 52px; align-items: center; justify-content: center; border: 1px solid #d8e1da; border-right: 0; border-radius: 9px 0 0 9px; background: #f3f6f3; color: #53665e; font-size: 12px; font-weight: 700; }
+.phone-input-wrap input { border-top-left-radius: 0; border-bottom-left-radius: 0; }
 .password-input-wrap input { padding-right: 48px; }
 .password-eye { position: absolute; top: 50%; right: 7px; display: grid; width: 34px; height: 34px; place-items: center; transform: translateY(-50%); border: 0; border-radius: 7px; background: transparent; color: #60736a; }
 .password-eye:hover { background: #eff5f0; color: #176f4c; }

@@ -121,13 +121,21 @@ interface ScannerCache extends DBSchema {
   };
 }
 interface ScanResult { date: string; status: string | null; lateMinutes: number; reason?: string }
-type LoginView = 'login' | 'register' | 'verify';
+type LoginView = 'login' | 'register' | 'verify' | 'forgot-password' | 'reset-password';
 
 const initialRegistrationForm = {
   school_name: '',
-  admin_name: '',
+  username: '',
   whatsapp_phone: '',
   password: '',
+};
+
+const initialPasswordResetForm = {
+  school_code: '',
+  whatsapp_phone: '',
+  otp: '',
+  password: '',
+  confirm_password: '',
 };
 
 const initialSettings: OperationalSettings = {
@@ -223,6 +231,12 @@ function csvCell(value: unknown) {
   return `"${text.replace(/"/g, '""')}"`;
 }
 
+function phoneNationalDigits(value: string) {
+  const digits = value.replace(/\D/g, '');
+  const national = digits.startsWith('62') ? digits.slice(2) : digits.replace(/^0+/, '');
+  return national.slice(0, 13);
+}
+
 function rupiah(value: number) {
   return new Intl.NumberFormat('id-ID', {
     style: 'currency',
@@ -267,8 +281,11 @@ export default function App() {
   const [registrationForm, setRegistrationForm] = useState(initialRegistrationForm);
   const [registrationChallengeId, setRegistrationChallengeId] = useState('');
   const [registrationOtp, setRegistrationOtp] = useState('');
+  const [passwordResetForm, setPasswordResetForm] = useState(initialPasswordResetForm);
+  const [passwordResetChallengeId, setPasswordResetChallengeId] = useState('');
   const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [showRegistrationPassword, setShowRegistrationPassword] = useState(false);
+  const [showResetPassword, setShowResetPassword] = useState(false);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [classrooms, setClassrooms] = useState<Classroom[]>([]);
   const [settings, setSettings] = useState<OperationalSettings>(initialSettings);
@@ -330,6 +347,14 @@ export default function App() {
     maxBytes: new TextEncoder().encode(registrationForm.password).length <= 72,
   };
   const validRegistrationPassword = Object.values(passwordChecks).every(Boolean);
+  const resetPasswordChecks = {
+    length: passwordResetForm.password.length >= 8,
+    uppercase: /[A-Z]/.test(passwordResetForm.password),
+    number: /\d/.test(passwordResetForm.password),
+    symbol: /[^A-Za-z0-9\s]/.test(passwordResetForm.password),
+    maxBytes: new TextEncoder().encode(passwordResetForm.password).length <= 72,
+  };
+  const validResetPassword = Object.values(resetPasswordChecks).every(Boolean);
 
   useEffect(() => {
     let active = true;
@@ -618,6 +643,77 @@ export default function App() {
       setNotice(`${result.message} Kode sekolah Anda: ${result.school.school_code}.`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Verifikasi OTP gagal.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function startPasswordReset(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await request<{ challenge_id: string; message: string }>(
+        '/school/auth/password-reset/start',
+        undefined,
+        {
+          method: 'POST',
+          body: {
+            school_code: passwordResetForm.school_code,
+            whatsapp_phone: passwordResetForm.whatsapp_phone,
+          },
+        },
+      );
+      setPasswordResetChallengeId(result.challenge_id);
+      setPasswordResetForm((current) => ({ ...current, otp: '' }));
+      setLoginView('reset-password');
+      setNotice(result.message);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Permintaan reset kata sandi gagal.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function verifyPasswordReset(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError('');
+    setNotice('');
+    if (passwordResetForm.password !== passwordResetForm.confirm_password) {
+      setError('Konfirmasi kata sandi tidak sama.');
+      return;
+    }
+    if (!validResetPassword) {
+      setError('Kata sandi harus minimal 8 karakter dan memiliki huruf besar, angka, serta simbol.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await request<{ message: string }>(
+        '/school/auth/password-reset/verify',
+        undefined,
+        {
+          method: 'POST',
+          body: {
+            challenge_id: passwordResetChallengeId,
+            otp: passwordResetForm.otp,
+            password: passwordResetForm.password,
+          },
+        },
+      );
+      setLoginForm({
+        school_code: passwordResetForm.school_code,
+        username: passwordResetForm.whatsapp_phone,
+        password: '',
+      });
+      setPasswordResetForm(initialPasswordResetForm);
+      setPasswordResetChallengeId('');
+      setShowResetPassword(false);
+      setLoginView('login');
+      setNotice(result.message);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Kode verifikasi atau reset kata sandi tidak valid.');
     } finally {
       setBusy(false);
     }
@@ -1088,19 +1184,39 @@ export default function App() {
             </span>
           </label>
           <button className="button primary" disabled={busy}>{busy ? 'Memeriksa…' : 'Masuk ke sekolah'}</button>
+          <button
+            className="button secondary forgot-password-button"
+            type="button"
+            onClick={() => {
+              setPasswordResetForm({
+                ...initialPasswordResetForm,
+                school_code: loginForm.school_code,
+                whatsapp_phone: '',
+              });
+              setError('');
+              setNotice('');
+              setLoginView('forgot-password');
+            }}
+          >
+            Lupa kata sandi?
+          </button>
           <button className="button secondary register-school-button" type="button" onClick={() => { setLoginView('register'); setError(''); setNotice(''); }}>Daftarkan sekolah Anda</button>
         </form>}
         {loginView === 'register' && <form className="login-card registration-card" onSubmit={(event) => void startRegistration(event)}>
           <button className="text-button back-link" type="button" onClick={() => { setLoginView('login'); setError(''); setNotice(''); }}>← Kembali ke login</button>
           <div className="brand-mark">RH</div>
-          <p className="eyebrow">PENDAFTARAN SEKOLAH</p>
           <h1>Daftarkan sekolah</h1>
-          <p className="muted">Kami akan mengirim kode verifikasi ke WhatsApp admin. Akun mendapat masa uji coba 30 hari. Kode sekolah 4 digit dibuat otomatis setelah verifikasi dan digunakan saat login.</p>
+          <p className="muted">Kode sekolah 4 digit dibuat otomatis setelah verifikasi dan digunakan saat login.</p>
           {error && <div className="alert error">{error}</div>}
           {notice && <div className="alert success">{notice}</div>}
           <label>Nama sekolah<input autoComplete="organization" maxLength={180} required value={registrationForm.school_name} onChange={(event) => setRegistrationForm((current) => ({ ...current, school_name: event.target.value }))} /></label>
-          <label>Nama admin<input autoComplete="name" maxLength={150} required value={registrationForm.admin_name} onChange={(event) => setRegistrationForm((current) => ({ ...current, admin_name: event.target.value }))} /></label>
-          <label>Nomor WhatsApp admin<input type="tel" inputMode="tel" autoComplete="tel" required value={registrationForm.whatsapp_phone} onChange={(event) => setRegistrationForm((current) => ({ ...current, whatsapp_phone: event.target.value }))} placeholder="081234567890" /></label>
+          <label>Username<input autoComplete="username" maxLength={80} pattern="[A-Za-z0-9._-]{3,80}" required value={registrationForm.username} onChange={(event) => setRegistrationForm((current) => ({ ...current, username: event.target.value }))} /></label>
+          <label>Nomor WhatsApp admin
+            <span className="phone-input-wrap">
+              <span className="phone-prefix">+62</span>
+              <input type="text" inputMode="numeric" autoComplete="off" maxLength={13} pattern="8[0-9]{6,12}" required value={registrationForm.whatsapp_phone} onChange={(event) => setRegistrationForm((current) => ({ ...current, whatsapp_phone: phoneNationalDigits(event.target.value) }))} />
+            </span>
+          </label>
           <label>Kata sandi admin
             <span className="password-input-wrap">
               <input type={showRegistrationPassword ? 'text' : 'password'} autoComplete="new-password" required value={registrationForm.password} onChange={(event) => setRegistrationForm((current) => ({ ...current, password: event.target.value }))} />
@@ -1112,8 +1228,8 @@ export default function App() {
             <li className={passwordChecks.uppercase ? 'valid' : ''}><span>{passwordChecks.uppercase ? '✓' : '○'}</span> Memiliki huruf besar</li>
             <li className={passwordChecks.number ? 'valid' : ''}><span>{passwordChecks.number ? '✓' : '○'}</span> Memiliki angka</li>
             <li className={passwordChecks.symbol ? 'valid' : ''}><span>{passwordChecks.symbol ? '✓' : '○'}</span> Memiliki simbol</li>
-            <li className={passwordChecks.maxBytes ? 'valid' : ''}><span>{passwordChecks.maxBytes ? '✓' : '○'}</span> Maksimal 72 byte</li>
           </ul>
+          {!passwordChecks.maxBytes && registrationForm.password && <p className="muted password-length-error">Kata sandi terlalu panjang.</p>}
           <button className="button primary" disabled={busy || !validRegistrationPassword}>{busy ? 'Mengirim OTP…' : 'Kirim kode verifikasi WhatsApp'}</button>
         </form>}
         {loginView === 'verify' && <form className="login-card registration-card" onSubmit={(event) => void verifyRegistration(event)}>
@@ -1121,12 +1237,62 @@ export default function App() {
           <div className="brand-mark">RH</div>
           <p className="eyebrow">VERIFIKASI WHATSAPP</p>
           <h1>Masukkan kode OTP</h1>
-          <p className="muted">Kode dikirim ke {registrationForm.whatsapp_phone} dan berlaku selama 5 menit.</p>
+          <p className="muted">Kode dikirim ke +62 {registrationForm.whatsapp_phone} dan berlaku selama 5 menit.</p>
           {error && <div className="alert error">{error}</div>}
           {notice && <div className="alert success">{notice}</div>}
           <label>Kode OTP<input autoComplete="one-time-code" inputMode="numeric" pattern="\d{6}" maxLength={6} required value={registrationOtp} onChange={(event) => setRegistrationOtp(event.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="6 digit" /></label>
           <button className="button primary" disabled={busy || registrationOtp.length !== 6}>{busy ? 'Memverifikasi…' : 'Verifikasi dan buat akun'}</button>
           <button className="text-button register-link" type="button" disabled={busy} onClick={() => void startRegistration()}>{busy ? 'Mengirim…' : 'Kirim ulang OTP'}</button>
+        </form>}
+        {loginView === 'forgot-password' && <form className="login-card registration-card" onSubmit={(event) => void startPasswordReset(event)}>
+          <button className="text-button back-link" type="button" onClick={() => { setLoginView('login'); setError(''); setNotice(''); }}>← Kembali ke login</button>
+          <div className="brand-mark">RH</div>
+          <p className="eyebrow">PEMULIHAN AKUN</p>
+          <h1>Lupa kata sandi?</h1>
+          <p className="muted">Masukkan kode sekolah dan nomor WhatsApp yang terdaftar. Jika cocok dengan akun aktif, kode verifikasi akan dikirim ke nomor tersebut.</p>
+          {error && <div className="alert error">{error}</div>}
+          {notice && <div className="alert success">{notice}</div>}
+          <label>Kode sekolah
+            <input inputMode="numeric" autoComplete="organization" maxLength={4} pattern="\d{4}" required value={passwordResetForm.school_code} onChange={(event) => setPasswordResetForm((current) => ({ ...current, school_code: event.target.value.replace(/\D/g, '').slice(0, 4) }))} placeholder="Contoh: 4829" />
+          </label>
+          <label>Nomor WhatsApp terdaftar
+            <span className="phone-input-wrap">
+              <span className="phone-prefix">+62</span>
+              <input type="text" inputMode="numeric" autoComplete="off" maxLength={13} pattern="8[0-9]{6,12}" required value={passwordResetForm.whatsapp_phone} onChange={(event) => setPasswordResetForm((current) => ({ ...current, whatsapp_phone: phoneNationalDigits(event.target.value) }))} />
+            </span>
+          </label>
+          <button className="button primary" disabled={busy}>{busy ? 'Mengirim kode…' : 'Kirim kode reset'}</button>
+        </form>}
+        {loginView === 'reset-password' && <form className="login-card registration-card" onSubmit={(event) => void verifyPasswordReset(event)}>
+          <button className="text-button back-link" type="button" onClick={() => { setLoginView('forgot-password'); setError(''); setNotice(''); }}>← Kembali</button>
+          <div className="brand-mark">RH</div>
+          <p className="eyebrow">PEMULIHAN AKUN</p>
+          <h1>Buat kata sandi baru</h1>
+          {error && <div className="alert error">{error}</div>}
+          {notice && <div className="alert success">{notice}</div>}
+          <label>Kode OTP WhatsApp
+            <input autoComplete="one-time-code" inputMode="numeric" pattern="\d{6}" maxLength={6} required value={passwordResetForm.otp} onChange={(event) => setPasswordResetForm((current) => ({ ...current, otp: event.target.value.replace(/\D/g, '').slice(0, 6) }))} placeholder="6 digit" />
+          </label>
+          <label>Kata sandi baru
+            <span className="password-input-wrap">
+              <input type={showResetPassword ? 'text' : 'password'} autoComplete="new-password" required value={passwordResetForm.password} onChange={(event) => setPasswordResetForm((current) => ({ ...current, password: event.target.value }))} />
+              <button className="password-eye" type="button" onClick={() => setShowResetPassword((visible) => !visible)} aria-label={showResetPassword ? 'Sembunyikan kata sandi' : 'Tampilkan kata sandi'}><PasswordEye visible={showResetPassword} /></button>
+            </span>
+          </label>
+          <ul className="password-checklist" aria-label="Persyaratan kata sandi">
+            <li className={resetPasswordChecks.length ? 'valid' : ''}><span>{resetPasswordChecks.length ? '✓' : '○'}</span> Minimal 8 karakter</li>
+            <li className={resetPasswordChecks.uppercase ? 'valid' : ''}><span>{resetPasswordChecks.uppercase ? '✓' : '○'}</span> Memiliki huruf besar</li>
+            <li className={resetPasswordChecks.number ? 'valid' : ''}><span>{resetPasswordChecks.number ? '✓' : '○'}</span> Memiliki angka</li>
+            <li className={resetPasswordChecks.symbol ? 'valid' : ''}><span>{resetPasswordChecks.symbol ? '✓' : '○'}</span> Memiliki simbol</li>
+          </ul>
+          {!resetPasswordChecks.maxBytes && passwordResetForm.password && <p className="muted password-length-error">Kata sandi terlalu panjang.</p>}
+          <label>Ulangi kata sandi baru
+            <input type="password" autoComplete="new-password" required value={passwordResetForm.confirm_password} onChange={(event) => setPasswordResetForm((current) => ({ ...current, confirm_password: event.target.value }))} />
+          </label>
+          <button className="button primary" disabled={busy || passwordResetForm.otp.length !== 6 || !validResetPassword}>
+            {busy ? 'Mengatur ulang…' : 'Atur ulang kata sandi'}
+          </button>
+          <button className="text-button register-link" type="button" disabled={busy} onClick={() => void startPasswordReset()}>{busy ? 'Mengirim…' : 'Kirim ulang kode OTP'}</button>
         </form>}
       </main>
     );

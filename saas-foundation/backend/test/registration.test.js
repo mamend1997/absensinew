@@ -8,6 +8,7 @@ import {
   normalizeWhatsappPhone,
   registrationSlug,
   validateRegistrationPassword,
+  validateRegistrationUsername,
 } from '../src/core/school-registration.js';
 
 process.env.JWT_SECRET ??= randomBytes(48).toString('base64url');
@@ -31,6 +32,14 @@ test('WhatsApp numbers normalize to E.164 and reject invalid values', () => {
   assert.equal(normalizeWhatsappPhone('6281234567890'), '+6281234567890');
   assert.equal(normalizeWhatsappPhone('+1 (202) 555-0123'), '+12025550123');
   assert.equal(normalizeWhatsappPhone('1234'), null);
+});
+
+test('registration usernames accept supported characters and enforce length', () => {
+  assert.equal(validateRegistrationUsername('operator.admin-01'), true);
+  assert.equal(validateRegistrationUsername('ab'), false);
+  assert.equal(validateRegistrationUsername('user name'), false);
+  assert.equal(validateRegistrationUsername('user@school'), false);
+  assert.equal(validateRegistrationUsername('a'.repeat(81)), false);
 });
 
 test('registration OTPs are six digits and are compared using their challenge binding', () => {

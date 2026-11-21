@@ -179,6 +179,7 @@ CREATE TABLE IF NOT EXISTS users (
     display_name VARCHAR(150) NOT NULL,
     whatsapp_phone VARCHAR(20) NULL,
     password_hash VARCHAR(255) NOT NULL,
+    auth_version INT UNSIGNED NOT NULL DEFAULT 0,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -199,6 +200,7 @@ CREATE TABLE IF NOT EXISTS school_registration_challenges (
     id CHAR(36) NOT NULL,
     school_name VARCHAR(180) NOT NULL,
     admin_name VARCHAR(150) NOT NULL,
+    admin_username VARCHAR(80) NULL,
     whatsapp_phone VARCHAR(20) NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
     otp_hash BINARY(32) NOT NULL,
@@ -211,6 +213,29 @@ CREATE TABLE IF NOT EXISTS school_registration_challenges (
     KEY idx_registration_phone_created (whatsapp_phone, created_at),
     KEY idx_registration_ip_created (request_ip_hash, created_at),
     KEY idx_registration_expiry (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS school_password_reset_challenges (
+    id CHAR(36) NOT NULL,
+    school_code CHAR(4) NOT NULL,
+    sekolah_id BIGINT UNSIGNED NULL,
+    user_id BIGINT UNSIGNED NULL,
+    whatsapp_phone VARCHAR(20) NOT NULL,
+    otp_hash BINARY(32) NOT NULL,
+    expires_at DATETIME NOT NULL,
+    attempt_count TINYINT UNSIGNED NOT NULL DEFAULT 0,
+    request_ip_hash CHAR(64) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at DATETIME NULL,
+    PRIMARY KEY (id),
+    KEY idx_password_reset_phone_created (whatsapp_phone, created_at),
+    KEY idx_password_reset_ip_created (request_ip_hash, created_at),
+    KEY idx_password_reset_user_created (user_id, created_at),
+    KEY idx_password_reset_expiry (expires_at),
+    CONSTRAINT fk_password_reset_school FOREIGN KEY (sekolah_id) REFERENCES schools (id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_password_reset_user FOREIGN KEY (user_id) REFERENCES users (id)
+        ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS participants (

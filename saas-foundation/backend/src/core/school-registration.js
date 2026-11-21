@@ -9,6 +9,10 @@ export function validateRegistrationPassword(password) {
     /[^A-Za-z0-9\s]/.test(password);
 }
 
+export function validateRegistrationUsername(username) {
+  return typeof username === 'string' && /^[A-Za-z0-9._-]{3,80}$/.test(username);
+}
+
 export function normalizeWhatsappPhone(value) {
   if (typeof value !== 'string') return null;
   const compact = value.trim().replace(/[\s().-]/g, '');

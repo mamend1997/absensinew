@@ -40,6 +40,9 @@ export async function ensureRuntimeMigrations(pool) {
   if (columnNames.size && !columnNames.has('whatsapp_phone')) {
     await pool.execute('ALTER TABLE users ADD COLUMN whatsapp_phone VARCHAR(20) NULL AFTER display_name');
   }
+  if (columnNames.size && !columnNames.has('auth_version')) {
+    await pool.execute('ALTER TABLE users ADD COLUMN auth_version INT UNSIGNED NOT NULL DEFAULT 0 AFTER password_hash');
+  }
 
   const [indexes] = await pool.execute(
     `SELECT INDEX_NAME FROM information_schema.STATISTICS
@@ -150,6 +153,7 @@ export async function ensureRuntimeMigrations(pool) {
       id CHAR(36) NOT NULL,
       school_name VARCHAR(180) NOT NULL,
       admin_name VARCHAR(150) NOT NULL,
+      admin_username VARCHAR(80) NULL,
       whatsapp_phone VARCHAR(20) NOT NULL,
       password_hash VARCHAR(255) NOT NULL,
       otp_hash BINARY(32) NOT NULL,
@@ -162,6 +166,40 @@ export async function ensureRuntimeMigrations(pool) {
       KEY idx_registration_phone_created (whatsapp_phone, created_at),
       KEY idx_registration_ip_created (request_ip_hash, created_at),
       KEY idx_registration_expiry (expires_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+  const [registrationColumns] = await pool.execute(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'school_registration_challenges'`,
+  );
+  if (!registrationColumns.some((column) => column.COLUMN_NAME === 'admin_username')) {
+    await pool.execute(
+      'ALTER TABLE school_registration_challenges ADD COLUMN admin_username VARCHAR(80) NULL AFTER admin_name',
+    );
+  }
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS school_password_reset_challenges (
+      id CHAR(36) NOT NULL,
+      school_code CHAR(4) NOT NULL,
+      sekolah_id BIGINT UNSIGNED NULL,
+      user_id BIGINT UNSIGNED NULL,
+      whatsapp_phone VARCHAR(20) NOT NULL,
+      otp_hash BINARY(32) NOT NULL,
+      expires_at DATETIME NOT NULL,
+      attempt_count TINYINT UNSIGNED NOT NULL DEFAULT 0,
+      request_ip_hash CHAR(64) NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      completed_at DATETIME NULL,
+      PRIMARY KEY (id),
+      KEY idx_password_reset_phone_created (whatsapp_phone, created_at),
+      KEY idx_password_reset_ip_created (request_ip_hash, created_at),
+      KEY idx_password_reset_user_created (user_id, created_at),
+      KEY idx_password_reset_expiry (expires_at),
+      CONSTRAINT fk_password_reset_school FOREIGN KEY (sekolah_id)
+        REFERENCES schools (id) ON DELETE CASCADE,
+      CONSTRAINT fk_password_reset_user FOREIGN KEY (user_id)
+        REFERENCES users (id) ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
 }

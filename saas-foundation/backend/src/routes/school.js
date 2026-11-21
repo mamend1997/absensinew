@@ -19,6 +19,7 @@ import {
   normalizeWhatsappPhone,
   registrationSlug,
   validateRegistrationPassword,
+  validateRegistrationUsername,
 } from '../core/school-registration.js';
 import { generateUniqueSchoolCode } from '../core/school-code.js';
 import { provisionSchool } from '../core/school-provision.js';
@@ -108,11 +109,14 @@ async function loadAttendanceSettings(schoolId) {
 }
 
 router.post('/auth/register/start', asyncRoute(async (req, res) => {
-  requireFields(req.body, ['school_name', 'admin_name', 'whatsapp_phone', 'password']);
+  requireFields(req.body, ['school_name', 'username', 'whatsapp_phone', 'password']);
   const schoolName = string(req.body.school_name, 'Nama sekolah', 180);
-  const adminName = string(req.body.admin_name, 'Nama admin', 150);
+  const username = string(req.body.username, 'Username', 80);
+  if (!validateRegistrationUsername(username)) {
+    throw fail(400, 'Username harus terdiri dari 3-80 huruf, angka, titik, garis bawah, atau tanda hubung.', 'VALIDATION_ERROR');
+  }
   const phone = normalizeWhatsappPhone(req.body.whatsapp_phone);
-  if (!phone) throw fail(400, 'Nomor WhatsApp tidak valid. Gunakan format Indonesia, misalnya 081234567890.', 'VALIDATION_ERROR');
+  if (!phone) throw fail(400, 'Nomor WhatsApp tidak valid.', 'VALIDATION_ERROR');
   if (!validateRegistrationPassword(req.body.password)) {
     throw fail(400, 'Kata sandi minimal 8 karakter dan wajib memiliki huruf besar, angka, serta simbol.', 'VALIDATION_ERROR');
   }
@@ -146,10 +150,10 @@ router.post('/auth/register/start', asyncRoute(async (req, res) => {
   const passwordHash = await hashPassword(req.body.password);
   await pool.execute(
     `INSERT INTO school_registration_challenges
-      (id, school_name, admin_name, whatsapp_phone, password_hash,
+      (id, school_name, admin_name, admin_username, whatsapp_phone, password_hash,
        otp_hash, expires_at, request_ip_hash)
-     VALUES (?, ?, ?, ?, ?, ?, UTC_TIMESTAMP() + INTERVAL 5 MINUTE, ?)`,
-    [challengeId, schoolName, adminName, phone, passwordHash,
+     VALUES (?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP() + INTERVAL 5 MINUTE, ?)`,
+    [challengeId, schoolName, username, username, phone, passwordHash,
       hashRegistrationOtp(challengeId, otp, config.jwtSecret), ipHash],
   );
 
@@ -182,7 +186,7 @@ router.post('/auth/register/verify', asyncRoute(async (req, res) => {
   }
   const result = await inTransaction(async (connection) => {
     const [[challenge]] = await connection.execute(
-      `SELECT id, school_name, admin_name, whatsapp_phone, password_hash,
+      `SELECT id, school_name, admin_name, admin_username, whatsapp_phone, password_hash,
               otp_hash, expires_at > UTC_TIMESTAMP() AS otp_is_valid,
               attempt_count, verified_at
          FROM school_registration_challenges WHERE id = ? FOR UPDATE`,
@@ -217,7 +221,7 @@ router.post('/auth/register/verify', asyncRoute(async (req, res) => {
       slug: registrationSlug(challenge.school_name, schoolCode),
       schoolCode,
       name: challenge.school_name,
-      adminUsername: challenge.whatsapp_phone,
+      adminUsername: challenge.admin_username ?? challenge.whatsapp_phone,
       adminName: challenge.admin_name,
       adminPhone: challenge.whatsapp_phone,
       passwordHash: challenge.password_hash,
@@ -228,14 +232,147 @@ router.post('/auth/register/verify', asyncRoute(async (req, res) => {
     );
     return {
       school: { id: schoolId, name: challenge.school_name, school_code: schoolCode },
-      admin_username: challenge.whatsapp_phone,
+      admin_username: challenge.admin_username ?? challenge.whatsapp_phone,
     };
   });
   if (result.error) throw fail(400, result.error, 'INVALID_OTP');
   res.status(201).json({
     ...result,
-    message: 'Pendaftaran berhasil. Simpan kode sekolah dan gunakan nomor WhatsApp sebagai username.',
+    message: 'Pendaftaran berhasil. Simpan kode sekolah dan gunakan username yang Anda daftarkan.',
   });
+}));
+
+router.post('/auth/password-reset/start', asyncRoute(async (req, res) => {
+  requireFields(req.body, ['school_code', 'whatsapp_phone']);
+  if (typeof req.body.school_code !== 'string' || !/^\d{4}$/.test(req.body.school_code)) {
+    throw fail(400, 'Kode sekolah tidak valid.', 'VALIDATION_ERROR');
+  }
+  const phone = normalizeWhatsappPhone(req.body.whatsapp_phone);
+  if (!phone) throw fail(400, 'Nomor WhatsApp tidak valid.', 'VALIDATION_ERROR');
+
+  const [[gateway]] = await pool.execute(
+    `SELECT endpoint_url, token_ciphertext, token_iv, token_auth_tag, is_enabled
+       FROM whatsapp_gateway_config WHERE id = 1`,
+  );
+  if (!gateway?.is_enabled || !gateway.endpoint_url || !gateway.token_ciphertext) {
+    throw fail(503, 'Reset kata sandi belum tersedia karena gateway WhatsApp belum diaktifkan.', 'RESET_UNAVAILABLE');
+  }
+
+  const ipHash = hashRegistrationIp(req.ip ?? req.socket.remoteAddress ?? 'unknown', config.jwtSecret);
+  await pool.execute(
+    'DELETE FROM school_password_reset_challenges WHERE created_at < UTC_TIMESTAMP() - INTERVAL 1 DAY',
+  );
+  const [[limits]] = await pool.execute(
+    `SELECT
+       SUM(whatsapp_phone = ? AND created_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR) AS phone_requests,
+       SUM(request_ip_hash = ? AND created_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR) AS ip_requests
+     FROM school_password_reset_challenges
+     WHERE created_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR`,
+    [phone, ipHash],
+  );
+  if (Number(limits.phone_requests ?? 0) >= 3 || Number(limits.ip_requests ?? 0) >= 20) {
+    throw fail(429, 'Batas permintaan reset tercapai. Coba kembali beberapa saat lagi.', 'RESET_RATE_LIMITED');
+  }
+
+  const [accounts] = await pool.execute(
+    `SELECT u.id, u.sekolah_id
+       FROM schools s JOIN users u ON u.sekolah_id = s.id
+      WHERE s.school_code = ? AND u.whatsapp_phone = ? AND s.is_active = TRUE
+        AND s.subscription_status <> 'suspend' AND u.is_active = TRUE
+      LIMIT 1`,
+    [req.body.school_code, phone],
+  );
+  const account = accounts[0];
+  const challengeId = randomUUID();
+  const otp = createRegistrationOtp();
+  await pool.execute(
+    `INSERT INTO school_password_reset_challenges
+      (id, school_code, sekolah_id, user_id, whatsapp_phone, otp_hash, expires_at, request_ip_hash)
+     VALUES (?, ?, ?, ?, ?, ?, UTC_TIMESTAMP() + INTERVAL 5 MINUTE, ?)`,
+    [challengeId, req.body.school_code, account?.sekolah_id ?? null, account?.id ?? null,
+      phone, hashRegistrationOtp(challengeId, otp, config.jwtSecret), ipHash],
+  );
+
+  if (account) {
+    try {
+      await sendWhatsappMessage(
+        gateway.endpoint_url,
+        decryptGatewayToken(gateway),
+        phone,
+        `Kode reset kata sandi Ruang Hadir: ${otp}. Berlaku 5 menit. Jangan bagikan kode ini kepada siapa pun.`,
+      );
+    } catch (error) {
+      await pool.execute(
+        'UPDATE school_password_reset_challenges SET attempt_count = 5 WHERE id = ?',
+        [challengeId],
+      );
+      throw error;
+    }
+  }
+
+  res.status(202).json({
+    challenge_id: challengeId,
+    expires_in_seconds: 300,
+    message: 'Jika kode sekolah dan nomor WhatsApp cocok dengan akun aktif, kode verifikasi akan dikirim ke nomor tersebut.',
+  });
+}));
+
+router.post('/auth/password-reset/verify', asyncRoute(async (req, res) => {
+  requireFields(req.body, ['challenge_id', 'otp', 'password']);
+  if (typeof req.body.challenge_id !== 'string' || !UUID.test(req.body.challenge_id) ||
+      typeof req.body.otp !== 'string' || !/^\d{6}$/.test(req.body.otp)) {
+    throw fail(400, 'ID permintaan atau OTP tidak valid.', 'VALIDATION_ERROR');
+  }
+  if (!validateRegistrationPassword(req.body.password)) {
+    throw fail(400, 'Kata sandi minimal 8 karakter dan wajib memiliki huruf besar, angka, serta simbol.', 'VALIDATION_ERROR');
+  }
+
+  const result = await inTransaction(async (connection) => {
+    const [[challenge]] = await connection.execute(
+      `SELECT id, sekolah_id, user_id, otp_hash,
+              expires_at > UTC_TIMESTAMP() AS otp_is_valid,
+              attempt_count, completed_at
+         FROM school_password_reset_challenges WHERE id = ? FOR UPDATE`,
+      [req.body.challenge_id],
+    );
+    if (!challenge || challenge.completed_at ||
+        !challenge.otp_is_valid ||
+        Number(challenge.attempt_count) >= 5) {
+      return { error: 'Kode verifikasi tidak valid atau sudah kedaluwarsa.' };
+    }
+    if (!equalOtpHash(
+      hashRegistrationOtp(challenge.id, req.body.otp, config.jwtSecret),
+      challenge.otp_hash,
+    )) {
+      await connection.execute(
+        'UPDATE school_password_reset_challenges SET attempt_count = attempt_count + 1 WHERE id = ?',
+        [challenge.id],
+      );
+      return { error: 'Kode verifikasi tidak valid atau sudah kedaluwarsa.' };
+    }
+    if (!challenge.user_id || !challenge.sekolah_id) {
+      return { error: 'Kode verifikasi tidak valid atau sudah kedaluwarsa.' };
+    }
+
+    const passwordHash = await hashPassword(req.body.password);
+    const [update] = await connection.execute(
+      `UPDATE users SET password_hash = ?, auth_version = auth_version + 1
+        WHERE id = ? AND sekolah_id = ? AND is_active = TRUE`,
+      [passwordHash, challenge.user_id, challenge.sekolah_id],
+    );
+    if (update.affectedRows !== 1) {
+      return { error: 'Kode verifikasi tidak valid atau sudah kedaluwarsa.' };
+    }
+    await connection.execute(
+      `UPDATE school_password_reset_challenges
+          SET completed_at = UTC_TIMESTAMP()
+        WHERE user_id = ? AND completed_at IS NULL`,
+      [challenge.user_id],
+    );
+    return { success: true };
+  });
+  if (result.error) throw fail(400, result.error, 'INVALID_OTP');
+  res.json({ message: 'Kata sandi berhasil direset. Silakan masuk dengan kata sandi baru.' });
 }));
 
 router.post('/auth/login', asyncRoute(async (req, res) => {
@@ -244,7 +381,7 @@ router.post('/auth/login', asyncRoute(async (req, res) => {
     throw fail(401, 'Kode sekolah, username, atau password tidak benar.', 'INVALID_CREDENTIALS');
   }
   const [rows] = await pool.execute(
-    `SELECT u.id, u.sekolah_id, u.username, u.display_name, u.whatsapp_phone, u.password_hash,
+    `SELECT u.id, u.sekolah_id, u.username, u.display_name, u.whatsapp_phone, u.password_hash, u.auth_version,
             u.is_active, s.school_code, s.name AS school_name, s.timezone,
             s.subscription_status, s.subscription_expires_at, r.role_name, r.role_key
        FROM schools s JOIN users u ON u.sekolah_id = s.id
@@ -264,6 +401,7 @@ router.post('/auth/login', asyncRoute(async (req, res) => {
       sub: String(user.id),
       schoolId: String(user.sekolah_id),
       schoolCode: user.school_code,
+      authVersion: Number(user.auth_version ?? 0),
     }),
     token_type: 'Bearer',
     expires_in: process.env.JWT_TTL ?? '8h',
