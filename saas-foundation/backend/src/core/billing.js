@@ -4,16 +4,19 @@ import {
   duitkuInquirySignature,
   duitkuPaymentMethodsSignature,
 } from './billing-signatures.js';
+import { getPlatformPaymentSettings } from './platform-payment-settings.js';
 
 export { duitkuInquirySignature, duitkuPaymentMethodsSignature } from './billing-signatures.js';
 
-function requireProviderConfig(provider) {
+function requireProviderConfig(provider, settings) {
   if (provider === 'xendit' &&
-      (!config.xenditSecretKey || !config.xenditCallbackToken)) {
+      (!settings.xendit.active || !settings.credentials.xendit_secret_key ||
+       !settings.credentials.xendit_callback_token)) {
     throw fail(503, 'Kredensial Xendit belum dikonfigurasi.', 'PAYMENT_PROVIDER_UNAVAILABLE');
   }
   if (provider === 'duitku' &&
-      (!config.duitkuMerchantCode || !config.duitkuApiKey)) {
+      (!settings.duitku.active || !settings.credentials.duitku_merchant_code ||
+       !settings.credentials.duitku_api_key)) {
     throw fail(503, 'Kredensial Duitku belum dikonfigurasi.', 'PAYMENT_PROVIDER_UNAVAILABLE');
   }
 }
@@ -46,28 +49,30 @@ function requirePublicUrl(value, name) {
   return url;
 }
 
-function duitkuBaseUrl() {
-  return config.duitkuEnvironment === 'sandbox'
+function duitkuBaseUrl(environment) {
+  return environment === 'sandbox'
     ? 'https://sandbox.duitku.com/webapi/api/merchant'
     : 'https://passport.duitku.com/webapi/api/merchant';
 }
 
 export async function getDuitkuPaymentMethods(amount) {
-  requireProviderConfig('duitku');
+  const settings = await getPlatformPaymentSettings();
+  requireProviderConfig('duitku', settings);
+  const { duitku_merchant_code: merchantCode, duitku_api_key: apiKey } = settings.credentials;
   const datetime = new Date().toISOString().replace('T', ' ').slice(0, 19);
   const body = {
-    merchantcode: config.duitkuMerchantCode,
+    merchantcode: merchantCode,
     amount,
     datetime,
     signature: duitkuPaymentMethodsSignature(
-      config.duitkuMerchantCode,
+      merchantCode,
       amount,
       datetime,
-      config.duitkuApiKey,
+      apiKey,
     ),
   };
   const result = await postJson(
-    `${duitkuBaseUrl()}/paymentmethod/getpaymentmethod`,
+    `${duitkuBaseUrl(settings.duitku.environment)}/paymentmethod/getpaymentmethod`,
     body,
   );
   if (result.responseCode !== '00' || !Array.isArray(result.paymentFee)) {
@@ -89,12 +94,14 @@ export async function createProviderPayment({
   email,
   phone,
 }) {
-  requireProviderConfig(order.provider);
+  const settings = await getPlatformPaymentSettings();
+  requireProviderConfig(order.provider, settings);
   const publicWeb = requirePublicUrl(config.publicWebUrl, 'PUBLIC_WEB_URL');
   const publicApi = requirePublicUrl(config.publicApiUrl, 'PUBLIC_API_URL');
   const returnUrl = new URL('/?billing=return', publicWeb).toString();
 
   if (order.provider === 'xendit') {
+    const { xendit_secret_key: secretKey } = settings.credentials;
     const result = await postJson(
       'https://api.xendit.co/v2/invoices',
       {
@@ -109,7 +116,7 @@ export async function createProviderPayment({
         metadata: { order_id: order.order_id, school_id: String(school.id) },
       },
       {
-        authorization: `Basic ${Buffer.from(`${config.xenditSecretKey}:`).toString('base64')}`,
+        authorization: `Basic ${Buffer.from(`${secretKey}:`).toString('base64')}`,
         'idempotency-key': order.order_id,
       },
     );
@@ -131,15 +138,19 @@ export async function createProviderPayment({
     };
   }
 
+  const {
+    duitku_merchant_code: merchantCode,
+    duitku_api_key: apiKey,
+  } = settings.credentials;
   const callbackUrl = new URL('/api/payments/duitku/callback', publicApi).toString();
   const signature = duitkuInquirySignature(
-    config.duitkuMerchantCode,
+    merchantCode,
     order.order_id,
     Number(order.amount),
-    config.duitkuApiKey,
+    apiKey,
   );
-  const result = await postJson(`${duitkuBaseUrl()}/v2/inquiry`, {
-    merchantCode: config.duitkuMerchantCode,
+  const result = await postJson(`${duitkuBaseUrl(settings.duitku.environment)}/v2/inquiry`, {
+    merchantCode,
     paymentAmount: Number(order.amount),
     paymentMethod: order.payment_method,
     merchantOrderId: order.order_id,

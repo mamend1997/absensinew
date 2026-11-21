@@ -3,7 +3,7 @@ import { inTransaction, pool } from '../db.js';
 import {
   verifyDuitkuCallbackSignature, verifyXenditCallbackToken,
 } from '../core/billing-signatures.js';
-import { config } from '../config.js';
+import { getPlatformPaymentSettings } from '../core/platform-payment-settings.js';
 import { asyncRoute, fail } from '../http.js';
 
 const router = Router();
@@ -63,7 +63,10 @@ async function updateOrderStatus(provider, orderId, status) {
 }
 
 router.post('/xendit/callback', asyncRoute(async (req, res) => {
-  if (!verifyXenditCallbackToken(req.get('x-callback-token'), config.xenditCallbackToken)) {
+  const settings = await getPlatformPaymentSettings();
+  if (!verifyXenditCallbackToken(
+    req.get('x-callback-token'), settings.credentials.xendit_callback_token,
+  )) {
     throw fail(401, 'Callback Xendit tidak terverifikasi.', 'INVALID_PAYMENT_SIGNATURE');
   }
   const { external_id: orderId, status, amount, currency, id: reference } = req.body ?? {};
@@ -83,8 +86,9 @@ router.post('/xendit/callback', asyncRoute(async (req, res) => {
 
 router.post('/duitku/callback', asyncRoute(async (req, res) => {
   const body = req.body ?? {};
-  if (body.merchantCode !== config.duitkuMerchantCode ||
-      !verifyDuitkuCallbackSignature(body, config.duitkuApiKey)) {
+  const settings = await getPlatformPaymentSettings();
+  if (body.merchantCode !== settings.credentials.duitku_merchant_code ||
+      !verifyDuitkuCallbackSignature(body, settings.credentials.duitku_api_key)) {
     throw fail(401, 'Callback Duitku tidak terverifikasi.', 'INVALID_PAYMENT_SIGNATURE');
   }
   if (typeof body.merchantOrderId !== 'string' ||

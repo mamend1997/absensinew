@@ -17,6 +17,11 @@ import {
   validateOtpRateLimitSettings,
 } from '../core/otp-rate-limit.js';
 import {
+  getAdminPaymentGatewaySettings,
+  getPlatformPaymentSettings,
+  savePaymentGatewaySettings,
+} from '../core/platform-payment-settings.js';
+import {
   decryptGatewayToken, encryptGatewayToken, validateGatewayUrl,
 } from '../core/whatsapp-gateway.js';
 import { inTransaction, pool } from '../db.js';
@@ -332,6 +337,15 @@ router.put('/settings/apk-download', requireSuperAdmin, asyncRoute(async (req, r
 
 router.use(requireSuperAdmin);
 
+router.get('/settings/payment-gateways', asyncRoute(async (req, res) => {
+  res.json({ settings: await getAdminPaymentGatewaySettings() });
+}));
+
+router.put('/settings/payment-gateways', asyncRoute(async (req, res) => {
+  const settings = await savePaymentGatewaySettings(req.body ?? {});
+  res.json({ settings, message: 'Pengaturan payment gateway berhasil disimpan.' });
+}));
+
 router.get('/settings/otp-rate-limit', asyncRoute(async (req, res) => {
   res.json({ settings: await getOtpRateLimitSettings() });
 }));
@@ -377,18 +391,13 @@ router.get('/settings/billing-prices', asyncRoute(async (req, res) => {
   const [[settings]] = await pool.execute(
     'SELECT monthly_price, lifetime_price FROM platform_billing_settings WHERE id = 1',
   );
+  const paymentSettings = await getPlatformPaymentSettings();
   res.json({
     monthly_price: Number(settings?.monthly_price ?? 50000),
     lifetime_price: Number(settings?.lifetime_price ?? 1000000),
     providers: {
-      xendit: Boolean(
-        process.env.XENDIT_SECRET_KEY && process.env.XENDIT_CALLBACK_TOKEN &&
-        process.env.PUBLIC_WEB_URL && process.env.PUBLIC_API_URL,
-      ),
-      duitku: Boolean(
-        process.env.DUITKU_MERCHANT_CODE && process.env.DUITKU_API_KEY &&
-        process.env.PUBLIC_WEB_URL && process.env.PUBLIC_API_URL,
-      ),
+      xendit: paymentSettings.xendit.active,
+      duitku: paymentSettings.duitku.active,
     },
   });
 }));

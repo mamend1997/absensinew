@@ -112,6 +112,18 @@ CREATE TABLE IF NOT EXISTS platform_billing_settings (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 INSERT IGNORE INTO platform_billing_settings (id) VALUES (1);
 
+CREATE TABLE IF NOT EXISTS platform_payment_gateway_settings (
+    id TINYINT UNSIGNED NOT NULL,
+    xendit_enabled BOOLEAN NULL DEFAULT NULL,
+    duitku_enabled BOOLEAN NULL DEFAULT NULL,
+    duitku_environment ENUM('production', 'sandbox') NULL DEFAULT NULL,
+    encrypted_credentials TEXT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    CONSTRAINT chk_platform_payment_gateway_singleton CHECK (id = 1)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+INSERT IGNORE INTO platform_payment_gateway_settings (id) VALUES (1);
+
 CREATE TABLE IF NOT EXISTS platform_backup_settings (
     id TINYINT UNSIGNED NOT NULL,
     enabled BOOLEAN NOT NULL DEFAULT FALSE,

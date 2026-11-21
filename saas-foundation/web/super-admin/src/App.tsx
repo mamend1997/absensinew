@@ -57,6 +57,34 @@ interface BillingPrices {
   providers?: { xendit: boolean; duitku: boolean };
 }
 
+interface PaymentGatewaySettings {
+  credential_source: 'database' | 'environment';
+  callback_urls: { xendit: string; duitku: string };
+  xendit: {
+    configured: boolean;
+    enabled: boolean;
+    secret_key_hint: string;
+    callback_token_hint: string;
+  };
+  duitku: {
+    configured: boolean;
+    enabled: boolean;
+    environment: 'production' | 'sandbox';
+    merchant_code_hint: string;
+    api_key_hint: string;
+  };
+}
+
+interface PaymentGatewayForm {
+  xendit_enabled: boolean;
+  xendit_secret_key: string;
+  xendit_callback_token: string;
+  duitku_enabled: boolean;
+  duitku_environment: 'production' | 'sandbox';
+  duitku_merchant_code: string;
+  duitku_api_key: string;
+}
+
 interface PlatformBackupSettings {
   enabled: boolean;
   backup_time: string;
@@ -156,7 +184,6 @@ export default function App() {
   const [resetChallengeId, setResetChallengeId] = useState('');
   const [resetOtp, setResetOtp] = useState('');
   const [resetPassword, setResetPassword] = useState('');
-  const [resetPasswordConfirmation, setResetPasswordConfirmation] = useState('');
   const [showResetPassword, setShowResetPassword] = useState(false);
   const [recoveryPhone, setRecoveryPhone] = useState('');
   const [recoveryPhoneInput, setRecoveryPhoneInput] = useState('');
@@ -186,6 +213,17 @@ export default function App() {
     providers: { xendit: false, duitku: false },
   });
   const [billingBusy, setBillingBusy] = useState(false);
+  const [paymentGatewaySettings, setPaymentGatewaySettings] = useState<PaymentGatewaySettings | null>(null);
+  const [paymentGatewayForm, setPaymentGatewayForm] = useState<PaymentGatewayForm>({
+    xendit_enabled: false,
+    xendit_secret_key: '',
+    xendit_callback_token: '',
+    duitku_enabled: false,
+    duitku_environment: 'production',
+    duitku_merchant_code: '',
+    duitku_api_key: '',
+  });
+  const [paymentGatewayBusy, setPaymentGatewayBusy] = useState(false);
   const [backupSettings, setBackupSettings] = useState<PlatformBackupSettings>({
     enabled: false,
     backup_time: '02:00',
@@ -313,6 +351,27 @@ export default function App() {
   }, [token]);
 
   useEffect(() => {
+    if (!token) {
+      setPaymentGatewaySettings(null);
+      return;
+    }
+    request<{ settings: PaymentGatewaySettings }>('/super-admin/settings/payment-gateways', token)
+      .then(({ settings }) => {
+        setPaymentGatewaySettings(settings);
+        setPaymentGatewayForm({
+          xendit_enabled: settings.xendit.enabled,
+          xendit_secret_key: '',
+          xendit_callback_token: '',
+          duitku_enabled: settings.duitku.enabled,
+          duitku_environment: settings.duitku.environment,
+          duitku_merchant_code: '',
+          duitku_api_key: '',
+        });
+      })
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Pengaturan payment gateway gagal dimuat.'));
+  }, [token]);
+
+  useEffect(() => {
     if (!token) return;
     request<PlatformBackupSettings>('/super-admin/settings/backup', token)
       .then(setBackupSettings)
@@ -389,10 +448,6 @@ export default function App() {
     event.preventDefault();
     setError('');
     setNotice('');
-    if (resetPassword !== resetPasswordConfirmation) {
-      setError('Konfirmasi kata sandi tidak sama.');
-      return;
-    }
     if (resetPassword.length < 8 || new TextEncoder().encode(resetPassword).length > 72 ||
         !/[A-Z]/.test(resetPassword) || !/\d/.test(resetPassword) ||
         !/[^A-Za-z0-9\s]/.test(resetPassword)) {
@@ -411,7 +466,6 @@ export default function App() {
       );
       setPassword('');
       setResetPassword('');
-      setResetPasswordConfirmation('');
       setResetChallengeId('');
       setShowResetPassword(false);
       setLoginView('login');
@@ -625,6 +679,55 @@ export default function App() {
       setError(reason instanceof Error ? reason.message : 'Harga paket gagal disimpan.');
     } finally {
       setBillingBusy(false);
+    }
+  }
+
+  async function savePaymentGateways(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setPaymentGatewayBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await request<{ settings: PaymentGatewaySettings }>(
+        '/super-admin/settings/payment-gateways',
+        token,
+        {
+          method: 'PUT',
+          body: {
+            xendit: {
+              enabled: paymentGatewayForm.xendit_enabled,
+              secret_key: paymentGatewayForm.xendit_secret_key,
+              callback_token: paymentGatewayForm.xendit_callback_token,
+            },
+            duitku: {
+              enabled: paymentGatewayForm.duitku_enabled,
+              environment: paymentGatewayForm.duitku_environment,
+              merchant_code: paymentGatewayForm.duitku_merchant_code,
+              api_key: paymentGatewayForm.duitku_api_key,
+            },
+          },
+        },
+      );
+      setPaymentGatewaySettings(result.settings);
+      setPaymentGatewayForm((current) => ({
+        ...current,
+        xendit_secret_key: '',
+        xendit_callback_token: '',
+        duitku_merchant_code: '',
+        duitku_api_key: '',
+      }));
+      setBillingPrices((current) => ({
+        ...current,
+        providers: {
+          xendit: result.settings.xendit.enabled && result.settings.xendit.configured,
+          duitku: result.settings.duitku.enabled && result.settings.duitku.configured,
+        },
+      }));
+      setNotice('Pengaturan payment gateway berhasil disimpan.');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Pengaturan payment gateway gagal disimpan.');
+    } finally {
+      setPaymentGatewayBusy(false);
     }
   }
 
@@ -913,7 +1016,6 @@ export default function App() {
               <button className="password-eye" type="button" onClick={() => setShowResetPassword((visible) => !visible)} aria-label={showResetPassword ? 'Sembunyikan kata sandi' : 'Tampilkan kata sandi'}><PasswordEye visible={showResetPassword} /></button>
             </span>
           </label>
-          <label>Ulangi kata sandi baru<input type="password" autoComplete="new-password" required value={resetPasswordConfirmation} onChange={(event) => setResetPasswordConfirmation(event.target.value)} /></label>
           <button className="button primary" disabled={busy || resetOtp.length !== 6}>{busy ? 'Mengatur ulang…' : 'Atur ulang kata sandi'}</button>
           <button className="text-button register-link" type="button" disabled={busy} onClick={() => void startPasswordReset()}>{busy ? 'Mengirim…' : 'Kirim ulang OTP'}</button>
         </form>}
@@ -933,6 +1035,7 @@ export default function App() {
           <div className="metric"><strong>{schools.length}</strong><span>Tenant terdaftar</span></div>
         </section>
         <nav className="section-menu" aria-label="Menu Super Admin">
+          <a href="#payment-gateways">Payment gateway</a>
           <a href="#account-recovery">Nomor pemulihan</a>
           <a href="#automatic-backup">Backup otomatis</a>
           <a href="#otp-rate-limit">Batas OTP</a>
@@ -985,6 +1088,60 @@ export default function App() {
             <label>Langganan bulanan (Rp)<input type="number" min={1000} max={1000000000} step={1000} required value={billingPrices.monthly_price} onChange={(event) => setBillingPrices((current) => ({ ...current, monthly_price: Number(event.target.value) }))} /></label>
             <label>Sekali bayar Lifetime (Rp)<input type="number" min={1000} max={1000000000} step={1000} required value={billingPrices.lifetime_price} onChange={(event) => setBillingPrices((current) => ({ ...current, lifetime_price: Number(event.target.value) }))} /></label>
             <button className="button primary" disabled={billingBusy}>{billingBusy ? 'Menyimpan…' : 'Simpan harga'}</button>
+          </form>
+        </section>
+        <section id="payment-gateways" className="panel payment-gateways-panel">
+          <div>
+            <h2>Pengaturan payment gateway</h2>
+            <p className="muted">Atur kredensial Xendit dan Duitku untuk tagihan sekolah. Kredensial dienkripsi saat disimpan dan tidak pernah ditampilkan kembali.</p>
+            <p className="muted">Kredensial kosong akan mempertahankan nilai tersimpan. Pastikan PUBLIC_WEB_URL dan PUBLIC_API_URL tersedia di environment backend.</p>
+            {paymentGatewaySettings && <span className="gateway-status">
+              Sumber kredensial: {paymentGatewaySettings.credential_source === 'database' ? 'pengaturan platform' : 'environment backend'}
+            </span>}
+          </div>
+          <form className="payment-gateways-form" onSubmit={(event) => void savePaymentGateways(event)}>
+            <fieldset>
+              <legend>Xendit</legend>
+              <small className="payment-callback-url">Callback URL: {paymentGatewaySettings?.callback_urls.xendit || 'Atur PUBLIC_API_URL di environment backend'}</small>
+              <label className="gateway-toggle">
+                <input type="checkbox" checked={paymentGatewayForm.xendit_enabled} onChange={(event) => setPaymentGatewayForm((current) => ({ ...current, xendit_enabled: event.target.checked }))} />
+                Aktifkan Xendit
+              </label>
+              <label>Secret API key
+                <input type="password" autoComplete="new-password" value={paymentGatewayForm.xendit_secret_key} onChange={(event) => setPaymentGatewayForm((current) => ({ ...current, xendit_secret_key: event.target.value }))} placeholder={paymentGatewaySettings?.xendit.secret_key_hint ? `Tersimpan (${paymentGatewaySettings.xendit.secret_key_hint}); kosongkan untuk mempertahankan` : 'Masukkan secret API key Xendit'} />
+              </label>
+              <label>Callback verification token
+                <input type="password" autoComplete="new-password" value={paymentGatewayForm.xendit_callback_token} onChange={(event) => setPaymentGatewayForm((current) => ({ ...current, xendit_callback_token: event.target.value }))} placeholder={paymentGatewaySettings?.xendit.callback_token_hint ? `Tersimpan (${paymentGatewaySettings.xendit.callback_token_hint}); kosongkan untuk mempertahankan` : 'Masukkan callback token Xendit'} />
+              </label>
+              <span className={`gateway-status ${paymentGatewaySettings?.xendit.configured && paymentGatewaySettings.xendit.enabled ? 'ready' : ''}`}>
+                {paymentGatewaySettings?.xendit.configured && paymentGatewaySettings.xendit.enabled ? '● Aktif dan siap' : '○ Belum aktif/terkonfigurasi'}
+              </span>
+            </fieldset>
+            <fieldset>
+              <legend>Duitku</legend>
+              <small className="payment-callback-url">Callback URL: {paymentGatewaySettings?.callback_urls.duitku || 'Atur PUBLIC_API_URL di environment backend'}</small>
+              <label className="gateway-toggle">
+                <input type="checkbox" checked={paymentGatewayForm.duitku_enabled} onChange={(event) => setPaymentGatewayForm((current) => ({ ...current, duitku_enabled: event.target.checked }))} />
+                Aktifkan Duitku
+              </label>
+              <label>Environment
+                <select value={paymentGatewayForm.duitku_environment} onChange={(event) => setPaymentGatewayForm((current) => ({ ...current, duitku_environment: event.target.value as PaymentGatewayForm['duitku_environment'] }))}>
+                  <option value="production">Production</option><option value="sandbox">Sandbox</option>
+                </select>
+              </label>
+              <label>Merchant code
+                <input autoComplete="off" value={paymentGatewayForm.duitku_merchant_code} onChange={(event) => setPaymentGatewayForm((current) => ({ ...current, duitku_merchant_code: event.target.value }))} placeholder={paymentGatewaySettings?.duitku.merchant_code_hint ? `Tersimpan (${paymentGatewaySettings.duitku.merchant_code_hint}); kosongkan untuk mempertahankan` : 'Masukkan merchant code Duitku'} />
+              </label>
+              <label>API key
+                <input type="password" autoComplete="new-password" value={paymentGatewayForm.duitku_api_key} onChange={(event) => setPaymentGatewayForm((current) => ({ ...current, duitku_api_key: event.target.value }))} placeholder={paymentGatewaySettings?.duitku.api_key_hint ? `Tersimpan (${paymentGatewaySettings.duitku.api_key_hint}); kosongkan untuk mempertahankan` : 'Masukkan API key Duitku'} />
+              </label>
+              <span className={`gateway-status ${paymentGatewaySettings?.duitku.configured && paymentGatewaySettings.duitku.enabled ? 'ready' : ''}`}>
+                {paymentGatewaySettings?.duitku.configured && paymentGatewaySettings.duitku.enabled ? '● Aktif dan siap' : '○ Belum aktif/terkonfigurasi'}
+              </span>
+            </fieldset>
+            <button className="button primary" disabled={paymentGatewayBusy || !paymentGatewaySettings}>
+              {paymentGatewayBusy ? 'Menyimpan…' : 'Simpan pengaturan gateway'}
+            </button>
           </form>
         </section>
         <section id="account-recovery" className="panel recovery-phone-panel">

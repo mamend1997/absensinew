@@ -29,6 +29,7 @@ import {
 } from '../core/whatsapp-gateway.js';
 import { config } from '../config.js';
 import { createDeviceApiKey, hashPassword, signToken, verifyPassword } from '../security.js';
+import { getPlatformPaymentSettings } from '../core/platform-payment-settings.js';
 
 const router = Router();
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -831,6 +832,7 @@ router.get('/billing', requireSchoolUser, asyncRoute(async (req, res) => {
       WHERE sekolah_id = ? ORDER BY created_at DESC LIMIT 10`,
     [req.schoolUser.sekolah_id],
   );
+  const paymentSettings = await getPlatformPaymentSettings();
   res.json({
     subscription: {
       status: school.subscription_status,
@@ -843,14 +845,8 @@ router.get('/billing', requireSchoolUser, asyncRoute(async (req, res) => {
       lifetime: Number(prices?.lifetime_price ?? 1000000),
     },
     providers: {
-      xendit: Boolean(
-        config.xenditSecretKey && config.xenditCallbackToken &&
-        config.publicWebUrl && config.publicApiUrl,
-      ),
-      duitku: Boolean(
-        config.duitkuMerchantCode && config.duitkuApiKey &&
-        config.publicWebUrl && config.publicApiUrl,
-      ),
+      xendit: paymentSettings.xendit.active,
+      duitku: paymentSettings.duitku.active,
     },
     orders: orders.map((order) => ({ ...order, amount: Number(order.amount) })),
   });

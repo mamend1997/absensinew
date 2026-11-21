@@ -135,7 +135,6 @@ const initialPasswordResetForm = {
   whatsapp_phone: '',
   otp: '',
   password: '',
-  confirm_password: '',
 };
 
 const initialSettings: OperationalSettings = {
@@ -680,10 +679,6 @@ export default function App() {
     event.preventDefault();
     setError('');
     setNotice('');
-    if (passwordResetForm.password !== passwordResetForm.confirm_password) {
-      setError('Konfirmasi kata sandi tidak sama.');
-      return;
-    }
     if (!validResetPassword) {
       setError('Kata sandi harus minimal 8 karakter dan memiliki huruf besar, angka, serta simbol.');
       return;
@@ -1286,9 +1281,6 @@ export default function App() {
             <li className={resetPasswordChecks.symbol ? 'valid' : ''}><span>{resetPasswordChecks.symbol ? '✓' : '○'}</span> Memiliki simbol</li>
           </ul>
           {!resetPasswordChecks.maxBytes && passwordResetForm.password && <p className="muted password-length-error">Kata sandi terlalu panjang.</p>}
-          <label>Ulangi kata sandi baru
-            <input type="password" autoComplete="new-password" required value={passwordResetForm.confirm_password} onChange={(event) => setPasswordResetForm((current) => ({ ...current, confirm_password: event.target.value }))} />
-          </label>
           <button className="button primary" disabled={busy || passwordResetForm.otp.length !== 6 || !validResetPassword}>
             {busy ? 'Mengatur ulang…' : 'Atur ulang kata sandi'}
           </button>

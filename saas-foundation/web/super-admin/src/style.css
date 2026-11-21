@@ -47,7 +47,7 @@ input:focus, select:focus { border-color: #39845d; box-shadow: 0 0 0 3px #39845d
 .section-menu { position: sticky; top: 78px; z-index: 2; display: flex; flex-wrap: wrap; gap: 7px; border: 1px solid #e0e8e2; border-radius: 12px; background: #ffffffed; padding: 8px; backdrop-filter: blur(8px); }
 .section-menu a { display: inline-flex; min-height: 34px; align-items: center; border-radius: 8px; background: #eff5f0; padding: 0 12px; color: #285d43; font-size: 11px; font-weight: 800; text-decoration: none; }
 .section-menu a:hover { background: #dceee1; }
-#account-recovery, #automatic-backup, #otp-rate-limit, #school-tenants { scroll-margin-top: 88px; }
+#payment-gateways, #account-recovery, #automatic-backup, #otp-rate-limit, #school-tenants { scroll-margin-top: 88px; }
 .page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; }
 .page-heading .eyebrow { margin-bottom: 9px; }
 .page-heading h1 { margin-bottom: 6px; }
@@ -122,6 +122,17 @@ td small { margin-top: 3px; color: #7d8b84; font-size: 9px; }
 .billing-prices-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) auto; align-items: end; gap: 10px; }
 .billing-prices-form label { font-size: 10px; }
 .billing-prices-form input { min-height: 38px; font-size: 11px; }
+.payment-gateways-panel { display: grid; grid-template-columns: minmax(0, .85fr) minmax(320px, 1.15fr); align-items: start; gap: 22px; }
+.payment-gateways-panel .muted { margin: 6px 0; font-size: 11px; }
+.payment-gateways-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 12px; }
+.payment-gateways-form fieldset { display: grid; align-content: start; gap: 10px; min-width: 0; border: 1px solid #e0e8e2; border-radius: 11px; padding: 12px; }
+.payment-gateways-form legend { padding: 0 5px; color: #28443a; font-size: 12px; font-weight: 800; }
+.payment-callback-url { overflow-wrap: anywhere; color: #697973; font-size: 9px; line-height: 1.5; }
+.payment-gateways-form label { font-size: 10px; }
+.payment-gateways-form input, .payment-gateways-form select { min-height: 38px; font-size: 11px; }
+.payment-gateways-form .gateway-toggle { display: flex !important; grid-template-columns: none; align-items: center; gap: 8px !important; }
+.payment-gateways-form .gateway-toggle input { width: 16px; min-height: 16px; }
+.payment-gateways-form > .button { grid-column: 1 / -1; }
 .otp-rate-limit-panel { display: grid; grid-template-columns: minmax(0, .85fr) minmax(320px, 1.15fr); align-items: center; gap: 22px; }
 .otp-rate-limit-panel .muted { margin: 6px 0 0; font-size: 11px; }
 .otp-rate-limit-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) auto; align-items: end; gap: 10px; }
@@ -153,7 +164,7 @@ td small { margin-top: 3px; color: #7d8b84; font-size: 9px; }
 .alert.error { border: 1px solid #f3ceca; background: #fff1ef; color: #8d322a; }
 .alert.success { border: 1px solid #cce7d4; background: #effaf2; color: #21633d; }
 .empty { padding: 24px; color: #78867f; text-align: center; }
-@media (max-width: 900px) { .create-form { grid-template-columns: repeat(2, minmax(0, 1fr)); } .create-form .button { align-self: end; } .branding-panel, .name-panel, .billing-prices-panel, .otp-rate-limit-panel, .platform-backup-panel, .recovery-phone-panel, .gateway-panel, .apk-panel { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .create-form { grid-template-columns: repeat(2, minmax(0, 1fr)); } .create-form .button { align-self: end; } .branding-panel, .name-panel, .billing-prices-panel, .payment-gateways-panel, .otp-rate-limit-panel, .platform-backup-panel, .recovery-phone-panel, .gateway-panel, .apk-panel { grid-template-columns: 1fr; } }
 @media (max-width: 600px) {
   .topbar { height: 60px; padding: 0 14px; }
   .content { gap: 14px; padding: 22px 13px 40px; }
@@ -168,6 +179,8 @@ td small { margin-top: 3px; color: #7d8b84; font-size: 9px; }
   .branding-form { grid-template-columns: 64px 1fr; }
   .name-form { grid-template-columns: 1fr; }
   .billing-prices-form { grid-template-columns: 1fr; }
+  .payment-gateways-form { grid-template-columns: 1fr; }
+  .payment-gateways-form > .button { grid-column: auto; }
   .otp-rate-limit-form { grid-template-columns: 1fr; }
   .recovery-phone-form { grid-template-columns: 1fr; }
   .section-menu { top: 60px; }
