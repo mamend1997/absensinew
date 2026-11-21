@@ -1,6 +1,7 @@
 package id.absensi.ruanghadir;
 
 import android.os.Bundle;
+import android.view.WindowManager;
 
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
@@ -13,13 +14,28 @@ public class MainActivity extends BridgeActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         getBridge().getWebView().getSettings().setMediaPlaybackRequiresUserGesture(false);
+        clearKeepScreenOn();
         hideSystemBars();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        clearKeepScreenOn();
     }
 
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        if (hasFocus) hideSystemBars();
+        if (hasFocus) {
+            clearKeepScreenOn();
+            hideSystemBars();
+        }
+    }
+
+    private void clearKeepScreenOn() {
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        getBridge().getWebView().setKeepScreenOn(false);
     }
 
     private void hideSystemBars() {

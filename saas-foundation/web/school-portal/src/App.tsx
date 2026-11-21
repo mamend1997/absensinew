@@ -359,7 +359,7 @@ const initialSettings: OperationalSettings = {
   participant_overrides: [],
 };
 const initialScannerPreferences: ScannerPreferences = {
-  cameraFacing: 'user',
+  cameraFacing: 'environment',
   scanSpeed: 'fast',
   usbScannerEnabled: true,
 };
@@ -821,6 +821,9 @@ export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const controlsRef = useRef<{ stop: () => void } | null>(null);
   const cameraStartGenerationRef = useRef(0);
+  const handleScanRef = useRef<
+    (rawValue: string, scanMethod?: 'SCAN_QR' | 'MANUAL_INPUT') => Promise<boolean>
+  >(async () => false);
   const wedgeTimerRef = useRef<number | undefined>(undefined);
   const scanFeedbackTimerRef = useRef<number | undefined>(undefined);
   const scanPopupTimerRef = useRef<number | undefined>(undefined);
@@ -921,6 +924,13 @@ export default function App() {
   const invalidImportRowCount = participantImportPreview.filter((row) =>
     !row.full_name.trim() || !classrooms.some((classroom) => classroom.id === row.classroom_id)).length;
   const connected = online && !offlineMode;
+  const markOfflineIfNeeded = (reason: unknown) => {
+    if (!isNetworkUnavailableError(reason)) return false;
+    setOfflineMode(true);
+    if (!navigator.onLine) setOnline(false);
+    return true;
+  };
+
   useEffect(() => {
     if (!session) return;
     let active = true;
@@ -1010,7 +1020,11 @@ export default function App() {
         ...result.settings,
         endpoint_url: result.settings.endpoint_url || DEFAULT_WHATSAPP_GATEWAY_URL,
       }))
-      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Pengaturan WhatsApp sekolah gagal dimuat.'));
+      .catch((reason: unknown) => {
+        if (!markOfflineIfNeeded(reason)) {
+          setError(reason instanceof Error ? reason.message : 'Pengaturan WhatsApp sekolah gagal dimuat.');
+        }
+      });
   }, [session?.token]);
 
   useEffect(() => {
@@ -1031,7 +1045,9 @@ export default function App() {
         setSchoolBrandingName(branding.application_name);
       })
       .catch((reason: unknown) => {
-        if (active) setError(reason instanceof Error ? reason.message : 'Identitas sekolah gagal dimuat.');
+        if (active && !markOfflineIfNeeded(reason)) {
+          setError(reason instanceof Error ? reason.message : 'Identitas sekolah gagal dimuat.');
+        }
       });
     return () => { active = false; };
   }, [session?.token, session?.school.id]);
@@ -1043,7 +1059,11 @@ export default function App() {
       session.token,
     )
       .then((result) => setGoogleSheetsSettings(result.settings))
-      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Pengaturan Google Sheets gagal dimuat.'));
+      .catch((reason: unknown) => {
+        if (!markOfflineIfNeeded(reason)) {
+          setError(reason instanceof Error ? reason.message : 'Pengaturan Google Sheets gagal dimuat.');
+        }
+      });
   }, [session?.token]);
 
   useEffect(() => {
@@ -1060,7 +1080,9 @@ export default function App() {
           }));
         })
         .catch((reason: unknown) => {
-          if (active) setError(reason instanceof Error ? reason.message : 'Status sinkronisasi Google Sheets gagal dimuat.');
+          if (active && !markOfflineIfNeeded(reason)) {
+            setError(reason instanceof Error ? reason.message : 'Status sinkronisasi Google Sheets gagal dimuat.');
+          }
         });
     }, 15000);
     return () => {
@@ -1084,31 +1106,45 @@ export default function App() {
     if (!session || page !== 'scanner' || !scannerPreferencesReady) return;
     let orientationTimer: number | undefined;
     let isLandscape = window.matchMedia('(orientation: landscape)').matches;
+    const stopCamera = () => {
+      cameraStartGenerationRef.current += 1;
+      controlsRef.current?.stop();
+      controlsRef.current = null;
+      const video = videoRef.current;
+      if (video?.srcObject instanceof MediaStream) {
+        video.srcObject.getTracks().forEach((track) => track.stop());
+        video.srcObject = null;
+      }
+      setCameraActive(false);
+    };
+    const resumeCamera = () => {
+      if (!document.hidden) void startCamera(scannerPreferencesRef.current);
+    };
     const handleOrientationChange = () => {
       const nextIsLandscape = window.matchMedia('(orientation: landscape)').matches;
       if (nextIsLandscape === isLandscape) return;
       isLandscape = nextIsLandscape;
       if (orientationTimer !== undefined) window.clearTimeout(orientationTimer);
+      stopCamera();
       orientationTimer = window.setTimeout(() => {
         orientationTimer = undefined;
-        controlsRef.current?.stop();
-        controlsRef.current = null;
-        cameraStartGenerationRef.current += 1;
-        setCameraActive(false);
-        void startCamera(scannerPreferencesRef.current);
+        resumeCamera();
       }, 300);
+    };
+    const handleVisibilityChange = () => {
+      if (document.hidden) stopCamera();
+      else resumeCamera();
     };
     window.addEventListener('orientationchange', handleOrientationChange);
     window.addEventListener('resize', handleOrientationChange);
-    void startCamera(scannerPreferences);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    resumeCamera();
     return () => {
       window.removeEventListener('orientationchange', handleOrientationChange);
       window.removeEventListener('resize', handleOrientationChange);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       if (orientationTimer !== undefined) window.clearTimeout(orientationTimer);
-      cameraStartGenerationRef.current += 1;
-      controlsRef.current?.stop();
-      controlsRef.current = null;
-      setCameraActive(false);
+      stopCamera();
     };
   }, [page, session?.school.id, scannerPreferencesReady]);
 
@@ -1708,6 +1744,8 @@ export default function App() {
     }
   }
 
+  handleScanRef.current = handleScan;
+
   function showScanFeedback(message: string, success: boolean) {
     setError('');
     setNotice('');
@@ -1772,10 +1810,16 @@ export default function App() {
         },
         videoRef.current,
         (result) => {
-          if (result) void handleScan(result.getText());
+          if (
+            result &&
+            !document.hidden &&
+            cameraStartGenerationRef.current === generation
+          ) {
+            void handleScanRef.current(result.getText());
+          }
         },
       );
-      if (cameraStartGenerationRef.current !== generation) {
+      if (cameraStartGenerationRef.current !== generation || document.hidden) {
         controls.stop();
         return;
       }
@@ -2446,33 +2490,46 @@ export default function App() {
     setScannerMenuOpen(true);
   }
 
+  function continueToScannerMenuTarget(target: ScannerMenuTarget) {
+    setScannerMenuOpen(false);
+    setScannerMenuPin('');
+    if (target === 'manual-attendance') {
+      setManualAttendanceQuery('');
+      setManualParticipantId('');
+      setManualAttendanceOpen(true);
+    } else if (target === 'reset-history') {
+      setError('');
+      setNotice('');
+      void resetLocalHistory();
+    } else {
+      setPage(target);
+    }
+    setError('');
+    setNotice('');
+  }
+
   async function unlockScannerMenu(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!session || !scannerMenuTarget) return;
     const target = scannerMenuTarget;
+    if (!connected || !navigator.onLine) {
+      setOfflineMode(true);
+      continueToScannerMenuTarget(target);
+      return;
+    }
     setScannerUnlockBusy(true);
     try {
       await request('/school/settings/scanner-pin/verify', session.token, {
         method: 'POST',
         body: { pin: scannerMenuPin },
       });
-      setScannerMenuOpen(false);
-      setScannerMenuPin('');
-      if (target === 'manual-attendance') {
-        setManualAttendanceQuery('');
-        setManualParticipantId('');
-        setManualAttendanceOpen(true);
-      } else if (target === 'reset-history') {
-        setError('');
-        setNotice('');
-        void resetLocalHistory();
-      } else {
-        setPage(target);
-      }
-      setError('');
-      setNotice('');
+      continueToScannerMenuTarget(target);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'PIN scanner tidak benar.');
+      if (markOfflineIfNeeded(reason)) {
+        continueToScannerMenuTarget(target);
+      } else {
+        setError(reason instanceof Error ? reason.message : 'PIN scanner tidak benar.');
+      }
     } finally {
       setScannerUnlockBusy(false);
     }

@@ -119,7 +119,7 @@ Portal terbaru di `web/school-portal` sudah memiliki konfigurasi Capacitor Andro
 Aplikasi ini memakai `https://localhost` sebagai origin Android untuk mendukung
 konteks aman kamera. API harus tersedia melalui HTTPS dan konfigurasi `CORS_ORIGINS`
 backend perlu mengizinkan `https://localhost` selain origin portal web.
-Scanner menggunakan kamera depan dan mode scan cepat secara default; arah kamera,
+Scanner menggunakan kamera belakang dan mode scan cepat secara default; arah kamera,
 mode cepat/seimbang, serta field scanner barcode USB/Bluetooth dapat diatur pada
 Pengaturan dan disimpan lokal per perangkat. Jika field USB/Bluetooth dinonaktifkan,
 field tersebut disembunyikan dari layar scanner.

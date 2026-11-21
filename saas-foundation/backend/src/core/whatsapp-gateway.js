@@ -132,7 +132,7 @@ export async function sendWhatsappMessage(urlValue, token, phone, message) {
   }
   const body = JSON.stringify(createWhatsappGatewayPayload(phone, message));
   const address = addresses[0];
-  await new Promise((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     const request = httpsRequest({
       protocol: 'https:',
       hostname: url.hostname,
