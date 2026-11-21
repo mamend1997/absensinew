@@ -761,7 +761,8 @@ router.put('/settings', requireSchoolUser, requirePermission('settings.operation
 
 router.get('/settings/whatsapp-gateway', requireSchoolUser, requirePermission('settings.operational.manage'), asyncRoute(async (req, res) => {
   const [[settings]] = await pool.execute(
-    `SELECT endpoint_url, token_ciphertext, is_enabled
+    `SELECT endpoint_url, token_ciphertext, is_enabled,
+            last_test_at, last_test_status, last_test_message
        FROM school_whatsapp_gateway_config WHERE sekolah_id = ?`,
     [req.schoolUser.sekolah_id],
   );
@@ -771,6 +772,9 @@ router.get('/settings/whatsapp-gateway', requireSchoolUser, requirePermission('s
       is_enabled: Boolean(settings?.is_enabled),
       is_configured: Boolean(settings?.endpoint_url && settings?.token_ciphertext),
       token_hint: settings?.token_ciphertext ? 'Token tersimpan aman' : '',
+      last_test_at: settings?.last_test_at ?? null,
+      last_test_status: settings?.last_test_status ?? null,
+      last_test_message: settings?.last_test_message ?? null,
     },
   });
 }));
@@ -796,15 +800,57 @@ router.put('/settings/whatsapp-gateway', requireSchoolUser, requirePermission('s
   }
   await pool.execute(
     `INSERT INTO school_whatsapp_gateway_config
-      (sekolah_id, endpoint_url, token_ciphertext, token_iv, token_auth_tag, is_enabled)
-     VALUES (?, ?, ?, ?, ?, ?)
+      (sekolah_id, endpoint_url, token_ciphertext, token_iv, token_auth_tag, is_enabled,
+       last_test_at, last_test_status, last_test_message)
+     VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
      ON DUPLICATE KEY UPDATE endpoint_url = VALUES(endpoint_url),
        token_ciphertext = VALUES(token_ciphertext), token_iv = VALUES(token_iv),
-       token_auth_tag = VALUES(token_auth_tag), is_enabled = VALUES(is_enabled)`,
+       token_auth_tag = VALUES(token_auth_tag), is_enabled = VALUES(is_enabled),
+       last_test_at = NULL, last_test_status = NULL, last_test_message = NULL`,
     [req.schoolUser.sekolah_id, settings.endpointUrl, encrypted?.ciphertext ?? null,
       encrypted?.iv ?? null, encrypted?.authTag ?? null, settings.isEnabled],
   );
   res.json({ message: 'Pengaturan WhatsApp sekolah disimpan.' });
+}));
+
+router.post('/settings/whatsapp-gateway/test', requireSchoolUser, requirePermission('settings.operational.manage'), asyncRoute(async (req, res) => {
+  const phone = normalizeWhatsappPhone(req.body?.phone);
+  if (!phone) throw fail(400, 'Nomor WhatsApp uji coba tidak valid.', 'VALIDATION_ERROR');
+  const [[gateway]] = await pool.execute(
+    `SELECT endpoint_url, token_ciphertext, token_iv, token_auth_tag
+       FROM school_whatsapp_gateway_config WHERE sekolah_id = ?`,
+    [req.schoolUser.sekolah_id],
+  );
+  let status = 'failed';
+  let message = 'Gateway WhatsApp sekolah belum dikonfigurasi.';
+  if (gateway?.endpoint_url && gateway.token_ciphertext) {
+    try {
+      await sendWhatsappMessage(
+        gateway.endpoint_url,
+        decryptGatewayToken(gateway),
+        phone,
+        'Uji koneksi gateway WhatsApp sekolah. Jika pesan ini diterima, gateway siap digunakan.',
+      );
+      status = 'success';
+      message = 'Gateway menerima permintaan (HTTP 2xx). Periksa WhatsApp penerima untuk memastikan pesan diterima.';
+    } catch (error) {
+      message = error instanceof Error ? error.message.slice(0, 500) : 'Pengiriman pesan uji gagal.';
+    }
+  }
+  await pool.execute(
+    `INSERT INTO school_whatsapp_gateway_config
+      (sekolah_id, last_test_at, last_test_status, last_test_message)
+     VALUES (?, UTC_TIMESTAMP(), ?, ?)
+     ON DUPLICATE KEY UPDATE last_test_at = VALUES(last_test_at),
+       last_test_status = VALUES(last_test_status), last_test_message = VALUES(last_test_message)`,
+    [req.schoolUser.sekolah_id, status, message],
+  );
+  const [[log]] = await pool.execute(
+    `SELECT last_test_at, last_test_status, last_test_message
+       FROM school_whatsapp_gateway_config WHERE sekolah_id = ?`,
+    [req.schoolUser.sekolah_id],
+  );
+  res.json({ log });
 }));
 
 router.delete('/settings/whatsapp-gateway', requireSchoolUser, requirePermission('settings.operational.manage'), asyncRoute(async (req, res) => {

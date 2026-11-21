@@ -99,6 +99,9 @@ interface SchoolWhatsappGatewaySettings {
   is_enabled: boolean;
   is_configured: boolean;
   token_hint: string;
+  last_test_at: string | null;
+  last_test_status: 'success' | 'failed' | null;
+  last_test_message: string | null;
 }
 interface QueuedScan {
   id_unik: string;
@@ -304,9 +307,14 @@ export default function App() {
     is_enabled: false,
     is_configured: false,
     token_hint: '',
+    last_test_at: null,
+    last_test_status: null,
+    last_test_message: null,
   });
   const [whatsappToken, setWhatsappToken] = useState('');
   const [whatsappBusy, setWhatsappBusy] = useState(false);
+  const [whatsappTestPhone, setWhatsappTestPhone] = useState('');
+  const [whatsappTestBusy, setWhatsappTestBusy] = useState(false);
   const [reportRows, setReportRows] = useState<ReportRow[]>([]);
   const [reportFrom, setReportFrom] = useState(initialDate);
   const [reportTo, setReportTo] = useState(initialDate);
@@ -1043,6 +1051,27 @@ export default function App() {
     }
   }
 
+  async function testSchoolWhatsappGateway() {
+    if (!session) return;
+    setWhatsappTestBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await request<{ log: Pick<SchoolWhatsappGatewaySettings, 'last_test_at' | 'last_test_status' | 'last_test_message'> }>(
+        '/school/settings/whatsapp-gateway/test',
+        session.token,
+        { method: 'POST', body: { phone: `+62${whatsappTestPhone}` } },
+      );
+      setWhatsappSettings((current) => ({ ...current, ...result.log }));
+      if (result.log.last_test_status === 'success') setNotice('Tes WA gateway sekolah berhasil dikirim.');
+      else setError(result.log.last_test_message ?? 'Tes WA gateway sekolah gagal.');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Tes WA gateway sekolah gagal.');
+    } finally {
+      setWhatsappTestBusy(false);
+    }
+  }
+
   async function startBillingPayment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!session) return;
@@ -1073,7 +1102,10 @@ export default function App() {
     setNotice('');
     try {
       await request('/school/settings/whatsapp-gateway', session.token, { method: 'DELETE' });
-      setWhatsappSettings({ endpoint_url: '', is_enabled: false, is_configured: false, token_hint: '' });
+      setWhatsappSettings({
+        endpoint_url: '', is_enabled: false, is_configured: false, token_hint: '',
+        last_test_at: null, last_test_status: null, last_test_message: null,
+      });
       setWhatsappToken('');
       setNotice('Konfigurasi WhatsApp gateway sekolah dihapus.');
     } catch (reason) {
@@ -1434,7 +1466,7 @@ export default function App() {
               {can('settings.operational.manage') && <section className="panel school-whatsapp-panel">
                 <div>
                   <h2>Gateway WhatsApp sekolah</h2>
-                  <p className="muted">Konfigurasi ini khusus untuk tenant sekolah ini. Token dienkripsi di database dan tidak ditampilkan kembali.</p>
+                  <p className="muted">Konfigurasi ini khusus untuk tenant sekolah ini. Token dienkripsi di database dan tidak ditampilkan kembali. Simpan perubahan sebelum menguji gateway.</p>
                   <span className={`gateway-status ${whatsappSettings.is_enabled && whatsappSettings.is_configured ? 'ready' : ''}`}>
                     {whatsappSettings.is_enabled && whatsappSettings.is_configured ? '● Aktif' : '○ Belum aktif'}
                   </span>
@@ -1445,11 +1477,23 @@ export default function App() {
                     <input type="password" autoComplete="new-password" placeholder={whatsappSettings.is_configured ? 'Tersimpan — kosongkan untuk mempertahankan' : 'Masukkan token gateway'} value={whatsappToken} onChange={(event) => setWhatsappToken(event.target.value)} />
                   </label>
                   {whatsappSettings.is_configured && <small className="gateway-hint">{whatsappSettings.token_hint}</small>}
+                  <label>Nomor WhatsApp untuk tes
+                    <span className="phone-input-wrap">
+                      <span className="phone-prefix">+62</span>
+                      <input type="text" inputMode="numeric" autoComplete="off" maxLength={13} pattern="8[0-9]{6,12}" value={whatsappTestPhone} onChange={(event) => setWhatsappTestPhone(phoneNationalDigits(event.target.value))} />
+                    </span>
+                  </label>
                   <label className="school-whatsapp-toggle"><input type="checkbox" checked={whatsappSettings.is_enabled} onChange={(event) => setWhatsappSettings((current) => ({ ...current, is_enabled: event.target.checked }))} /> Aktifkan konfigurasi gateway</label>
                   <div className="heading-actions">
                     <button className="button primary" disabled={whatsappBusy}>{whatsappBusy ? 'Menyimpan…' : 'Simpan pengaturan'}</button>
-                    <button className="button secondary" type="button" disabled={whatsappBusy || !whatsappSettings.is_configured} onClick={() => void clearSchoolWhatsappSettings()}>Hapus konfigurasi</button>
+                    <button className="button secondary" type="button" disabled={whatsappBusy || whatsappTestBusy || !whatsappSettings.is_configured || !/^8[0-9]{6,12}$/.test(whatsappTestPhone)} onClick={() => void testSchoolWhatsappGateway()}>{whatsappTestBusy ? 'Mengirim tes…' : 'Tes WA gateway'}</button>
+                    <button className="button secondary" type="button" disabled={whatsappBusy || whatsappTestBusy || !whatsappSettings.is_configured} onClick={() => void clearSchoolWhatsappSettings()}>Hapus konfigurasi</button>
                   </div>
+                  {whatsappSettings.last_test_status && <div className={`gateway-test-log ${whatsappSettings.last_test_status}`}>
+                    <strong>Log tes terakhir · {whatsappSettings.last_test_status === 'success' ? 'Berhasil' : 'Gagal'}</strong>
+                    {whatsappSettings.last_test_at && <time>{whatsappSettings.last_test_at} UTC</time>}
+                    <p>{whatsappSettings.last_test_message}</p>
+                  </div>}
                 </form>
               </section>}
             </section>

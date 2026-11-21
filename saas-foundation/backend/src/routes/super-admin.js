@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { config } from '../config.js';
@@ -31,6 +31,7 @@ import { hashPassword, signToken, verifyPassword } from '../security.js';
 import {
   createRegistrationOtp,
   equalOtpHash,
+  generateRegistrationPassword,
   hashRegistrationIp,
   hashRegistrationOtp,
   normalizeWhatsappPhone,
@@ -263,7 +264,8 @@ router.delete('/branding/logo', requireSuperAdmin, asyncRoute(async (req, res) =
 
 router.get('/settings/whatsapp-gateway', requireSuperAdmin, asyncRoute(async (req, res) => {
   const [[settings]] = await pool.execute(
-    `SELECT endpoint_url, token_ciphertext, is_enabled
+    `SELECT endpoint_url, token_ciphertext, is_enabled,
+            last_test_at, last_test_status, last_test_message
        FROM whatsapp_gateway_config WHERE id = 1`,
   );
   res.json({
@@ -272,6 +274,9 @@ router.get('/settings/whatsapp-gateway', requireSuperAdmin, asyncRoute(async (re
       is_enabled: Boolean(settings?.is_enabled),
       is_configured: Boolean(settings?.endpoint_url && settings?.token_ciphertext),
       token_hint: settings?.token_ciphertext ? 'Token tersimpan aman' : '',
+      last_test_at: settings?.last_test_at ?? null,
+      last_test_status: settings?.last_test_status ?? null,
+      last_test_message: settings?.last_test_message ?? null,
     },
   });
 }));
@@ -295,22 +300,60 @@ router.put('/settings/whatsapp-gateway', requireSuperAdmin, asyncRoute(async (re
   }
   await pool.execute(
     `INSERT INTO whatsapp_gateway_config
-      (id, endpoint_url, token_ciphertext, token_iv, token_auth_tag, is_enabled)
-     VALUES (1, ?, ?, ?, ?, ?)
+      (id, endpoint_url, token_ciphertext, token_iv, token_auth_tag, is_enabled,
+       last_test_at, last_test_status, last_test_message)
+     VALUES (1, ?, ?, ?, ?, ?, NULL, NULL, NULL)
      ON DUPLICATE KEY UPDATE endpoint_url = VALUES(endpoint_url),
        token_ciphertext = VALUES(token_ciphertext), token_iv = VALUES(token_iv),
-       token_auth_tag = VALUES(token_auth_tag), is_enabled = VALUES(is_enabled)`,
+       token_auth_tag = VALUES(token_auth_tag), is_enabled = VALUES(is_enabled),
+       last_test_at = NULL, last_test_status = NULL, last_test_message = NULL`,
     [settings.endpointUrl, encrypted?.ciphertext ?? null, encrypted?.iv ?? null,
       encrypted?.authTag ?? null, settings.isEnabled],
   );
   res.json({ message: 'Pengaturan WhatsApp gateway disimpan.' });
 }));
 
+router.post('/settings/whatsapp-gateway/test', requireSuperAdmin, asyncRoute(async (req, res) => {
+  const phone = normalizeWhatsappPhone(req.body?.phone);
+  if (!phone) throw fail(400, 'Nomor WhatsApp uji coba tidak valid.', 'VALIDATION_ERROR');
+  const [[gateway]] = await pool.execute(
+    `SELECT endpoint_url, token_ciphertext, token_iv, token_auth_tag
+       FROM whatsapp_gateway_config WHERE id = 1`,
+  );
+  let status = 'failed';
+  let message = 'Gateway WhatsApp belum dikonfigurasi.';
+  if (gateway?.endpoint_url && gateway.token_ciphertext) {
+    try {
+      await sendWhatsappMessage(
+        gateway.endpoint_url,
+        decryptGatewayToken(gateway),
+        phone,
+        'Uji koneksi gateway WhatsApp Ruang Hadir. Jika pesan ini diterima, gateway siap digunakan.',
+      );
+      status = 'success';
+      message = 'Gateway menerima permintaan (HTTP 2xx). Periksa WhatsApp penerima untuk memastikan pesan diterima.';
+    } catch (error) {
+      message = error instanceof Error ? error.message.slice(0, 500) : 'Pengiriman pesan uji gagal.';
+    }
+  }
+  await pool.execute(
+    `UPDATE whatsapp_gateway_config
+        SET last_test_at = UTC_TIMESTAMP(), last_test_status = ?, last_test_message = ?
+      WHERE id = 1`,
+    [status, message],
+  );
+  const [[log]] = await pool.execute(
+    'SELECT last_test_at, last_test_status, last_test_message FROM whatsapp_gateway_config WHERE id = 1',
+  );
+  res.json({ log });
+}));
+
 router.delete('/settings/whatsapp-gateway', requireSuperAdmin, asyncRoute(async (req, res) => {
   await pool.execute(
     `UPDATE whatsapp_gateway_config
         SET endpoint_url = NULL, token_ciphertext = NULL, token_iv = NULL,
-            token_auth_tag = NULL, is_enabled = FALSE
+            token_auth_tag = NULL, is_enabled = FALSE,
+            last_test_at = NULL, last_test_status = NULL, last_test_message = NULL
       WHERE id = 1`,
   );
   res.json({ message: 'Konfigurasi WhatsApp gateway dihapus.' });
@@ -701,16 +744,19 @@ router.post('/schools/:id/admin-password/reset', asyncRoute(async (req, res) => 
     [schoolId],
   );
   if (!admin) throw fail(404, 'Akun Admin sekolah aktif tidak ditemukan.', 'NOT_FOUND');
-  const temporaryPassword = randomBytes(18).toString('base64url');
+  if (req.body?.password !== undefined && !validateRegistrationPassword(req.body.password)) {
+    throw fail(400, 'Kata sandi harus minimal 8 karakter, maksimal 72 byte, dan memiliki huruf besar, angka, serta simbol.', 'VALIDATION_ERROR');
+  }
+  const temporaryPassword = req.body?.password ?? generateRegistrationPassword();
   const passwordHash = await hashPassword(temporaryPassword);
   await pool.execute(
-    'UPDATE users SET password_hash = ? WHERE id = ? AND sekolah_id = ?',
+    'UPDATE users SET password_hash = ?, auth_version = auth_version + 1 WHERE id = ? AND sekolah_id = ?',
     [passwordHash, admin.id, schoolId],
   );
   res.json({
     username: admin.username,
     temporary_password: temporaryPassword,
-    message: 'Kata sandi sementara dibuat. Simpan dan sampaikan dengan aman.',
+    message: 'Kata sandi baru dibuat. Simpan dan sampaikan dengan aman.',
   });
 }));
 

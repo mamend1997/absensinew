@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import {
   createRegistrationOtp,
   equalOtpHash,
+  generateRegistrationPassword,
   hashRegistrationOtp,
   normalizeWhatsappPhone,
   registrationSlug,
@@ -25,6 +26,16 @@ test('registration password enforces the visible minimum and character rules', (
   assert.equal(validateRegistrationPassword('Sekolah1'), false);
   assert.equal(validateRegistrationPassword('Ab1!xyz'), false);
   assert.equal(validateRegistrationPassword(`A1!${'a'.repeat(70)}`), false);
+});
+
+test('generated passwords meet registration rules and always include a symbol', () => {
+  for (let index = 0; index < 40; index += 1) {
+    const password = generateRegistrationPassword();
+    assert.equal(password.length, 18);
+    assert.equal(validateRegistrationPassword(password), true);
+    assert.match(password, /[^A-Za-z0-9\s]/);
+  }
+  assert.throws(() => generateRegistrationPassword(7), RangeError);
 });
 
 test('WhatsApp numbers normalize to E.164 and reject invalid values', () => {

@@ -74,6 +74,11 @@ input:focus, select:focus { border-color: #39845d; box-shadow: 0 0 0 3px #39845d
 .gateway-panel .muted { margin: 6px 0 10px; font-size: 11px; }
 .gateway-status { color: #9a6a22; font-size: 10px; font-weight: 800; }
 .gateway-status.ready { color: #217848; }
+.gateway-test-log { display: grid; gap: 4px; border: 1px solid #e0e8e2; border-radius: 9px; background: #f7faf7; padding: 10px; font-size: 10px; }
+.gateway-test-log.success { border-color: #cce7d4; background: #effaf2; color: #21633d; }
+.gateway-test-log.failed { border-color: #f3ceca; background: #fff1ef; color: #8d322a; }
+.gateway-test-log time { color: #697973; font-size: 9px; }
+.gateway-test-log p { margin: 0; line-height: 1.5; }
 .gateway-form { display: grid; gap: 10px; }
 .gateway-form label { font-size: 10px; }
 .gateway-form input { min-height: 38px; font-size: 11px; }
@@ -157,6 +162,7 @@ td small { margin-top: 3px; color: #7d8b84; font-size: 9px; }
 .modal-card { display: grid; width: min(460px, 100%); gap: 14px; border: 1px solid #e0e8e2; border-radius: 16px; background: #fff; padding: 22px; box-shadow: 0 24px 80px #06120f55; }
 .modal-card h2 { margin: 0; }
 .modal-card .muted, .modal-card .danger-copy { margin: -5px 0 0; font-size: 12px; line-height: 1.55; }
+.password-requirements { color: #697973; font-size: 10px; line-height: 1.5; }
 .danger-copy { color: #a42c2c; }
 .modal-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 .fine-print { margin: 12px 0 0; color: #7a8982; font-size: 10px; line-height: 1.5; }

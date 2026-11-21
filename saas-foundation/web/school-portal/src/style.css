@@ -151,6 +151,11 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
 .school-whatsapp-toggle { display: flex !important; grid-template-columns: none; align-items: center; gap: 8px !important; }
 .school-whatsapp-toggle input { width: 16px; min-height: 16px; }
 .gateway-hint { color: #258156; font-size: 9px; }
+.gateway-test-log { display: grid; gap: 4px; border: 1px solid #e0e8e2; border-radius: 9px; background: #f7faf7; padding: 10px; font-size: 10px; }
+.gateway-test-log.success { border-color: #cce7d4; background: #effaf2; color: #21633d; }
+.gateway-test-log.failed { border-color: #f3ceca; background: #fff1ef; color: #8d322a; }
+.gateway-test-log time { color: #697973; font-size: 9px; }
+.gateway-test-log p { margin: 0; line-height: 1.5; }
 .billing-status-panel { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .billing-status-panel > div { display: grid; gap: 5px; border-radius: 10px; background: #f5f8f5; padding: 12px; }
 .billing-status-panel small { color: #75847c; font-size: 9px; }

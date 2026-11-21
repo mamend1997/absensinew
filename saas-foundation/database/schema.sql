@@ -55,6 +55,9 @@ CREATE TABLE IF NOT EXISTS whatsapp_gateway_config (
     token_iv BINARY(12) NULL,
     token_auth_tag BINARY(16) NULL,
     is_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    last_test_at DATETIME NULL,
+    last_test_status ENUM('success', 'failed') NULL,
+    last_test_message VARCHAR(500) NULL,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     CONSTRAINT chk_whatsapp_gateway_singleton CHECK (id = 1)
@@ -96,6 +99,9 @@ CREATE TABLE IF NOT EXISTS school_whatsapp_gateway_config (
     token_iv BINARY(12) NULL,
     token_auth_tag BINARY(16) NULL,
     is_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    last_test_at DATETIME NULL,
+    last_test_status ENUM('success', 'failed') NULL,
+    last_test_message VARCHAR(500) NULL,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (sekolah_id),
     CONSTRAINT fk_school_whatsapp_gateway_school FOREIGN KEY (sekolah_id)

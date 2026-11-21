@@ -23,6 +23,9 @@ interface WhatsappGatewaySettings {
   is_enabled: boolean;
   is_configured: boolean;
   token_hint: string;
+  last_test_at: string | null;
+  last_test_status: 'success' | 'failed' | null;
+  last_test_message: string | null;
 }
 
 interface SchoolForm {
@@ -50,6 +53,8 @@ interface ResetCredentials {
   username: string;
   temporaryPassword: string;
 }
+
+type PasswordResetMode = 'generate' | 'custom';
 
 interface BillingPrices {
   monthly_price: number;
@@ -173,6 +178,11 @@ function readLogoFile(file: File): Promise<string> {
   });
 }
 
+function validAdminPassword(value: string) {
+  return value.length >= 8 && new TextEncoder().encode(value).length <= 72 &&
+    /[A-Z]/.test(value) && /\d/.test(value) && /[^A-Za-z0-9\s]/.test(value);
+}
+
 export default function App() {
   const [token, setToken] = useState(() => sessionStorage.getItem(TOKEN_KEY) ?? '');
   const [schools, setSchools] = useState<School[]>([]);
@@ -202,9 +212,14 @@ export default function App() {
     is_enabled: false,
     is_configured: false,
     token_hint: '',
+    last_test_at: null,
+    last_test_status: null,
+    last_test_message: null,
   });
   const [gatewayToken, setGatewayToken] = useState('');
   const [gatewayBusy, setGatewayBusy] = useState(false);
+  const [gatewayTestPhone, setGatewayTestPhone] = useState('');
+  const [gatewayTestBusy, setGatewayTestBusy] = useState(false);
   const [apkDriveUrl, setApkDriveUrl] = useState('');
   const [apkBusy, setApkBusy] = useState(false);
   const [billingPrices, setBillingPrices] = useState<BillingPrices>({
@@ -255,6 +270,10 @@ export default function App() {
   const [deleteTarget, setDeleteTarget] = useState<School | null>(null);
   const [deleteConfirmation, setDeleteConfirmation] = useState('');
   const [resetCredentials, setResetCredentials] = useState<ResetCredentials | null>(null);
+  const [passwordResetTarget, setPasswordResetTarget] = useState<School | null>(null);
+  const [passwordResetMode, setPasswordResetMode] = useState<PasswordResetMode>('generate');
+  const [customAdminPassword, setCustomAdminPassword] = useState('');
+  const [showCustomAdminPassword, setShowCustomAdminPassword] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -592,8 +611,23 @@ export default function App() {
     }
   }
 
-  async function resetSchoolPassword(school: School) {
-    if (!window.confirm(`Buat kata sandi sementara untuk akun Admin ${school.name}${school.admin_username ? ` (${school.admin_username})` : ''}? Kata sandi saat ini langsung diganti.`)) return;
+  function openSchoolPasswordReset(school: School) {
+    setPasswordResetTarget(school);
+    setPasswordResetMode('generate');
+    setCustomAdminPassword('');
+    setShowCustomAdminPassword(false);
+    setError('');
+  }
+
+  async function resetSchoolPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!passwordResetTarget) return;
+    if (passwordResetMode === 'custom' && !validAdminPassword(customAdminPassword)) {
+      setError('Kata sandi harus minimal 8 karakter, maksimal 72 byte, dan memiliki huruf besar, angka, serta simbol.');
+      return;
+    }
+    const school = passwordResetTarget;
+    if (!window.confirm(`Ganti kata sandi akun Admin ${school.name}${school.admin_username ? ` (${school.admin_username})` : ''}? Kata sandi saat ini langsung diganti.`)) return;
     setBusy(true);
     setError('');
     setNotice('');
@@ -601,14 +635,19 @@ export default function App() {
       const result = await request<{ username: string; temporary_password: string }>(
         `/super-admin/schools/${school.id}/admin-password/reset`,
         token,
-        { method: 'POST', body: {} },
+        {
+          method: 'POST',
+          body: passwordResetMode === 'custom' ? { password: customAdminPassword } : {},
+        },
       );
       setResetCredentials({
         schoolName: school.name,
         username: result.username,
         temporaryPassword: result.temporary_password,
       });
-      setNotice('Kata sandi sementara berhasil dibuat. Salin dan sampaikan dengan aman.');
+      setPasswordResetTarget(null);
+      setCustomAdminPassword('');
+      setNotice('Kata sandi Admin berhasil diatur ulang. Salin dan sampaikan dengan aman.');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Kata sandi Admin gagal diatur ulang.');
     } finally {
@@ -920,6 +959,26 @@ export default function App() {
     }
   }
 
+  async function testWhatsappGateway() {
+    setGatewayTestBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await request<{ log: Pick<WhatsappGatewaySettings, 'last_test_at' | 'last_test_status' | 'last_test_message'> }>(
+        '/super-admin/settings/whatsapp-gateway/test',
+        token,
+        { method: 'POST', body: { phone: `+62${gatewayTestPhone}` } },
+      );
+      setGatewaySettings((current) => ({ ...current, ...result.log }));
+      if (result.log.last_test_status === 'success') setNotice('Tes WA gateway berhasil dikirim.');
+      else setError(result.log.last_test_message ?? 'Tes WA gateway gagal.');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Tes WA gateway gagal.');
+    } finally {
+      setGatewayTestBusy(false);
+    }
+  }
+
   async function clearWhatsappGateway() {
     if (!window.confirm('Hapus URL dan token gateway WhatsApp? Pendaftaran OTP akan berhenti sampai gateway diatur lagi.')) return;
     setGatewayBusy(true);
@@ -927,7 +986,10 @@ export default function App() {
     setNotice('');
     try {
       await request('/super-admin/settings/whatsapp-gateway', token, { method: 'DELETE' });
-      setGatewaySettings({ endpoint_url: '', is_enabled: false, is_configured: false, token_hint: '' });
+      setGatewaySettings({
+        endpoint_url: '', is_enabled: false, is_configured: false, token_hint: '',
+        last_test_at: null, last_test_status: null, last_test_message: null,
+      });
       setGatewayToken('');
       setNotice('Konfigurasi WhatsApp gateway telah dihapus.');
     } catch (reason) {
@@ -1194,7 +1256,7 @@ export default function App() {
         <section className="panel gateway-panel">
           <div>
             <h2>Gateway WhatsApp untuk OTP</h2>
-            <p className="muted">Gateway harus menerima POST JSON <code>{'{ phone, message }'}</code> dengan autentikasi Bearer dan membalas status HTTP 2xx. Token dienkripsi di database dan tidak ditampilkan kembali.</p>
+            <p className="muted">Gateway harus menerima POST JSON <code>{'{ phone, message }'}</code> dengan autentikasi Bearer dan membalas status HTTP 2xx. Simpan konfigurasi sebelum menguji; hasil 2xx berarti gateway menerima permintaan, bukan bukti pesan sudah diterima ponsel.</p>
             <span className={`gateway-status ${gatewaySettings.is_enabled && gatewaySettings.is_configured ? 'ready' : ''}`}>
               {gatewaySettings.is_enabled && gatewaySettings.is_configured ? '● Aktif dan siap' : '○ Belum aktif'}
             </span>
@@ -1205,11 +1267,23 @@ export default function App() {
               <input type="password" autoComplete="new-password" placeholder={gatewaySettings.is_configured ? 'Tersimpan — kosongkan untuk mempertahankan' : 'Masukkan token gateway'} value={gatewayToken} onChange={(event) => setGatewayToken(event.target.value)} />
             </label>
             {gatewaySettings.is_configured && <small className="gateway-hint">{gatewaySettings.token_hint}</small>}
+            <label>Nomor WhatsApp untuk tes
+              <span className="phone-input-wrap">
+                <span className="phone-prefix">+62</span>
+                <input type="text" inputMode="numeric" autoComplete="off" maxLength={13} pattern="8[0-9]{6,12}" value={gatewayTestPhone} onChange={(event) => setGatewayTestPhone(phoneNationalDigits(event.target.value))} />
+              </span>
+            </label>
             <label className="gateway-toggle"><input type="checkbox" checked={gatewaySettings.is_enabled} onChange={(event) => setGatewaySettings((current) => ({ ...current, is_enabled: event.target.checked }))} /> Aktifkan OTP WhatsApp untuk pendaftaran</label>
             <div className="gateway-actions">
               <button className="button primary" disabled={gatewayBusy}>{gatewayBusy ? 'Menyimpan…' : 'Simpan pengaturan'}</button>
-              <button className="button secondary" type="button" disabled={gatewayBusy || !gatewaySettings.is_configured} onClick={() => void clearWhatsappGateway()}>Hapus konfigurasi</button>
+              <button className="button secondary" type="button" disabled={gatewayBusy || gatewayTestBusy || !gatewaySettings.is_configured || !/^8[0-9]{6,12}$/.test(gatewayTestPhone)} onClick={() => void testWhatsappGateway()}>{gatewayTestBusy ? 'Mengirim tes…' : 'Tes WA gateway'}</button>
+              <button className="button secondary" type="button" disabled={gatewayBusy || gatewayTestBusy || !gatewaySettings.is_configured} onClick={() => void clearWhatsappGateway()}>Hapus konfigurasi</button>
             </div>
+            {gatewaySettings.last_test_status && <div className={`gateway-test-log ${gatewaySettings.last_test_status}`}>
+              <strong>Log tes terakhir · {gatewaySettings.last_test_status === 'success' ? 'Berhasil' : 'Gagal'}</strong>
+              {gatewaySettings.last_test_at && <time>{gatewaySettings.last_test_at} UTC</time>}
+              <p>{gatewaySettings.last_test_message}</p>
+            </div>}
           </form>
         </section>
         <section id="otp-rate-limit" className="panel otp-rate-limit-panel">
@@ -1302,7 +1376,7 @@ export default function App() {
                     <td>
                       <div className="school-actions">
                         <button className="button secondary small" disabled={busy} onClick={() => openSchoolEditor(school)}>Edit sekolah</button>
-                        <button className="button secondary small" disabled={busy} onClick={() => void resetSchoolPassword(school)}>Reset login</button>
+                        <button className="button secondary small" disabled={busy} onClick={() => openSchoolPasswordReset(school)}>Reset login</button>
                         <button className="button danger small" disabled={busy} onClick={() => { setDeleteTarget(school); setDeleteConfirmation(''); }}>Hapus sekolah</button>
                       </div>
                     </td>
@@ -1336,8 +1410,8 @@ export default function App() {
             <label>Kuota peserta<input type="number" min={1} max={1000000} required value={schoolEditForm.participant_quota} onChange={(event) => setSchoolEditForm((current) => ({ ...current, participant_quota: Number(event.target.value) }))} /></label>
             <div className="edit-school-password">
               <strong>Akun Admin sekolah</strong>
-              <p className="muted">Jika Admin lupa kata sandi, buat kata sandi sementara yang baru. Kata sandi lama langsung dinonaktifkan.</p>
-              <button className="button secondary" type="button" disabled={busy} onClick={() => void resetSchoolPassword(editingSchool)}>
+              <p className="muted">Atur kata sandi baru atau buat otomatis. Kata sandi lama langsung dinonaktifkan.</p>
+              <button className="button secondary" type="button" disabled={busy} onClick={() => openSchoolPasswordReset(editingSchool)}>
                 Reset kata sandi login Admin
               </button>
             </div>
@@ -1363,10 +1437,40 @@ export default function App() {
           </div>
         </div>
       )}
+      {passwordResetTarget && (
+        <div className="modal-backdrop" role="presentation">
+          <form className="modal-card" onSubmit={(event) => void resetSchoolPassword(event)}>
+            <h2>Reset kata sandi Admin</h2>
+            <p className="muted">{passwordResetTarget.name}{passwordResetTarget.admin_username ? ` · ${passwordResetTarget.admin_username}` : ''}. Kata sandi lama langsung dinonaktifkan.</p>
+            {error && <div className="alert error">{error}</div>}
+            <label>Metode pembuatan kata sandi
+              <select value={passwordResetMode} onChange={(event) => { setPasswordResetMode(event.target.value as PasswordResetMode); setError(''); }}>
+                <option value="generate">Generate acak dengan simbol</option>
+                <option value="custom">Tentukan sendiri</option>
+              </select>
+            </label>
+            {passwordResetMode === 'generate'
+              ? <p className="muted">Sistem membuat sandi acak 18 karakter yang selalu berisi huruf besar, angka, dan simbol.</p>
+              : <>
+                <label>Kata sandi baru
+                  <span className="password-input-wrap">
+                    <input type={showCustomAdminPassword ? 'text' : 'password'} autoComplete="new-password" required value={customAdminPassword} onChange={(event) => setCustomAdminPassword(event.target.value)} />
+                    <button className="password-eye" type="button" onClick={() => setShowCustomAdminPassword((visible) => !visible)} aria-label={showCustomAdminPassword ? 'Sembunyikan kata sandi' : 'Tampilkan kata sandi'}><PasswordEye visible={showCustomAdminPassword} /></button>
+                  </span>
+                </label>
+                <small className="password-requirements">Minimal 8 karakter, maksimal 72 byte, dengan huruf besar, angka, dan simbol.</small>
+              </>}
+            <div className="modal-actions">
+              <button className="button secondary" type="button" disabled={busy} onClick={() => setPasswordResetTarget(null)}>Batal</button>
+              <button className="button primary" disabled={busy || (passwordResetMode === 'custom' && !validAdminPassword(customAdminPassword))}>{busy ? 'Mengatur ulang…' : 'Reset kata sandi'}</button>
+            </div>
+          </form>
+        </div>
+      )}
       {resetCredentials && (
         <div className="modal-backdrop" role="presentation">
           <div className="modal-card">
-            <h2>Kata sandi sementara dibuat</h2>
+            <h2>Kata sandi berhasil diatur ulang</h2>
             <p className="muted">Akun Admin {resetCredentials.schoolName}: <strong>{resetCredentials.username}</strong></p>
             <label>Kata sandi baru
               <input readOnly value={resetCredentials.temporaryPassword} onFocus={(event) => event.currentTarget.select()} />

@@ -1,5 +1,11 @@
 import { createHash, createHmac, randomInt, timingSafeEqual } from 'node:crypto';
 
+const PASSWORD_UPPERCASE = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+const PASSWORD_LOWERCASE = 'abcdefghijkmnopqrstuvwxyz';
+const PASSWORD_DIGITS = '23456789';
+const PASSWORD_SYMBOLS = '!@#$%^&*_-+=?';
+const PASSWORD_CHARACTERS = `${PASSWORD_UPPERCASE}${PASSWORD_LOWERCASE}${PASSWORD_DIGITS}${PASSWORD_SYMBOLS}`;
+
 export function validateRegistrationPassword(password) {
   return typeof password === 'string' &&
     password.length >= 8 &&
@@ -7,6 +13,26 @@ export function validateRegistrationPassword(password) {
     /[A-Z]/.test(password) &&
     /\d/.test(password) &&
     /[^A-Za-z0-9\s]/.test(password);
+}
+
+export function generateRegistrationPassword(length = 18) {
+  if (!Number.isInteger(length) || length < 8 || length > 72) {
+    throw new RangeError('Panjang kata sandi harus antara 8 dan 72 karakter.');
+  }
+  const password = [
+    PASSWORD_UPPERCASE[randomInt(PASSWORD_UPPERCASE.length)],
+    PASSWORD_LOWERCASE[randomInt(PASSWORD_LOWERCASE.length)],
+    PASSWORD_DIGITS[randomInt(PASSWORD_DIGITS.length)],
+    PASSWORD_SYMBOLS[randomInt(PASSWORD_SYMBOLS.length)],
+  ];
+  while (password.length < length) {
+    password.push(PASSWORD_CHARACTERS[randomInt(PASSWORD_CHARACTERS.length)]);
+  }
+  for (let index = password.length - 1; index > 0; index -= 1) {
+    const swapIndex = randomInt(index + 1);
+    [password[index], password[swapIndex]] = [password[swapIndex], password[index]];
+  }
+  return password.join('');
 }
 
 export function validateRegistrationUsername(username) {
