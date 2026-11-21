@@ -111,6 +111,36 @@ Link unduhan APK Google Drive dapat diatur Super Admin dan tampil pada menu
 mengarah ke Google Drive, dan akses berbagi file perlu mengizinkan akun sekolah
 mengunduhnya.
 
+## Menyiapkan APK portal sekolah dengan Capacitor
+
+Portal terbaru di `web/school-portal` sudah memiliki konfigurasi Capacitor Android.
+Aplikasi ini memakai `https://localhost` sebagai origin Android untuk mendukung
+konteks aman kamera. API harus tersedia melalui HTTPS dan konfigurasi `CORS_ORIGINS`
+backend perlu mengizinkan `https://localhost` selain origin portal web.
+
+1. Pasang Android Studio, JDK 21, Android SDK Platform 36, Build-Tools, dan
+   Platform-Tools. Node.js 22.5 atau lebih baru diperlukan.
+2. Dari `saas-foundation/web`, instal dependency workspace dan isi URL backend
+   publik sebelum membangun. Nilai URL bukan rahasia; jangan memasukkan API key:
+   ```powershell
+   npm.cmd install
+   $env:VITE_API_BASE_URL = "https://<domain-api>/api"
+   npm.cmd run android:sync --workspace school-portal
+   ```
+3. Buka proyek Android Studio:
+   ```powershell
+   npm.cmd run android:open --workspace school-portal
+   ```
+   Untuk membuat APK debug dari terminal, jalankan
+   `.\gradlew.bat assembleDebug` di `web/school-portal/android`. APK berada di
+   `android/app/build/outputs/apk/debug/app-debug.apk`.
+4. Uji login, izin kamera, scan, antrean offline, dan sinkronisasi saat online
+   pada perangkat Android. Build membutuhkan Android SDK/JDK; `cap sync` saja
+   belum menghasilkan APK.
+
+APK release perlu ditandatangani dengan keystore privat yang disimpan di luar
+version control. Jangan membagikan atau menanam rahasia backend di dalam APK.
+
 Pembayaran sekolah menggunakan Xendit, Duitku, atau Kasera. Kasera diatur dari
 Super Admin → Pengaturan payment gateway: masukkan API key live dan webhook
 signing secret, lalu daftarkan URL yang ditampilkan sebagai endpoint webhook
