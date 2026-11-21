@@ -1,4 +1,14 @@
 export async function ensureRuntimeMigrations(pool) {
+  const [operationalColumns] = await pool.execute(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'operational_settings'`,
+  );
+  if (operationalColumns.length && !operationalColumns.some((column) => column.COLUMN_NAME === 'scanner_pin_hash')) {
+    await pool.execute(
+      'ALTER TABLE operational_settings ADD COLUMN scanner_pin_hash VARCHAR(255) NULL AFTER check_out_start',
+    );
+  }
+
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS participant_operational_overrides (
       sekolah_id BIGINT UNSIGNED NOT NULL,

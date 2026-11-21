@@ -820,7 +820,8 @@ router.delete('/participants', requireSchoolUser, requirePermission('participant
 router.get('/settings', requireSchoolUser,
   requireAnyPermission('settings.operational.manage', 'participants.read', 'participants.manage', 'scanner.use'), asyncRoute(async (req, res) => {
   const [[settings]] = await pool.execute(
-    `SELECT timezone, check_in_deadline, lateness_tolerance_minutes, check_out_start
+    `SELECT timezone, check_in_deadline, lateness_tolerance_minutes, check_out_start,
+            scanner_pin_hash IS NOT NULL AS scanner_pin_configured
        FROM operational_settings WHERE sekolah_id = ?`,
     [req.schoolUser.sekolah_id],
   );
@@ -865,6 +866,10 @@ router.put('/settings', requireSchoolUser, requirePermission('settings.operation
   const checkOut = body.check_out_start ?? '15:00:00';
   const timePattern = /^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/;
   if (!timePattern.test(checkIn) || !timePattern.test(checkOut)) throw fail(400, 'Format jam harus HH:mm[:ss].');
+  if (body.scanner_pin !== undefined && body.scanner_pin !== null && body.scanner_pin !== '' &&
+      (typeof body.scanner_pin !== 'string' || !/^\d{4,6}$/.test(body.scanner_pin))) {
+    throw fail(400, 'PIN scanner harus terdiri dari 4–6 angka.', 'VALIDATION_ERROR');
+  }
   const schedules = body.weekly_schedules ?? [];
   const holidays = body.holidays ?? [];
   if (!Array.isArray(schedules) || schedules.some((item) =>
@@ -891,6 +896,12 @@ router.put('/settings', requireSchoolUser, requirePermission('settings.operation
        WHERE sekolah_id = ?`,
       [timezone, checkIn, tolerance, checkOut, req.schoolUser.id, req.schoolUser.sekolah_id],
     );
+    if (typeof body.scanner_pin === 'string' && /^\d{4,6}$/.test(body.scanner_pin)) {
+      await connection.execute(
+        'UPDATE operational_settings SET scanner_pin_hash = ? WHERE sekolah_id = ?',
+        [await hashPassword(body.scanner_pin), req.schoolUser.sekolah_id],
+      );
+    }
     for (const item of schedules) {
       await connection.execute(
         `INSERT INTO weekly_operational_schedules
@@ -925,6 +936,24 @@ router.put('/settings', requireSchoolUser, requirePermission('settings.operation
   }
   res.json({ message: 'Pengaturan diperbarui.' });
 }));
+
+router.post('/settings/scanner-pin/verify', requireSchoolUser,
+  requireAnyPermission('scanner.use', 'dashboard.read'), asyncRoute(async (req, res) => {
+    const pin = req.body?.pin;
+    if (typeof pin !== 'string' || !/^\d{4,6}$/.test(pin)) {
+      throw fail(400, 'PIN harus terdiri dari 4–6 angka.', 'VALIDATION_ERROR');
+    }
+    const [[settings]] = await pool.execute(
+      'SELECT scanner_pin_hash FROM operational_settings WHERE sekolah_id = ?',
+      [req.schoolUser.sekolah_id],
+    );
+    const configuredHash = settings?.scanner_pin_hash;
+    const valid = configuredHash
+      ? await verifyPassword(pin, configuredHash)
+      : pin === '1234';
+    if (!valid) throw fail(403, 'PIN scanner tidak benar.', 'INVALID_SCANNER_PIN');
+    res.json({ valid: true });
+  }));
 
 router.get('/settings/whatsapp-gateway', requireSchoolUser, requirePermission('settings.operational.manage'), asyncRoute(async (req, res) => {
   const [[settings]] = await pool.execute(

@@ -332,6 +332,7 @@ CREATE TABLE IF NOT EXISTS operational_settings (
     check_in_deadline TIME NOT NULL DEFAULT '08:00:00',
     lateness_tolerance_minutes SMALLINT UNSIGNED NOT NULL DEFAULT 0,
     check_out_start TIME NOT NULL DEFAULT '15:00:00',
+    scanner_pin_hash VARCHAR(255) NULL,
     updated_by BIGINT UNSIGNED NULL,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (sekolah_id),

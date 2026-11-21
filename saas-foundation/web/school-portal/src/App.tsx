@@ -82,6 +82,7 @@ interface OperationalSettings {
   weekly_schedules: WeeklySchedule[];
   holidays: Holiday[];
   participant_overrides: ParticipantSchedule[];
+  scanner_pin_configured?: boolean;
 }
 interface ParticipantSchedule {
   participant_id: string | number;
@@ -367,6 +368,11 @@ export default function App() {
   const [userForm, setUserForm] = useState({ username: '', display_name: '', password: '', role_id: '' });
   const [deviceName, setDeviceName] = useState('Scanner sekolah');
   const [operationalForm, setOperationalForm] = useState(initialSettings);
+  const [scannerPinForm, setScannerPinForm] = useState('');
+  const [scannerMenuOpen, setScannerMenuOpen] = useState(false);
+  const [scannerMenuPin, setScannerMenuPin] = useState('');
+  const [scannerMenuTarget, setScannerMenuTarget] = useState<Page | null>(null);
+  const [scannerUnlockBusy, setScannerUnlockBusy] = useState(false);
   const [holidayForm, setHolidayForm] = useState({ date: '', name: '' });
   const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
   const [cameraId, setCameraId] = useState('');
@@ -1220,7 +1226,10 @@ export default function App() {
     try {
       const result = await request<unknown>('/school/settings', session.token, {
         method: 'PUT',
-        body: operationalForm,
+        body: {
+          ...operationalForm,
+          ...(scannerPinForm ? { scanner_pin: scannerPinForm } : {}),
+        },
       });
       const nextSettings = {
         ...operationalForm,
@@ -1229,11 +1238,43 @@ export default function App() {
       };
       setSettings(nextSettings);
       setOperationalForm(nextSettings);
+      if (scannerPinForm) {
+        setScannerPinForm('');
+        setOperationalForm((current) => ({ ...current, scanner_pin_configured: true }));
+        setSettings((current) => ({ ...current, scanner_pin_configured: true }));
+      }
       const db = await database(session.school.id);
       await db.put('settings', nextSettings, 'operational');
       setMessage('Pengaturan operasional tersimpan.');
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : 'Pengaturan gagal disimpan.', true);
+    }
+  }
+
+  function requestScannerMenu(target: Page = 'dashboard') {
+    setScannerMenuTarget(target);
+    setScannerMenuPin('');
+    setScannerMenuOpen(true);
+  }
+
+  async function unlockScannerMenu(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session || !scannerMenuTarget) return;
+    setScannerUnlockBusy(true);
+    try {
+      await request('/school/settings/scanner-pin/verify', session.token, {
+        method: 'POST',
+        body: { pin: scannerMenuPin },
+      });
+      setScannerMenuOpen(false);
+      setScannerMenuPin('');
+      setPage(scannerMenuTarget);
+      setError('');
+      setNotice('');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'PIN scanner tidak benar.');
+    } finally {
+      setScannerUnlockBusy(false);
     }
   }
 
@@ -1544,19 +1585,20 @@ export default function App() {
         <div className="top-actions">
           <span className={`connection ${online ? 'online' : 'offline'}`}><i />{online ? 'Online' : 'Offline'}</span>
           <span className="pending-pill">{pendingCount} pending</span>
-          <span className="user-chip">{session.user.display_name} · {session.user.role_name}</span>
-          <button className="button secondary" onClick={signOut}>Keluar</button>
+          {!page ? null : page === 'scanner'
+            ? <button className="button scanner-menu-button" type="button" onClick={() => requestScannerMenu('dashboard')}>Menu</button>
+            : <><span className="user-chip">{session.user.display_name} · {session.user.role_name}</span><button className="button secondary" onClick={signOut}>Keluar</button></>}
         </div>
       </header>
-      <div className="portal-layout">
-        <nav className="side-nav" aria-label="Menu sekolah">
+      <div className={page === 'scanner' ? 'portal-layout kiosk-layout' : 'portal-layout'}>
+        {page !== 'scanner' && <nav className="side-nav" aria-label="Menu sekolah">
           {navItems.map((item) => (
-            <button key={item.id} data-page={item.id} aria-current={page === item.id ? 'page' : undefined} className={page === item.id ? 'nav-item active' : 'nav-item'} onClick={() => { setPage(item.id); setError(''); setNotice(''); }}>
+            <button key={item.id} data-page={item.id} aria-current={page === item.id ? 'page' : undefined} className={page === item.id ? 'nav-item active' : 'nav-item'} onClick={() => item.id === 'scanner' ? setPage('scanner') : setPage(item.id)}>
               {item.label}{item.id === 'scanner' && pendingCount > 0 && <span className="nav-badge">{pendingCount}</span>}
             </button>
           ))}
-        </nav>
-        <main className="content">
+        </nav>}
+        <main className={page === 'scanner' ? 'content scanner-kiosk' : 'content'}>
           {offlineMode && <div className="alert warning">Mode offline: scanner memakai master peserta lokal. Perubahan data dan login baru membutuhkan jaringan.</div>}
           {error && <div className="alert error">{error}<button onClick={() => setError('')} aria-label="Tutup">×</button></div>}
           {notice && <div className="alert success">{notice}<button onClick={() => setNotice('')} aria-label="Tutup">×</button></div>}
@@ -1691,6 +1733,9 @@ export default function App() {
                   <label>Batas masuk<input type="time" required value={operationalForm.check_in_deadline.slice(0, 5)} onChange={(event) => setOperationalForm((current) => ({ ...current, check_in_deadline: `${event.target.value}:00` }))} /></label>
                   <label>Toleransi telat (menit)<input type="number" min={0} max={180} value={operationalForm.lateness_tolerance_minutes} onChange={(event) => setOperationalForm((current) => ({ ...current, lateness_tolerance_minutes: Number(event.target.value) }))} /></label>
                   <label>Mulai pulang<input type="time" required value={operationalForm.check_out_start.slice(0, 5)} onChange={(event) => setOperationalForm((current) => ({ ...current, check_out_start: `${event.target.value}:00` }))} /></label>
+                  <label>PIN scanner (4–6 angka)
+                    <input type="password" inputMode="numeric" pattern="\d{4,6}" minLength={4} maxLength={6} value={scannerPinForm} onChange={(event) => setScannerPinForm(event.target.value.replace(/\D/g, '').slice(0, 6))} placeholder={operationalForm.scanner_pin_configured ? 'PIN tersimpan — kosongkan untuk tidak mengubah' : 'Belum ada PIN khusus; awal 1234'} />
+                  </label>
                 </div>
                 <h2>Jadwal mingguan</h2>
                 <div className="schedule-list">{weekDays.map((name, weekday) => {
@@ -1838,6 +1883,19 @@ export default function App() {
           )}
         </main>
       </div>
+      {scannerMenuOpen && <div className="pin-modal-backdrop" role="presentation">
+        <form className="pin-modal" onSubmit={(event) => void unlockScannerMenu(event)} role="dialog" aria-modal="true" aria-labelledby="scanner-pin-title">
+          <div className="pin-modal-icon" aria-hidden="true">PIN</div>
+          <h2 id="scanner-pin-title">Masuk ke menu sekolah</h2>
+          <p>Masukkan PIN scanner untuk berpindah halaman.</p>
+          <input className="pin-modal-input" type="password" inputMode="numeric" pattern="\d{4,6}" minLength={4} maxLength={6} autoComplete="off" required autoFocus value={scannerMenuPin} onChange={(event) => setScannerMenuPin(event.target.value.replace(/\D/g, '').slice(0, 6))} />
+          {error && <div className="pin-modal-error">{error}</div>}
+          <div className="pin-modal-actions">
+            <button type="button" className="button secondary" onClick={() => { setScannerMenuOpen(false); setScannerMenuPin(''); setError(''); }}>Batal</button>
+            <button className="button primary" disabled={scannerUnlockBusy}>{scannerUnlockBusy ? 'Memeriksa…' : 'Buka menu'}</button>
+          </div>
+        </form>
+      </div>}
     </div>
   );
 }

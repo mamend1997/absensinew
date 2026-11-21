@@ -105,6 +105,33 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
 .form-grid .wide { grid-column: 1 / -1; }
 .form-grid > .button { justify-self: start; }
 .scanner-grid { display: grid; grid-template-columns: minmax(0, 1fr) 240px; align-items: start; gap: 13px; }
+.kiosk-layout { max-width: 1180px; grid-template-columns: 1fr; padding: 14px 18px 28px; }
+.kiosk-layout .scanner-kiosk { width: 100%; }
+.scanner-page { --scanner-orange: #f59e32; --scanner-green: #176f4c; --scanner-white: #fffdf8; }
+.scanner-page .page-heading { min-height: 62px; align-items: center; border-bottom: 3px solid #f59e32; }
+.scanner-page .page-heading h1 { color: #176f4c; }
+.scanner-page .page-heading .eyebrow { color: #d97706; }
+.scanner-page .scanner-grid { grid-template-columns: minmax(0, 1fr) 260px; gap: 16px; }
+.scanner-page .camera-panel { border: 2px solid #176f4c; border-radius: 18px; background: #fffdf8; box-shadow: 0 12px 32px #176f4c18; }
+.scanner-page .scanner-toolbar { min-height: 54px; align-items: center; border-radius: 12px; background: #fff3df; padding: 8px 10px; }
+.scanner-page .scanner-toolbar .button { min-height: 44px; background: #f59e32; color: #253127; border: 0; }
+.scanner-page .camera-view { min-height: 360px; max-height: 58vh; border: 4px solid #f59e32; border-radius: 16px; background: #17372b; }
+.scanner-page .manual-scan { border-radius: 12px; background: #edf7ef; padding: 10px; }
+.scanner-page .manual-scan label { color: #176f4c; }
+.scanner-page .scan-state { border: 2px solid #f59e32; border-radius: 18px; background: #fffdf8; box-shadow: 0 12px 32px #d9770618; }
+.scanner-page .scan-state .status-label { color: #176f4c; }
+.scanner-page .queue-number { color: #f59e32; }
+.scanner-page .scan-state .button { background: #176f4c; }
+.scanner-page .last-scan { border-left: 4px solid #f59e32; background: #fff7e8; }
+.scanner-page .local-list { border-top: 4px solid #176f4c; }
+.scanner-menu-button { min-height: 38px; border: 0; background: #f59e32; color: #263128; }
+.pin-modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: #10231bb3; padding: 18px; backdrop-filter: blur(5px); }
+.pin-modal { display: grid; width: min(390px, 100%); justify-items: center; gap: 10px; border: 3px solid #f59e32; border-radius: 20px; background: #fffdf8; padding: 24px; box-shadow: 0 24px 70px #0d2419aa; text-align: center; }
+.pin-modal-icon { display: grid; width: 52px; height: 52px; place-items: center; border-radius: 50%; background: #176f4c; color: #fff; font-size: 12px; font-weight: 900; letter-spacing: .08em; }
+.pin-modal p { margin: 0; color: #697973; font-size: 12px; }
+.pin-modal-input { max-width: 220px; min-height: 58px !important; border: 2px solid #d97706 !important; text-align: center; font-size: 26px !important; letter-spacing: .28em; }
+.pin-modal-actions { display: grid; width: 100%; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 4px; }
+.pin-modal-error { width: 100%; border-radius: 8px; background: #fff1ef; padding: 8px; color: #9a3e34; font-size: 11px; }
 .participant-import, .participant-schedule-editor { display: grid; gap: 12px; }
 .participant-import .muted { margin: 4px 0 0; }
 .import-file-button { position: relative; overflow: hidden; }
@@ -176,6 +203,7 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
 .key-reveal { padding-right: 12px; }
 @media (max-width: 900px) {
   .portal-layout { grid-template-columns: 1fr; gap: 7px; padding: 9px 12px; }
+  .kiosk-layout { grid-template-columns: 1fr; padding: 7px 9px 24px; }
   .side-nav { position: sticky; top: 65px; z-index: 3; flex-direction: row; overflow-x: auto; border-radius: 10px; padding: 5px; }
   .nav-item { flex: 0 0 auto; justify-content: center; gap: 5px; min-height: 34px; padding: 0 10px; white-space: nowrap; font-size: 10px; }
   .nav-item[data-page='scanner'] { order: -1; }
@@ -197,6 +225,9 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
   .metric-card { min-height: 70px; }
   .panel { padding: 13px; }
   .scanner-grid { grid-template-columns: 1fr; }
+  .scanner-page .scanner-grid { grid-template-columns: 1fr; }
+  .scanner-page .camera-view { min-height: 260px; max-height: 48vh; }
+  .scanner-page .page-heading { min-height: 52px; }
   .participant-schedule-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .scanner-toolbar { align-items: stretch; flex-direction: column; }
   .camera-view { max-height: 48vh; }
