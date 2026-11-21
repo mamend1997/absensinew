@@ -11,6 +11,24 @@ import { createOfflineSyncManager } from './core/offline-sync.js';
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '');
 const DEFAULT_WHATSAPP_GATEWAY_URL = 'https://gateway-production-a1168195.up.railway.app/api/send-message';
 const SESSION_KEY = 'saas_school_session';
+const EXCELJS_CHUNK_RELOAD_KEY = 'saas_school_exceljs_chunk_reloaded';
+
+window.addEventListener('vite:preloadError', (event) => {
+  event.preventDefault();
+  if (sessionStorage.getItem(EXCELJS_CHUNK_RELOAD_KEY)) {
+    sessionStorage.removeItem(EXCELJS_CHUNK_RELOAD_KEY);
+    return;
+  }
+  sessionStorage.setItem(EXCELJS_CHUNK_RELOAD_KEY, '1');
+  window.location.reload();
+});
+
+async function loadExcelJS() {
+  const { default: ExcelJS } = await import('exceljs');
+  sessionStorage.removeItem(EXCELJS_CHUNK_RELOAD_KEY);
+  return ExcelJS;
+}
+
 type Page = 'dashboard' | 'scanner' | 'reports' | 'participants' | 'settings' | 'roles' | 'downloads' | 'billing';
 type Permission =
   | 'dashboard.read'
@@ -1613,7 +1631,7 @@ export default function App() {
 
   async function downloadParticipantTemplate() {
     try {
-      const { default: ExcelJS } = await import('exceljs');
+      const ExcelJS = await loadExcelJS();
       const workbook = new ExcelJS.Workbook();
       const participantSheet = workbook.addWorksheet('Peserta');
       participantSheet.columns = [
@@ -1667,7 +1685,7 @@ export default function App() {
       if (!classrooms.length) {
         throw new Error('Daftar kelas belum tersedia. Sinkronkan master peserta lalu coba lagi.');
       }
-      const { default: ExcelJS } = await import('exceljs');
+      const ExcelJS = await loadExcelJS();
       const workbook = new ExcelJS.Workbook();
       await workbook.xlsx.load(await file.arrayBuffer());
       const sheet = workbook.getWorksheet('Peserta') ?? workbook.worksheets[0];
