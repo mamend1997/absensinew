@@ -136,8 +136,13 @@ function doPost(event) {
 function shouldIncludeAfterClear(record, clearCutoffMs) {
   const cutoff = Number(clearCutoffMs) || 0;
   if (!cutoff) return true;
-  const timestamp = parseTimestamp(record.client_timestamp);
-  return Boolean(timestamp && timestamp.getTime() > cutoff);
+  const receivedAt = record.server_received_at_ms == null
+    ? Number.NaN
+    : Number(record.server_received_at_ms);
+  const timestamp = Number.isFinite(receivedAt)
+    ? receivedAt
+    : parseTimestamp(record.client_timestamp)?.getTime();
+  return Number.isFinite(timestamp) && timestamp > cutoff;
 }
 
 function installDailyRefreshTrigger() {

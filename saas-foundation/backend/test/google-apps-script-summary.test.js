@@ -140,4 +140,8 @@ test('Apps Script clear cutoff ignores old backfill but accepts new attendance',
   assert.equal(sandbox.shouldIncludeAfterClear({
     client_timestamp: '2026-11-21 12:00:00.000',
   }, 0), true);
+  assert.equal(sandbox.shouldIncludeAfterClear({
+    client_timestamp: '2026-11-21 12:59:59.000',
+    server_received_at_ms: cutoff + 1000,
+  }, cutoff), true);
 });
