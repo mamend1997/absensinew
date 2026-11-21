@@ -135,6 +135,7 @@ interface QueuedScan {
 interface ScannerPreferences {
   cameraFacing: 'user' | 'environment';
   scanSpeed: 'fast' | 'balanced';
+  usbScannerEnabled: boolean;
 }
 interface ScannerCache extends DBSchema {
   participants: { key: string; value: Participant };
@@ -175,6 +176,7 @@ const initialSettings: OperationalSettings = {
 const initialScannerPreferences: ScannerPreferences = {
   cameraFacing: 'user',
   scanSpeed: 'fast',
+  usbScannerEnabled: true,
 };
 const weekDays = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
 const initialDate = new Date().toISOString().slice(0, 10);
@@ -547,7 +549,7 @@ export default function App() {
     void database(session.school.id)
       .then((db) => db.get('scannerPreferences', 'default'))
       .then((preferences) => {
-        if (active && preferences) setScannerPreferences(preferences);
+        if (active && preferences) setScannerPreferences({ ...initialScannerPreferences, ...preferences });
       })
       .catch((reason: unknown) => {
         if (active) setError(reason instanceof Error ? reason.message : 'Pengaturan scanner lokal gagal dimuat.');
@@ -1015,7 +1017,15 @@ export default function App() {
       await db.put('scannerPreferences', next, 'default');
       setScannerPreferences(next);
       setMessage('Pengaturan scanner disimpan pada perangkat ini.');
-      if (cameraActive) {
+      if (!next.usbScannerEnabled) {
+        if (wedgeTimerRef.current) window.clearTimeout(wedgeTimerRef.current);
+        wedgeTimerRef.current = undefined;
+        setManualCode('');
+      }
+      const cameraSettingsChanged =
+        next.cameraFacing !== scannerPreferences.cameraFacing ||
+        next.scanSpeed !== scannerPreferences.scanSpeed;
+      if (cameraActive && cameraSettingsChanged) {
         controlsRef.current?.stop();
         controlsRef.current = null;
         setCameraActive(false);
@@ -1753,13 +1763,13 @@ export default function App() {
                 </div>
               </div>
 
-              <form className="scanner-wedge-form" onSubmit={submitWedge}>
+              {scannerPreferences.usbScannerEnabled && <form className="scanner-wedge-form" onSubmit={submitWedge}>
                 <label htmlFor="scanner-wedge-code">Scanner barcode USB / Bluetooth</label>
                 <div className="scanner-wedge-controls">
                   <input id="scanner-wedge-code" value={manualCode} onChange={(event) => handleWedgeChange(event.target.value)} placeholder="Fokuskan bidang ini, lalu scan kartu" autoComplete="off" autoFocus />
                   <button className="button secondary" type="submit" disabled={!manualCode.trim()}>Proses kode</button>
                 </div>
-              </form>
+              </form>}
 
               <section className="scan-history-card">
                 <div className="scan-history-heading"><div><h2>Log kehadiran terbaru</h2><p>Riwayat scan yang tersimpan di perangkat ini</p></div>{pendingCount > 0 && <span className="history-pending">{pendingCount} pending</span>}</div>
@@ -1867,6 +1877,10 @@ export default function App() {
                     </select>
                   </label>
                 </div>
+                <label className="scanner-usb-toggle">
+                  <input type="checkbox" checked={scannerPreferences.usbScannerEnabled} onChange={(event) => void updateScannerPreferences({ ...scannerPreferences, usbScannerEnabled: event.target.checked })} />
+                  <span>Aktifkan field scanner barcode USB / Bluetooth</span>
+                </label>
                 <p className="muted">Mode cepat mengurangi jeda decode menjadi 100 ms (250 ms setelah berhasil); mode seimbang memakai 350 ms (500 ms setelah berhasil). Pemindaian aktual tetap bergantung pada kamera, fokus, pencahayaan, dan kualitas kode.</p>
               </section>
               <form className="panel settings-form" onSubmit={(event) => void saveSettings(event)}>

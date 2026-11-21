@@ -253,6 +253,8 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
 .settings-form { display: grid; gap: 16px; }
 .scanner-preference-panel { display: grid; gap: 12px; }
 .scanner-preference-panel .muted { margin: 0; }
+.scanner-usb-toggle { display: flex !important; align-items: center; gap: 9px; cursor: pointer; }
+.scanner-usb-toggle input { width: 18px; min-height: 18px; accent-color: #176f4c; }
 .schedule-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 12px; }
 .schedule-row { display: flex; min-height: 35px; align-items: center; gap: 8px; border-bottom: 1px solid #eff3ef; font-size: 10px; }
 .schedule-row span:first-child { width: 70px; color: #334b40; }
