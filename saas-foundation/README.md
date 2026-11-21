@@ -155,9 +155,11 @@ mengaktifkan langganan. Kasera menggunakan hosted checkout di
 gunakan provider lain karena API Kasera mewajibkan attestasi pengiriman.
 Spesifikasi API: https://pay.kasera.id/v1/openapi.json.
 
-Xendit dan Duitku dapat diatur dari Super Admin atau menggunakan fallback
-environment pada `backend\.env.example` (jangan commit secret). Tetapkan URL
-backend publik pada `PUBLIC_API_URL` dan portal sekolah pada `PUBLIC_WEB_URL`.
+Xendit, Duitku, dan Kasera dapat diatur dari Super Admin atau menggunakan
+fallback environment pada `backend\.env.example` (jangan commit secret). Saat
+pengaturan disimpan melalui portal Super Admin, URL publik portal dan API
+disimpan otomatis dari origin yang sedang digunakan. Pastikan alamat tersebut
+merupakan HTTPS publik dan dapat menerima callback provider.
 Atur callback Xendit ke
 `/api/payments/xendit/callback` dan callback Duitku ke
 `/api/payments/duitku/callback`; callback Xendit harus menggunakan token yang

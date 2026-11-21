@@ -44,14 +44,31 @@ function mask(value) {
   return value ? `****${value.slice(-4)}` : '';
 }
 
-function callbackUrl(path) {
-  if (!config.publicApiUrl) return '';
-  try { return new URL(path, config.publicApiUrl).toString(); } catch { return ''; }
+function validatePublicBaseUrl(value, field) {
+  if (typeof value !== 'string' || value.length > 1000) {
+    throw fail(400, `${field} harus berupa URL HTTPS publik.`, 'VALIDATION_ERROR');
+  }
+  let url;
+  try { url = new URL(value); } catch {
+    throw fail(400, `${field} harus berupa URL HTTPS publik.`, 'VALIDATION_ERROR');
+  }
+  if (url.protocol !== 'https:' || url.username || url.password ||
+      url.hostname === 'localhost' || url.hostname.endsWith('.localhost') ||
+      url.hostname.endsWith('.local') || url.hostname.endsWith('.internal')) {
+    throw fail(400, `${field} harus berupa URL HTTPS publik.`, 'VALIDATION_ERROR');
+  }
+  return url.origin;
+}
+
+function callbackUrl(path, publicApiUrl) {
+  if (!publicApiUrl) return '';
+  try { return new URL(path, publicApiUrl).toString(); } catch { return ''; }
 }
 
 export async function getPlatformPaymentSettings() {
   const [[row]] = await pool.execute(
-    `SELECT xendit_enabled, duitku_enabled, duitku_environment, kasera_enabled, encrypted_credentials
+    `SELECT xendit_enabled, duitku_enabled, duitku_environment, kasera_enabled,
+            encrypted_credentials, public_web_url, public_api_url
        FROM platform_payment_gateway_settings WHERE id = 1`,
   );
   const stored = decryptCredentials(row?.encrypted_credentials);
@@ -69,17 +86,19 @@ export async function getPlatformPaymentSettings() {
     kasera_webhook_secret: typeof stored.kasera_webhook_secret === 'string'
       ? stored.kasera_webhook_secret : '',
   };
+  const publicWebUrl = row?.public_web_url || config.publicWebUrl;
+  const publicApiUrl = row?.public_api_url || config.publicApiUrl;
   const xenditConfigured = Boolean(
     credentials.xendit_secret_key && credentials.xendit_callback_token &&
-    config.publicWebUrl && config.publicApiUrl,
+    publicWebUrl && publicApiUrl,
   );
   const duitkuConfigured = Boolean(
     credentials.duitku_merchant_code && credentials.duitku_api_key &&
-    config.publicWebUrl && config.publicApiUrl,
+    publicWebUrl && publicApiUrl,
   );
   const kaseraConfigured = Boolean(
     credentials.kasera_api_key && credentials.kasera_webhook_secret &&
-    config.publicWebUrl && config.publicApiUrl,
+    publicWebUrl && publicApiUrl,
   );
   const xenditEnabled = row?.xendit_enabled == null
     ? xenditConfigured : Boolean(Number(row.xendit_enabled));
@@ -90,6 +109,8 @@ export async function getPlatformPaymentSettings() {
 
   return {
     credentials,
+    public_web_url: publicWebUrl,
+    public_api_url: publicApiUrl,
     xendit: {
       configured: xenditConfigured,
       enabled: xenditEnabled,
@@ -116,9 +137,9 @@ export async function getAdminPaymentGatewaySettings() {
   return {
     credential_source: settings.credential_source,
     callback_urls: {
-      xendit: callbackUrl('/api/payments/xendit/callback'),
-      duitku: callbackUrl('/api/payments/duitku/callback'),
-      kasera: callbackUrl('/api/payments/kasera/webhook'),
+      xendit: callbackUrl('/api/payments/xendit/callback', settings.public_api_url),
+      duitku: callbackUrl('/api/payments/duitku/callback', settings.public_api_url),
+      kasera: callbackUrl('/api/payments/kasera/webhook', settings.public_api_url),
     },
     xendit: {
       configured: settings.xendit.configured,
@@ -162,6 +183,12 @@ export function validatePaymentGatewayUpdate(body, current) {
   if (!['production', 'sandbox'].includes(environment)) {
     throw fail(400, 'Environment Duitku tidak valid.', 'VALIDATION_ERROR');
   }
+  const publicWebUrl = body.public_web_url === undefined || body.public_web_url === ''
+    ? current.public_web_url || config.publicWebUrl
+    : validatePublicBaseUrl(body.public_web_url, 'PUBLIC_WEB_URL');
+  const publicApiUrl = body.public_api_url === undefined || body.public_api_url === ''
+    ? current.public_api_url || config.publicApiUrl
+    : validatePublicBaseUrl(body.public_api_url, 'PUBLIC_API_URL');
   const credentials = {
     xendit_secret_key: inputValue(
       body.xendit.secret_key, current.credentials.xendit_secret_key, 'Secret key Xendit', 500,
@@ -189,15 +216,15 @@ export function validatePaymentGatewayUpdate(body, current) {
   }
   const kaseraEnabled = body.kasera?.enabled ?? current.kasera?.enabled ?? false;
   if (body.xendit.enabled && (!credentials.xendit_secret_key ||
-      !credentials.xendit_callback_token || !config.publicWebUrl || !config.publicApiUrl)) {
+      !credentials.xendit_callback_token || !publicWebUrl || !publicApiUrl)) {
     throw fail(400, 'Lengkapi kredensial Xendit serta PUBLIC_WEB_URL dan PUBLIC_API_URL sebelum mengaktifkannya.', 'VALIDATION_ERROR');
   }
   if (body.duitku.enabled && (!credentials.duitku_merchant_code ||
-      !credentials.duitku_api_key || !config.publicWebUrl || !config.publicApiUrl)) {
+      !credentials.duitku_api_key || !publicWebUrl || !publicApiUrl)) {
     throw fail(400, 'Lengkapi kredensial Duitku serta PUBLIC_WEB_URL dan PUBLIC_API_URL sebelum mengaktifkannya.', 'VALIDATION_ERROR');
   }
   if (kaseraEnabled && (!credentials.kasera_api_key ||
-      !credentials.kasera_webhook_secret || !config.publicWebUrl || !config.publicApiUrl)) {
+      !credentials.kasera_webhook_secret || !publicWebUrl || !publicApiUrl)) {
     throw fail(400, 'Lengkapi API key dan webhook secret Kasera serta PUBLIC_WEB_URL dan PUBLIC_API_URL sebelum mengaktifkannya.', 'VALIDATION_ERROR');
   }
   if (kaseraEnabled && process.env.NODE_ENV === 'production' &&
@@ -206,6 +233,8 @@ export function validatePaymentGatewayUpdate(body, current) {
   }
   return {
     credentials,
+    public_web_url: publicWebUrl,
+    public_api_url: publicApiUrl,
     xendit_enabled: body.xendit.enabled,
     duitku_enabled: body.duitku.enabled,
     duitku_environment: environment,
@@ -219,7 +248,7 @@ export async function savePaymentGatewaySettings(body) {
   await pool.execute(
     `UPDATE platform_payment_gateway_settings
         SET xendit_enabled = ?, duitku_enabled = ?, duitku_environment = ?, kasera_enabled = ?,
-            encrypted_credentials = ?
+            encrypted_credentials = ?, public_web_url = ?, public_api_url = ?
       WHERE id = 1`,
     [
       settings.xendit_enabled,
@@ -227,6 +256,8 @@ export async function savePaymentGatewaySettings(body) {
       settings.duitku_environment,
       settings.kasera_enabled,
       seal(JSON.stringify(settings.credentials)),
+      settings.public_web_url || null,
+      settings.public_api_url || null,
     ],
   );
   return getAdminPaymentGatewaySettings();

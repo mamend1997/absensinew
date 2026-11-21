@@ -102,8 +102,8 @@ export async function createProviderPayment({
 }) {
   const settings = await getPlatformPaymentSettings();
   requireProviderConfig(order.provider, settings);
-  const publicWeb = requirePublicUrl(config.publicWebUrl, 'PUBLIC_WEB_URL');
-  const publicApi = requirePublicUrl(config.publicApiUrl, 'PUBLIC_API_URL');
+  const publicWeb = requirePublicUrl(settings.public_web_url, 'PUBLIC_WEB_URL');
+  const publicApi = requirePublicUrl(settings.public_api_url, 'PUBLIC_API_URL');
   const returnUrl = new URL('/?billing=return', publicWeb).toString();
 
   if (order.provider === 'xendit') {

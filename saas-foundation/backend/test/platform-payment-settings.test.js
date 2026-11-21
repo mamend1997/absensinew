@@ -34,11 +34,47 @@ test('payment gateway update retains blank credentials and accepts provider envi
 
   assert.deepEqual(result, {
     credentials: current.credentials,
+    public_web_url: 'https://web.example',
+    public_api_url: 'https://api.example',
     xendit_enabled: true,
     duitku_enabled: false,
     duitku_environment: 'sandbox',
     kasera_enabled: true,
   });
+});
+
+test('payment gateway update accepts public callback bases provided by the admin portal', () => {
+  const result = validatePaymentGatewayUpdate({
+    public_web_url: 'https://portal.example',
+    public_api_url: 'https://api.example',
+    xendit: { enabled: false },
+    duitku: { enabled: false },
+    kasera: { enabled: true },
+  }, {
+    ...current,
+    public_web_url: '',
+    public_api_url: '',
+    kasera: { enabled: false },
+  });
+
+  assert.equal(result.public_web_url, 'https://portal.example');
+  assert.equal(result.public_api_url, 'https://api.example');
+  assert.equal(result.kasera_enabled, true);
+});
+
+test('payment gateway update rejects non-HTTPS callback bases', () => {
+  assert.throws(() => validatePaymentGatewayUpdate({
+    public_web_url: 'http://portal.example',
+    public_api_url: 'https://api.example',
+    xendit: { enabled: false },
+    duitku: { enabled: false },
+    kasera: { enabled: true },
+  }, {
+    ...current,
+    public_web_url: '',
+    public_api_url: '',
+    kasera: { enabled: false },
+  }), { statusCode: 400 });
 });
 
 test('payment gateway update rejects enabling providers without credentials', () => {

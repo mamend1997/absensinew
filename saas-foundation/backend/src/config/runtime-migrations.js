@@ -217,6 +217,8 @@ export async function ensureRuntimeMigrations(pool) {
       duitku_environment ENUM('production', 'sandbox') NULL DEFAULT NULL,
       kasera_enabled BOOLEAN NULL DEFAULT NULL,
       encrypted_credentials TEXT NULL,
+      public_web_url VARCHAR(1000) NULL,
+      public_api_url VARCHAR(1000) NULL,
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       PRIMARY KEY (id),
       CONSTRAINT chk_platform_payment_gateway_singleton CHECK (id = 1)
@@ -229,6 +231,12 @@ export async function ensureRuntimeMigrations(pool) {
   );
   if (!paymentGatewayColumns.some((column) => column.COLUMN_NAME === 'kasera_enabled')) {
     await pool.execute('ALTER TABLE platform_payment_gateway_settings ADD COLUMN kasera_enabled BOOLEAN NULL DEFAULT NULL');
+  }
+  if (!paymentGatewayColumns.some((column) => column.COLUMN_NAME === 'public_web_url')) {
+    await pool.execute('ALTER TABLE platform_payment_gateway_settings ADD COLUMN public_web_url VARCHAR(1000) NULL');
+  }
+  if (!paymentGatewayColumns.some((column) => column.COLUMN_NAME === 'public_api_url')) {
+    await pool.execute('ALTER TABLE platform_payment_gateway_settings ADD COLUMN public_api_url VARCHAR(1000) NULL');
   }
 
   await pool.execute(`

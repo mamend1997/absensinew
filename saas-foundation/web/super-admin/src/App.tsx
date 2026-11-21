@@ -748,6 +748,11 @@ export default function App() {
         {
           method: 'PUT',
           body: {
+            public_web_url: window.location.protocol === 'https:' ? window.location.origin : '',
+            public_api_url: (() => {
+              const apiUrl = new URL(API_BASE, window.location.origin);
+              return apiUrl.protocol === 'https:' ? apiUrl.origin : '';
+            })(),
             xendit: {
               enabled: paymentGatewayForm.xendit_enabled,
               secret_key: paymentGatewayForm.xendit_secret_key,
@@ -1179,7 +1184,7 @@ export default function App() {
           <div>
             <h2>Pengaturan payment gateway</h2>
             <p className="muted">Atur kredensial Xendit, Duitku, dan Kasera untuk tagihan sekolah. Kredensial dienkripsi saat disimpan dan tidak pernah ditampilkan kembali.</p>
-            <p className="muted">Kredensial kosong akan mempertahankan nilai tersimpan. Pastikan PUBLIC_WEB_URL dan PUBLIC_API_URL tersedia di environment backend.</p>
+            <p className="muted">Kredensial kosong akan mempertahankan nilai tersimpan. URL publik untuk callback dan halaman kembali disimpan otomatis dari alamat portal serta API saat pengaturan disimpan; environment backend tetap menjadi fallback.</p>
             {paymentGatewaySettings && <span className="gateway-status">
               Sumber kredensial: {paymentGatewaySettings.credential_source === 'database' ? 'pengaturan platform' : 'environment backend'}
             </span>}
@@ -1187,7 +1192,7 @@ export default function App() {
           <form className="payment-gateways-form" onSubmit={(event) => void savePaymentGateways(event)}>
             <fieldset>
               <legend>Xendit</legend>
-              <small className="payment-callback-url">Callback URL: {paymentGatewaySettings?.callback_urls.xendit || 'Atur PUBLIC_API_URL di environment backend'}</small>
+              <small className="payment-callback-url">Callback URL: {paymentGatewaySettings?.callback_urls.xendit || 'Simpan pengaturan untuk menetapkan URL callback'}</small>
               <label className="gateway-toggle">
                 <input type="checkbox" checked={paymentGatewayForm.xendit_enabled} onChange={(event) => setPaymentGatewayForm((current) => ({ ...current, xendit_enabled: event.target.checked }))} />
                 Aktifkan Xendit
@@ -1204,7 +1209,7 @@ export default function App() {
             </fieldset>
             <fieldset>
               <legend>Duitku</legend>
-              <small className="payment-callback-url">Callback URL: {paymentGatewaySettings?.callback_urls.duitku || 'Atur PUBLIC_API_URL di environment backend'}</small>
+              <small className="payment-callback-url">Callback URL: {paymentGatewaySettings?.callback_urls.duitku || 'Simpan pengaturan untuk menetapkan URL callback'}</small>
               <label className="gateway-toggle">
                 <input type="checkbox" checked={paymentGatewayForm.duitku_enabled} onChange={(event) => setPaymentGatewayForm((current) => ({ ...current, duitku_enabled: event.target.checked }))} />
                 Aktifkan Duitku
@@ -1226,7 +1231,7 @@ export default function App() {
             </fieldset>
             <fieldset>
               <legend>Kasera</legend>
-              <small className="payment-callback-url">Webhook URL: {paymentGatewaySettings?.callback_urls.kasera || 'Atur PUBLIC_API_URL di environment backend'}</small>
+              <small className="payment-callback-url">Webhook URL: {paymentGatewaySettings?.callback_urls.kasera || 'Simpan pengaturan untuk menetapkan URL webhook'}</small>
               <p className="muted">Pasang URL ini sebagai webhook Kasera untuk event payment.paid, lalu masukkan signing secret yang diberikan Kasera. Tagihan produksi memerlukan API key live.</p>
               <label className="gateway-toggle">
                 <input type="checkbox" checked={paymentGatewayForm.kasera_enabled} onChange={(event) => setPaymentGatewayForm((current) => ({ ...current, kasera_enabled: event.target.checked }))} />
