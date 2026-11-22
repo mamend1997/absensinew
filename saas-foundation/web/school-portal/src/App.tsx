@@ -114,6 +114,7 @@ interface GoogleSheetsSettings {
   secret_hint: string;
   last_sync_at: string | null;
   sync_error: string | null;
+  permission_record_count?: number;
 }
 type SchoolTheme = 'current' | 'orange' | 'white' | 'white_blue';
 interface SchoolBranding {
@@ -3748,6 +3749,30 @@ export default function App() {
     }
   }
 
+  async function resyncGoogleSheetsPermissions() {
+    if (!session) return;
+    setGoogleSheetsBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await request<{ sent_count: number; message: string }>(
+        '/school/settings/google-sheets/resync-permissions',
+        session.token,
+        { method: 'POST' },
+      );
+      setNotice(result.message);
+      setGoogleSheetsSettings((current) => ({
+        ...current,
+        permission_record_count: result.sent_count,
+        sync_error: null,
+      }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Record izin gagal dikirim ke Google Sheets.');
+    } finally {
+      setGoogleSheetsBusy(false);
+    }
+  }
+
   async function testSchoolWhatsappGateway() {
     if (!session) return;
     setWhatsappTestBusy(true);
@@ -4670,6 +4695,10 @@ export default function App() {
                   {googleSheetsSettings.is_enabled && googleSheetsSettings.is_configured &&
                     <button className="button" type="button" disabled={googleSheetsBusy} onClick={() => void resyncGoogleSheetsHistory()}>
                       {googleSheetsBusy ? 'Memproses…' : 'Kirim ulang riwayat'}
+                    </button>}
+                  {googleSheetsSettings.is_enabled && googleSheetsSettings.is_configured &&
+                    <button className="button secondary" type="button" disabled={googleSheetsBusy} onClick={() => void resyncGoogleSheetsPermissions()}>
+                      {googleSheetsBusy ? 'Memproses…' : 'Kirim ulang izin keluar'}
                     </button>}
                 </form> : <p className="muted">URL: {googleSheetsSettings.web_app_url || 'Belum dikonfigurasi'}</p>}
               </section>}

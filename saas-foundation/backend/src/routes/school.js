@@ -36,6 +36,7 @@ import {
   decryptGatewayToken, encryptGatewayToken, sendWhatsappMessage, validateGatewayUrl,
 } from '../core/whatsapp-gateway.js';
 import {
+  sendAttendanceToGoogleSheets,
   validateAppsScriptWebAppUrl,
 } from '../core/google-sheets-sync.js';
 import { aggregateAttendanceReport } from '../core/attendance-report.js';
@@ -1455,6 +1456,13 @@ router.get('/settings/google-sheets', requireSchoolUser,
         WHERE c.sekolah_id = ?`,
       [req.schoolUser.sekolah_id],
     );
+    const [[permissionCount]] = await pool.execute(
+      `SELECT COUNT(*) AS jumlah
+         FROM attendance_logs
+        WHERE sekolah_id = ?
+          AND event_type IN ('permission_out', 'permission_in')`,
+      [req.schoolUser.sekolah_id],
+    );
     res.json({
       settings: {
         web_app_url: settings?.web_app_url ?? '',
@@ -1463,6 +1471,7 @@ router.get('/settings/google-sheets', requireSchoolUser,
         secret_hint: settings?.token_ciphertext ? 'Secret tersimpan terenkripsi' : '',
         last_sync_at: settings?.last_success_at ?? null,
         sync_error: settings?.last_error ?? null,
+        permission_record_count: Number(permissionCount?.jumlah ?? 0),
       },
     });
   }));
@@ -1593,6 +1602,47 @@ router.post('/settings/google-sheets/resync', requireSchoolUser,
         last_sync_at: null,
         sync_error: null,
       },
+    });
+  }));
+
+router.post('/settings/google-sheets/resync-permissions', requireSchoolUser,
+  requirePermission('settings.operational.edit'), asyncRoute(async (req, res) => {
+    const [[settings]] = await pool.execute(
+      `SELECT web_app_url, token_ciphertext
+         FROM school_google_sheets_config
+        WHERE sekolah_id = ? AND is_enabled = TRUE`,
+      [req.schoolUser.sekolah_id],
+    );
+    if (!settings?.web_app_url || !settings?.token_ciphertext) {
+      throw fail(409, 'Aktifkan Google Sheets sebelum mengirim ulang izin.', 'SYNC_NOT_CONFIGURED');
+    }
+    const [rows] = await pool.execute(
+      `SELECT id_unik FROM attendance_logs
+        WHERE sekolah_id = ?
+          AND event_type IN ('permission_out', 'permission_in')
+        ORDER BY id ASC`,
+      [req.schoolUser.sekolah_id],
+    );
+    if (!rows.length) {
+      throw fail(404, 'Belum ada record Izin Keluar atau Masuk Kembali untuk dikirim.', 'NO_PERMISSION_RECORDS');
+    }
+    for (let index = 0; index < rows.length; index += 100) {
+      await sendAttendanceToGoogleSheets({
+        schoolId: req.schoolUser.sekolah_id,
+        ids: rows.slice(index, index + 100).map((row) => row.id_unik),
+      });
+    }
+    await pool.execute(
+      `INSERT INTO school_google_sheets_sync_state (sekolah_id)
+       VALUES (?) ON DUPLICATE KEY UPDATE
+         last_attempt_at = UTC_TIMESTAMP(),
+         last_success_at = UTC_TIMESTAMP(),
+         last_error = NULL`,
+      [req.schoolUser.sekolah_id],
+    );
+    res.json({
+      sent_count: rows.length,
+      message: `${rows.length} record izin berhasil dikirim ke Google Sheets.`,
     });
   }));
 
