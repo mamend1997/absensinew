@@ -120,6 +120,21 @@ async function syncSchoolHistory(schoolId) {
       );
       if (!state) return;
 
+      const [permissionHistory] = await lockConnection.execute(
+        `SELECT id_unik FROM attendance_logs
+          WHERE sekolah_id = ? AND event_type IN ('permission_out', 'permission_in')
+          ORDER BY id DESC LIMIT ${SYNC_BATCH_SIZE}`,
+        [schoolId],
+      );
+      if (permissionHistory.length) {
+        const permissionIds = permissionHistory.map((record) => record.id_unik);
+        await sendAttendanceToGoogleSheets({
+          schoolId,
+          ids: permissionIds,
+          connection: lockConnection,
+        });
+      }
+
       const [history] = await lockConnection.execute(
         `SELECT id, id_unik FROM attendance_logs
           WHERE sekolah_id = ? AND id > ?

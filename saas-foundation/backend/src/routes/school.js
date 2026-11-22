@@ -1923,16 +1923,19 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
             );
             if (!checkInRows.length) return 'ignored_missing_check_in';
           }
-          const [recentScans] = await connection.execute(
-            `SELECT id FROM attendance_logs
-              WHERE sekolah_id = ? AND participant_id = ? AND attendance_date = ?
-                AND client_timestamp_utc > ?
-              ORDER BY client_timestamp_utc DESC, id DESC
-              FOR UPDATE`,
-            [schoolId, participant.id, calculation.date, cooldownThreshold],
-          );
-          if (recentScans.length) {
-            return 'ignored_cooldown';
+          if (['check_in', 'check_out'].includes(eventType)) {
+            const [recentScans] = await connection.execute(
+              `SELECT id FROM attendance_logs
+                WHERE sekolah_id = ? AND participant_id = ? AND attendance_date = ?
+                  AND event_type IN ('check_in', 'check_out')
+                  AND client_timestamp_utc > ?
+                ORDER BY client_timestamp_utc DESC, id DESC
+                FOR UPDATE`,
+              [schoolId, participant.id, calculation.date, cooldownThreshold],
+            );
+            if (recentScans.length) {
+              return 'ignored_cooldown';
+            }
           }
           const [result] = await connection.execute(
             `INSERT INTO attendance_logs

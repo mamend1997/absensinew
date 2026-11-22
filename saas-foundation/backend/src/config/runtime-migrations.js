@@ -18,6 +18,23 @@ export async function ensureRuntimeMigrations(pool) {
          MODIFY COLUMN attendance_status ENUM('hadir','terlambat','pulang','izin_keluar','izin_masuk') NOT NULL`,
       );
     }
+
+    const [attendanceIndexes] = await pool.execute(
+      `SELECT INDEX_NAME FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'attendance_logs'`,
+    );
+    const indexNames = new Set(attendanceIndexes.map((index) => index.INDEX_NAME));
+    if (!indexNames.has('idx_attendance_school_participant')) {
+      await pool.execute(
+        `ALTER TABLE attendance_logs
+         ADD INDEX idx_attendance_school_participant (sekolah_id, participant_id)`,
+      );
+    }
+    if (indexNames.has('uq_attendance_daily_event')) {
+      await pool.execute(
+        'ALTER TABLE attendance_logs DROP INDEX uq_attendance_daily_event',
+      );
+    }
   }
 
   const [schoolColumns] = await pool.execute(
