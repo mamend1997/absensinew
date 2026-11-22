@@ -12,6 +12,7 @@ import {
   attendanceEventTypeForMode,
   calculateAttendance,
   createQueuedScan,
+  hasPermissionOutBeforeReturn,
   mergeDailyAttendanceState,
   remainingScanCooldownMs,
   shouldApplyAttendanceCooldown,
@@ -2440,6 +2441,16 @@ export default function App() {
         record.jenis_absen === 'check_in',
       ) || Boolean(dailyState?.check_in);
       const eventType = attendanceEventTypeForMode(attendanceSessionMode, hasCheckIn);
+      if (eventType === 'permission_in') {
+        const hasOpenPermissionOut = hasPermissionOutBeforeReturn(
+          participantScans,
+          matchedParticipant.id,
+          initialCalculation.date,
+        );
+        if (!hasOpenPermissionOut) {
+          throw new Error('Masuk Kembali ditolak. Pindai Izin Keluar terlebih dahulu.');
+        }
+      }
       const remainingCooldown = shouldApplyAttendanceCooldown(eventType)
         ? remainingScanCooldownMs(lastScanAt || null, now, cooldownMinutes)
         : 0;

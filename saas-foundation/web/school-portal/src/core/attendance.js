@@ -104,6 +104,15 @@ export function shouldApplyAttendanceCooldown(eventType) {
   return ['check_in', 'check_out'].includes(eventType);
 }
 
+export function hasPermissionOutBeforeReturn(records, participantId, attendanceDate) {
+  if (!Array.isArray(records)) return false;
+  return records.some((record) =>
+    record.jenis_absen === 'permission_out' &&
+    String(record.id_peserta) === String(participantId) &&
+    record.attendance_date === attendanceDate,
+  );
+}
+
 export function mergeDailyAttendanceState(current, scan) {
   const scanTime = Date.parse(scan.client_timestamp);
   if (!Number.isFinite(scanTime)) throw new TypeError('Waktu scan tidak valid.');

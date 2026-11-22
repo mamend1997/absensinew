@@ -8,6 +8,7 @@ import {
   createQueuedScan as createBrowserQueuedScan,
   mergeDailyAttendanceState,
   remainingScanCooldownMs,
+  hasPermissionOutBeforeReturn,
   shouldApplyAttendanceCooldown,
 } from '../../web/school-portal/src/core/attendance.js';
 import {
@@ -230,6 +231,26 @@ test('scanner session mode selects check-in, check-out, or automatic attendance'
   assert.equal(shouldApplyAttendanceCooldown('check_out'), true);
   assert.equal(shouldApplyAttendanceCooldown('permission_out'), false);
   assert.equal(shouldApplyAttendanceCooldown('permission_in'), false);
+});
+
+test('permission return requires a same-day and same-participant permission exit', () => {
+  const records = [{
+    id_peserta: 'p1',
+    attendance_date: '2026-11-22',
+    jenis_absen: 'permission_out',
+  }];
+  assert.equal(
+    hasPermissionOutBeforeReturn(records, 'p1', '2026-11-22'),
+    true,
+  );
+  assert.equal(
+    hasPermissionOutBeforeReturn(records, 'p1', '2026-11-23'),
+    false,
+  );
+  assert.equal(
+    hasPermissionOutBeforeReturn(records, 'p2', '2026-11-22'),
+    false,
+  );
 });
 
 test('local attendance state advances cooldown and retains check-in after repeated check-outs', () => {

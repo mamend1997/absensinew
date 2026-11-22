@@ -1972,7 +1972,6 @@ const syncPermissionBatch = asyncRoute(async (req, res) => {
             WHERE sekolah_id = ? AND id_unik = ? FOR UPDATE`,
           [schoolId, id],
         );
-        if (existing.length) return;
         if (eventType === 'permission_in') {
           const [[openPermissionOut]] = await connection.execute(
             `SELECT id, client_timestamp_utc
@@ -2001,6 +2000,7 @@ const syncPermissionBatch = asyncRoute(async (req, res) => {
             throw new Error('permission_already_returned');
           }
         }
+        if (existing.length) return;
         await connection.execute(
           `INSERT INTO attendance_logs
             (sekolah_id, id_unik, participant_id, device_id, recorded_by,

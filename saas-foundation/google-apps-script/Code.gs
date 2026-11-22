@@ -57,7 +57,12 @@ function onOpen() {
 
 function onEdit(event) {
   if (!event || !event.range ||
-      !isMonthlySummarySheetName(event.range.getSheet().getName())) return;
+      (!isMonthlySummarySheetName(event.range.getSheet().getName()) &&
+       !event.range.getSheet().getName().startsWith(PERMISSION_SHEET_PREFIX))) return;
+  if (event.range.getSheet().getName().startsWith(PERMISSION_SHEET_PREFIX)) {
+    savePermissionSheetEdit(event);
+    return;
+  }
   const summarySheet = event.range.getSheet();
   const metadata = findSummaryMetadata(summarySheet);
   const participantIdColumn = metadata.participantIdColumn;
