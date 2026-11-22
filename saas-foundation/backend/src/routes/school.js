@@ -1907,7 +1907,6 @@ const syncPermissionBatch = asyncRoute(async (req, res) => {
     }
     seen.add(id);
     if (!['permission_out', 'permission_in'].includes(eventType) ||
-        !/^[1-9]\d*$/.test(String(participantId ?? '')) ||
         !['SCAN_QR', 'MANUAL_INPUT'].includes(scanMethod) ||
         typeof record.client_timestamp !== 'string' ||
         !/(?:Z|[+-]\d{2}:\d{2})$/i.test(record.client_timestamp) ||
@@ -1917,15 +1916,47 @@ const syncPermissionBatch = asyncRoute(async (req, res) => {
       continue;
     }
     try {
-      const [participants] = await pool.execute(
+      let participantRows = [];
+      if (/^[1-9]\d*$/.test(String(participantId ?? ''))) {
+        [participantRows] = await pool.execute(
         `SELECT p.id, p.participant_code, p.full_name, c.name AS classroom_name
            FROM participants p
            JOIN classrooms c ON c.id = p.classroom_id AND c.sekolah_id = p.sekolah_id
           WHERE p.sekolah_id = ? AND p.id = ? AND p.is_active = TRUE`,
         [schoolId, participantId],
-      );
-      if (!participants.length) throw new Error('participant_not_found');
-      const participant = participants[0];
+        );
+      }
+      if (!participantRows.length) {
+        const participantCode = String(record.participant_code ?? record.qr_code ?? '').trim();
+        if (participantCode) {
+          [participantRows] = await pool.execute(
+            `SELECT p.id, p.participant_code, p.full_name, c.name AS classroom_name
+               FROM participants p
+               JOIN classrooms c ON c.id = p.classroom_id AND c.sekolah_id = p.sekolah_id
+              WHERE p.sekolah_id = ? AND p.is_active = TRUE
+                AND (p.participant_code = ? OR p.qr_code = ?)
+              LIMIT 1`,
+            [schoolId, participantCode, participantCode],
+          );
+        }
+      }
+      if (!participantRows.length) {
+        const participantName = String(record.participant_name ?? '').trim();
+        if (participantName) {
+          [participantRows] = await pool.execute(
+            `SELECT p.id, p.participant_code, p.full_name, c.name AS classroom_name
+               FROM participants p
+               JOIN classrooms c ON c.id = p.classroom_id AND c.sekolah_id = p.sekolah_id
+              WHERE p.sekolah_id = ? AND p.is_active = TRUE
+                AND p.full_name = ?
+              LIMIT 2`,
+            [schoolId, participantName],
+          );
+          if (participantRows.length > 1) participantRows = [];
+        }
+      }
+      if (!participantRows.length) throw new Error('participant_not_found');
+      const participant = participantRows[0];
       const calculation = calculateAttendance({
         eventType,
         clientTimestamp: record.client_timestamp,
