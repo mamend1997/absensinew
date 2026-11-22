@@ -1,4 +1,32 @@
 export async function ensureRuntimeMigrations(pool) {
+  const [attendanceColumns] = await pool.execute(
+    `SELECT COLUMN_NAME, COLUMN_TYPE FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'attendance_logs'`,
+  );
+  if (attendanceColumns.length) {
+    const eventColumn = attendanceColumns.find((column) => column.COLUMN_NAME === 'event_type');
+    if (eventColumn && !String(eventColumn.COLUMN_TYPE).includes('permission_out')) {
+      await pool.execute(
+        `ALTER TABLE attendance_logs
+         MODIFY COLUMN event_type ENUM('check_in','check_out','permission_out','permission_in') NOT NULL`,
+      );
+    }
+    const statusColumn = attendanceColumns.find((column) => column.COLUMN_NAME === 'attendance_status');
+    if (statusColumn && !String(statusColumn.COLUMN_TYPE).includes('izin_keluar')) {
+      await pool.execute(
+        `ALTER TABLE attendance_logs
+         MODIFY COLUMN attendance_status ENUM('hadir','terlambat','pulang','izin_keluar','izin_masuk') NOT NULL`,
+      );
+    }
+    const [attendanceIndexes] = await pool.execute(
+      `SELECT INDEX_NAME FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'attendance_logs'`,
+    );
+    if (attendanceIndexes.some((index) => index.INDEX_NAME === 'uq_attendance_daily_event')) {
+      await pool.execute('ALTER TABLE attendance_logs DROP INDEX uq_attendance_daily_event');
+    }
+  }
+
   const [schoolColumns] = await pool.execute(
     `SELECT COLUMN_NAME FROM information_schema.COLUMNS
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'schools'`,

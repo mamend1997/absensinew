@@ -2,6 +2,7 @@ const DATA_SHEET_NAME = 'Absensi';
 const LEGACY_SUMMARY_SHEET_NAME = 'Rekap Bulanan';
 const LEGACY_ORDER_SHEET_NAME = 'Urutan Peserta';
 const LEGACY_CORRECTIONS_SHEET_NAME = 'Koreksi Absensi';
+const PERMISSION_SHEET_PREFIX = 'Izin ';
 const CLEAR_CUTOFF_PROPERTY = 'ATTENDANCE_CLEAR_CUTOFF_MS';
 const RESET_PIN_PROPERTY = 'RESET_PIN';
 const SUMMARY_PARTICIPANT_ID_HEADER = 'participant_id';
@@ -166,6 +167,7 @@ function clearAllAttendanceHistory() {
     const summarySheet = getSummarySheet(spreadsheet, monthKey);
     spreadsheet.getSheets()
       .filter((sheet) => isMonthlySummarySheetName(sheet.getName()) ||
+        sheet.getName().startsWith(PERMISSION_SHEET_PREFIX) ||
         [LEGACY_SUMMARY_SHEET_NAME, LEGACY_ORDER_SHEET_NAME,
           LEGACY_CORRECTIONS_SHEET_NAME].includes(sheet.getName()))
       .filter((sheet) => sheet !== summarySheet)
@@ -178,6 +180,7 @@ function clearAllAttendanceHistory() {
       String(Date.now()),
     );
     renderMonthlySummary(spreadsheet, dataSheet, summarySheet, monthKey, []);
+    renderPermissionSummary(spreadsheet, monthKey, [], spreadsheet.getSpreadsheetTimeZone());
     dataSheet.hideSheet();
   } finally {
     if (lock.hasLock()) lock.releaseLock();
@@ -223,7 +226,7 @@ function doPost(event) {
     for (const record of request.records) {
       if (!record || typeof record.id_unik !== 'string' || !record.id_unik ||
           !/^\d{4}-\d{2}-\d{2}$/.test(String(record.attendance_date || '')) ||
-          !['check_in', 'check_out'].includes(record.event_type) ||
+          !['check_in', 'check_out', 'permission_out', 'permission_in'].includes(record.event_type) ||
           !parseTimestamp(record.client_timestamp) ||
           (record.participant_id != null && !/^[1-9]\d*$/.test(String(record.participant_id)))) {
         return jsonResponse({ ok: false, error: 'invalid_record', accepted_ids: acceptedIds });
@@ -273,6 +276,12 @@ function doPost(event) {
         monthKey,
         recordsByMonth.get(monthKey) || [],
         newAttendanceEvents,
+      );
+      renderPermissionSummary(
+        spreadsheet,
+        monthKey,
+        recordsByMonth.get(monthKey) || [],
+        timeZone,
       );
     });
     dataSheet.hideSheet();
@@ -345,6 +354,12 @@ function refreshMonthlySummary() {
         monthKey,
         recordsByMonth.get(monthKey) || [],
       );
+      renderPermissionSummary(
+        spreadsheet,
+        monthKey,
+        recordsByMonth.get(monthKey) || [],
+        timeZone,
+      );
     });
     removeLegacySupportSheets(spreadsheet);
     dataSheet.hideSheet();
@@ -406,6 +421,127 @@ function monthSheetName(monthKey) {
   const month = Number(match[2]);
   if (month < 1 || month > 12) throw new Error(`Invalid attendance month: ${monthKey}`);
   return `${MONTH_NAMES[month - 1]} ${match[1]}`;
+}
+
+function permissionSheetName(monthKey) {
+  const match = /^(\d{4})-(\d{2})$/.exec(monthKey);
+  if (!match) throw new Error(`Invalid permission month: ${monthKey}`);
+  const month = Number(match[2]);
+  if (month < 1 || month > 12) throw new Error(`Invalid permission month: ${monthKey}`);
+  return `${PERMISSION_SHEET_PREFIX}${MONTH_NAMES[month - 1]} ${match[1]}`;
+}
+
+function buildPermissionSummary(records, timeZone) {
+  const headers = [
+    'No',
+    'Nama Peserta',
+    'Izin Keluar',
+    'Masuk Kembali',
+    'Jumlah Menit Keluar',
+    'Total Menit Keluar',
+    'Total Kali Izin Keluar',
+  ];
+
+  const permissionRecords = (records || [])
+    .filter((record) => ['permission_out', 'permission_in'].includes(record.event_type))
+    .map((record) => ({
+      record,
+      timestamp: parseTimestamp(record.client_timestamp),
+    }))
+    .filter((item) => item.timestamp);
+
+  const participantEvents = new Map();
+  permissionRecords.forEach((item) => {
+    const participantId = String(item.record.participant_id || '').trim();
+    if (!participantId) return;
+    if (!participantEvents.has(participantId)) {
+      participantEvents.set(participantId, {
+        participantId,
+        name: String(item.record.participant_name || '').trim() || 'Nama tidak tersedia',
+        outs: [],
+        ins: [],
+      });
+    }
+    const participant = participantEvents.get(participantId);
+    if (!participant.name || participant.name === 'Nama tidak tersedia') {
+      participant.name = String(item.record.participant_name || '').trim() || participant.name;
+    }
+    if (item.record.event_type === 'permission_out') participant.outs.push(item.timestamp);
+    else participant.ins.push(item.timestamp);
+  });
+
+  const rows = [];
+  let rowNumber = 0;
+  Array.from(participantEvents.values())
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .forEach((participant) => {
+      participant.outs.sort((left, right) => left.getTime() - right.getTime());
+      participant.ins.sort((left, right) => left.getTime() - right.getTime());
+
+      let totalMinutes = 0;
+      const pairs = participant.outs.map((outTimestamp) => {
+        const returnTimestamp = participant.ins.find((inTimestamp) =>
+          inTimestamp.getTime() >= outTimestamp.getTime());
+        if (returnTimestamp) {
+          participant.ins = participant.ins.filter((inTimestamp) =>
+            inTimestamp !== returnTimestamp);
+          const minutes = Math.max(
+            0,
+            Math.ceil((returnTimestamp.getTime() - outTimestamp.getTime()) / 60000),
+          );
+          totalMinutes += minutes;
+          return { outTimestamp, returnTimestamp, minutes };
+        }
+        return { outTimestamp, returnTimestamp: null, minutes: '' };
+      });
+
+      pairs.forEach((pair) => {
+        rowNumber += 1;
+        rows.push([
+          rowNumber,
+          participant.name,
+          `${attendanceDateKey(pair.outTimestamp, timeZone)} ${formatClock(pair.outTimestamp, timeZone)}`,
+          pair.returnTimestamp
+            ? `${attendanceDateKey(pair.returnTimestamp, timeZone)} ${formatClock(pair.returnTimestamp, timeZone)}`
+            : '',
+          pair.minutes,
+          totalMinutes,
+          participant.outs.length,
+        ]);
+      });
+    });
+
+  return { headers, rows };
+}
+
+function renderPermissionSummary(spreadsheet, monthKey, records, timeZone) {
+  const sheetName = permissionSheetName(monthKey);
+  let sheet = spreadsheet.getSheetByName(sheetName);
+  if (!sheet) sheet = spreadsheet.insertSheet(sheetName);
+  sheet.showSheet();
+  sheet.clear();
+
+  const summary = buildPermissionSummary(records, timeZone);
+  sheet.getRange(1, 1, 1, summary.headers.length).setValues([summary.headers]);
+  sheet.setFrozenRows(1);
+  if (!summary.rows.length) {
+    sheet.getRange(2, 1, 1, summary.headers.length)
+      .setValues([['', 'Belum ada izin keluar', '', '', '', '', '']]);
+  } else {
+    sheet.getRange(2, 1, summary.rows.length, summary.headers.length).setValues(summary.rows);
+  }
+
+  sheet.getRange(1, 1, 1, summary.headers.length).setFontWeight('bold');
+  sheet.setColumnWidths(1, summary.headers.length, 160);
+  sheet.setColumnWidth(1, 50);
+  sheet.setColumnWidth(2, 220);
+  sheet.setColumnWidth(3, 220);
+  sheet.setColumnWidth(4, 220);
+  sheet.setColumnWidth(5, 180);
+  sheet.setColumnWidth(6, 170);
+  sheet.setColumnWidth(7, 190);
+  sheet.setFrozenRows(1);
+  return sheet;
 }
 
 function monthKeyFromSheetName(name) {

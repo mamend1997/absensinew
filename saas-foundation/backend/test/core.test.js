@@ -177,6 +177,24 @@ test('attendance calculation respects non-working days and records checkout afte
     participantId: 'p1',
     settings,
   }), earlyCheckout);
+
+  const permissionOut = calculateAttendance({
+    eventType: 'permission_out',
+    clientTimestamp: '2026-11-23T07:59:00.000Z',
+    participantId: 'p1',
+    settings,
+  });
+  assert.deepEqual(permissionOut, {
+    date: '2026-11-23',
+    status: 'izin_keluar',
+    lateMinutes: 0,
+  });
+  assert.equal(calculateBrowserAttendance({
+    eventType: 'permission_in',
+    clientTimestamp: '2026-11-23T08:30:00.000Z',
+    participantId: 'p1',
+    settings,
+  }).status, 'izin_masuk');
 });
 
 test('scan cooldown blocks scans until the configured interval has elapsed', () => {
@@ -192,6 +210,8 @@ test('scanner session mode selects check-in, check-out, or automatic attendance'
   assert.equal(attendanceEventTypeForMode('auto', true), 'check_out');
   assert.equal(attendanceEventTypeForMode('check_in', true), 'check_in');
   assert.equal(attendanceEventTypeForMode('check_out', false), 'check_out');
+  assert.equal(attendanceEventTypeForMode('permission_out', false), 'permission_out');
+  assert.equal(attendanceEventTypeForMode('permission_in', false), 'permission_in');
   assert.throws(() => attendanceEventTypeForMode('unknown', false), /Mode sesi/);
 });
 

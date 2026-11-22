@@ -32,9 +32,42 @@ const sandbox = {
   },
 };
 runInNewContext(
-  `${script}\nthis.buildMonthlySummary = buildMonthlySummary;\nthis.readAttendanceCorrections = readAttendanceCorrections;\nthis.readMonthlySummaryState = readMonthlySummaryState;\nthis.buildSummaryEditCorrections = buildSummaryEditCorrections;\nthis.saveMonthlySummaryCorrections = saveMonthlySummaryCorrections;\nthis.monthSheetName = monthSheetName;\nthis.monthKeyFromSheetName = monthKeyFromSheetName;\nthis.getSummarySheet = getSummarySheet;\nthis.groupAttendanceRecordsByMonth = groupAttendanceRecordsByMonth;\nthis.formatDateLabel = formatDateLabel;\nthis.shouldIncludeAfterClear = shouldIncludeAfterClear;\nthis.clearSupersededAttendanceClearCorrections = clearSupersededAttendanceClearCorrections;\nthis.unmergeSummaryHeaders = unmergeSummaryHeaders;\nthis.isValidResetPin = isValidResetPin;`,
+  `${script}\nthis.buildMonthlySummary = buildMonthlySummary;\nthis.readAttendanceCorrections = readAttendanceCorrections;\nthis.readMonthlySummaryState = readMonthlySummaryState;\nthis.buildSummaryEditCorrections = buildSummaryEditCorrections;\nthis.saveMonthlySummaryCorrections = saveMonthlySummaryCorrections;\nthis.monthSheetName = monthSheetName;\nthis.monthKeyFromSheetName = monthKeyFromSheetName;\nthis.getSummarySheet = getSummarySheet;\nthis.groupAttendanceRecordsByMonth = groupAttendanceRecordsByMonth;\nthis.formatDateLabel = formatDateLabel;\nthis.shouldIncludeAfterClear = shouldIncludeAfterClear;\nthis.clearSupersededAttendanceClearCorrections = clearSupersededAttendanceClearCorrections;\nthis.unmergeSummaryHeaders = unmergeSummaryHeaders;\n  this.isValidResetPin = isValidResetPin;\nthis.permissionSheetName = permissionSheetName;\nthis.buildPermissionSummary = buildPermissionSummary;`,
   sandbox,
 );
+
+test('Apps Script builds monthly permission exit and return sheet', () => {
+  assert.equal(sandbox.permissionSheetName('2026-11'), 'Izin November 2026');
+  const summary = sandbox.buildPermissionSummary([
+    {
+      participant_id: 'P1',
+      participant_name: 'Agung',
+      event_type: 'permission_out',
+      client_timestamp: '2026-11-01 01:00:00.000',
+    },
+    {
+      participant_id: 'P1',
+      participant_name: 'Agung',
+      event_type: 'permission_in',
+      client_timestamp: '2026-11-01 01:25:00.000',
+    },
+  ], 'Asia/Jakarta');
+
+  assert.deepEqual(Array.from(summary.headers), [
+    'No',
+    'Nama Peserta',
+    'Izin Keluar',
+    'Masuk Kembali',
+    'Jumlah Menit Keluar',
+    'Total Menit Keluar',
+    'Total Kali Izin Keluar',
+  ]);
+  assert.equal(summary.rows.length, 1);
+  assert.equal(summary.rows[0][1], 'Agung');
+  assert.equal(summary.rows[0][4], 25);
+  assert.equal(summary.rows[0][5], 25);
+  assert.equal(summary.rows[0][6], 1);
+});
 
 test('Apps Script groups attendance by participant across dynamic date columns', () => {
   const { dates, rows } = sandbox.buildMonthlySummary([

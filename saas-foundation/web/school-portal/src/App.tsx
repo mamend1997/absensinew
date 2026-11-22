@@ -114,7 +114,7 @@ interface GoogleSheetsSettings {
   last_sync_at: string | null;
   sync_error: string | null;
 }
-type SchoolTheme = 'current' | 'orange' | 'white';
+type SchoolTheme = 'current' | 'orange' | 'white' | 'white_blue';
 interface SchoolBranding {
   application_name: string;
   logo_data_url: string | null;
@@ -125,6 +125,7 @@ function schoolThemeFromValue(value: string): SchoolTheme | null {
     case 'current':
     case 'orange':
     case 'white':
+    case 'white_blue':
       return value;
     default:
       return null;
@@ -353,7 +354,7 @@ interface QueuedScan {
   id_peserta: string;
   participant_name?: string;
   id_perangkat: string | null;
-  jenis_absen: 'check_in' | 'check_out';
+  jenis_absen: 'check_in' | 'check_out' | 'permission_out' | 'permission_in';
   scan_method?: 'SCAN_QR' | 'MANUAL_INPUT';
   attendance_date: string;
   client_timestamp: string;
@@ -936,7 +937,9 @@ export default function App() {
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraRotation, setCameraRotation] = useState(initialScannerPreferences.cameraManualRotation);
   const [cameraControlsExpanded, setCameraControlsExpanded] = useState(false);
-  const [attendanceSessionMode, setAttendanceSessionMode] = useState<'auto' | 'check_in' | 'check_out'>('auto');
+  const [attendanceSessionMode, setAttendanceSessionMode] = useState<
+    'auto' | 'check_in' | 'check_out' | 'permission_out' | 'permission_in'
+  >('auto');
   const [offlineExportBusy, setOfflineExportBusy] = useState(false);
   const [cameraFrameSize, setCameraFrameSize] = useState({ width: 0, height: 0 });
   const [scannerIdle, setScannerIdle] = useState(false);
@@ -1779,7 +1782,13 @@ export default function App() {
         participant_id: scan.id_peserta,
         attendance_date: formatAttendanceDate(scan.attendance_date),
         client_timestamp: toLocalTime(scan.client_timestamp),
-        event_type: scan.jenis_absen === 'check_in' ? 'Masuk' : 'Pulang',
+        event_type: scan.jenis_absen === 'check_in'
+          ? 'Masuk'
+          : scan.jenis_absen === 'check_out'
+            ? 'Pulang'
+            : scan.jenis_absen === 'permission_out'
+              ? 'Izin Keluar'
+              : 'Masuk Kembali',
         attendance_status: scan.status_kehadiran || '',
         late_minutes: Number(scan.menit_terlambat ?? 0),
         scan_method: scan.scan_method === 'MANUAL_INPUT' ? 'Input Manual' : 'QR/Barcode',
@@ -2426,6 +2435,10 @@ export default function App() {
       await stateTransaction.done;
       const attendanceStatus = calculation.status === 'check_out' || calculation.status === 'pulang'
         ? 'pulang'
+        : calculation.status === 'izin_keluar'
+          ? 'izin keluar'
+          : calculation.status === 'izin_masuk'
+            ? 'masuk kembali'
         : calculation.status === 'terlambat'
           ? `terlambat${calculation.lateMinutes ? ` ${calculation.lateMinutes} menit` : ''}`
           : 'hadir tepat waktu';
@@ -4188,13 +4201,20 @@ export default function App() {
                       onChange={(event) => {
                         const value = event.target.value;
                         setAttendanceSessionMode(
-                          value === 'check_in' || value === 'check_out' ? value : 'auto',
+                          value === 'check_in' ||
+                          value === 'check_out' ||
+                          value === 'permission_out' ||
+                          value === 'permission_in'
+                            ? value
+                            : 'auto',
                         );
                       }}
                     >
                       <option value="auto">Otomatis</option>
                       <option value="check_in">Masuk</option>
                       <option value="check_out">Pulang</option>
+                      <option value="permission_out">Izin Keluar</option>
+                      <option value="permission_in">Masuk Kembali</option>
                     </select>
                   </div>
                   {cameraActive && <div className="scan-target"><span className="scan-target-line" /></div>}
@@ -4429,9 +4449,10 @@ export default function App() {
                         ? { ...current, theme }
                         : { application_name: schoolBrandingName, logo_data_url: null, theme });
                     }}>
-                      <option value="current">Warna dasar saat ini</option>
+                      <option value="current">Hijau dasar</option>
                       <option value="orange">Warna dasar oranye</option>
                       <option value="white">Warna dasar putih</option>
+                      <option value="white_blue">Putih dan biru gradasi</option>
                     </select>
                   </label>
                   <div className="school-branding-logo-row">
@@ -4900,7 +4921,13 @@ function LocalQueueList({ schoolId, refreshKey }: { schoolId: string | number; r
       <td>{item.participant_name ?? participantNames.get(item.id_peserta) ?? 'Nama tidak tersedia'}</td>
       <td>{formatAttendanceDate(item.attendance_date)}</td>
       <td>{toLocalTime(item.client_timestamp)}</td>
-      <td>{item.jenis_absen === 'check_in' ? 'Masuk' : 'Pulang'}</td>
+      <td>{item.jenis_absen === 'check_in'
+        ? 'Masuk'
+        : item.jenis_absen === 'check_out'
+          ? 'Pulang'
+          : item.jenis_absen === 'permission_out'
+            ? 'Izin Keluar'
+            : 'Masuk Kembali'}</td>
       <td><span className={`tag ${item.status_sync}`}>{item.status_sync === 'synced' ? 'Tersimpan di server' : 'Belum ke server'}</span></td>
     </tr>)}
     {!items.length && <tr><td colSpan={5} className="empty">Belum ada scan tersimpan di perangkat.</td></tr>}

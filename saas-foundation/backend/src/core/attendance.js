@@ -48,8 +48,8 @@ export function calculateAttendance({
   if (!settings || typeof settings !== 'object') {
     throw new TypeError('Pengaturan operasional sekolah wajib tersedia.');
   }
-  if (!['check_in', 'check_out'].includes(eventType)) {
-    throw new TypeError('eventType harus check_in atau check_out.');
+  if (!['check_in', 'check_out', 'permission_out', 'permission_in'].includes(eventType)) {
+    throw new TypeError('eventType absensi tidak valid.');
   }
 
   const { date, seconds } = localDateTimeParts(
@@ -69,6 +69,12 @@ export function calculateAttendance({
 
   if (eventType === 'check_out') {
     return { date, status: 'pulang', lateMinutes: 0 };
+  }
+  if (eventType === 'permission_out') {
+    return { date, status: 'izin_keluar', lateMinutes: 0 };
+  }
+  if (eventType === 'permission_in') {
+    return { date, status: 'izin_masuk', lateMinutes: 0 };
   }
 
   const override = settings.participant_overrides?.find(
@@ -116,15 +122,15 @@ export function createQueuedScan({
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id_unik)) {
     throw new TypeError('id_unik harus berupa UUID yang valid.');
   }
-  if (!['check_in', 'check_out'].includes(jenis_absen)) {
-    throw new TypeError('jenis_absen harus check_in atau check_out.');
+  if (!['check_in', 'check_out', 'permission_out', 'permission_in'].includes(jenis_absen)) {
+    throw new TypeError('jenis_absen absensi tidak valid.');
   }
   if (!['SCAN_QR', 'MANUAL_INPUT'].includes(scan_method)) {
     throw new TypeError('scan_method harus SCAN_QR atau MANUAL_INPUT.');
   }
   if (
     !/^\d{4}-\d{2}-\d{2}$/.test(calculation?.date ?? '') ||
-    !['hadir', 'terlambat', 'pulang'].includes(calculation?.status)
+    !['hadir', 'terlambat', 'pulang', 'izin_keluar', 'izin_masuk'].includes(calculation?.status)
   ) {
     throw new TypeError('Hasil validasi absensi yang dapat dicatat wajib tersedia.');
   }
@@ -134,7 +140,9 @@ export function createQueuedScan({
   }
   if (
     (jenis_absen === 'check_out' && (calculation.status !== 'pulang' || lateMinutes !== 0)) ||
-    (jenis_absen === 'check_in' && calculation.status === 'pulang') ||
+    (jenis_absen === 'permission_out' && (calculation.status !== 'izin_keluar' || lateMinutes !== 0)) ||
+    (jenis_absen === 'permission_in' && (calculation.status !== 'izin_masuk' || lateMinutes !== 0)) ||
+    (jenis_absen === 'check_in' && !['hadir', 'terlambat'].includes(calculation.status)) ||
     (calculation.status === 'hadir' && lateMinutes !== 0) ||
     (calculation.status === 'terlambat' && lateMinutes === 0)
   ) {

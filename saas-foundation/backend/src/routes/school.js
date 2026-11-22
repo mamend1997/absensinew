@@ -1069,7 +1069,7 @@ router.put('/branding', requireSchoolUser, requirePermission('settings.operation
     [req.schoolUser.sekolah_id],
   );
   const theme = req.body?.theme ?? existingBranding?.theme ?? 'current';
-  if (!['current', 'orange', 'white'].includes(theme)) {
+  if (!['current', 'orange', 'white', 'white_blue'].includes(theme)) {
     throw fail(400, 'Tema aplikasi tidak valid.', 'VALIDATION_ERROR');
   }
   const logoDataUrl = req.body?.logo_data_url;
@@ -1862,7 +1862,7 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
     const eventType = record.event_type ?? record.jenis_absen;
     const participantId = record.participant_id ?? record.id_peserta;
     const scanMethod = record.scan_method ?? 'SCAN_QR';
-    if (!['check_in', 'check_out'].includes(eventType) ||
+    if (!['check_in', 'check_out', 'permission_out', 'permission_in'].includes(eventType) ||
         !/^[1-9]\d*$/.test(String(participantId ?? '')) ||
         !['SCAN_QR', 'MANUAL_INPUT'].includes(scanMethod) ||
         typeof record.client_timestamp !== 'string' ||
@@ -1922,15 +1922,17 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
               [schoolId, participant.id, calculation.date],
             );
             if (!checkInRows.length) return 'ignored_missing_check_in';
-            const [recentScans] = await connection.execute(
-              `SELECT id FROM attendance_logs
-                WHERE sekolah_id = ? AND participant_id = ? AND attendance_date = ?
-                  AND client_timestamp_utc > ?
-                ORDER BY client_timestamp_utc DESC, id DESC
-                FOR UPDATE`,
-              [schoolId, participant.id, calculation.date, cooldownThreshold],
-            );
-            if (recentScans.length) return 'ignored_cooldown';
+          }
+          const [recentScans] = await connection.execute(
+            `SELECT id FROM attendance_logs
+              WHERE sekolah_id = ? AND participant_id = ? AND attendance_date = ?
+                AND client_timestamp_utc > ?
+              ORDER BY client_timestamp_utc DESC, id DESC
+              FOR UPDATE`,
+            [schoolId, participant.id, calculation.date, cooldownThreshold],
+          );
+          if (recentScans.length) {
+            return 'ignored_cooldown';
           }
           const [result] = await connection.execute(
             `INSERT INTO attendance_logs
