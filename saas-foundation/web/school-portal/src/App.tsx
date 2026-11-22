@@ -3652,49 +3652,57 @@ export default function App() {
                       transform: `translate(-50%, -50%) scaleX(${scannerPreferences.cameraFacing === 'user' && scannerPreferences.cameraMirror ? -1 : 1}) rotate(${cameraRotation}deg)`,
                     }}
                   />
-                  <div className="camera-control-panel" aria-label="Kontrol kamera">
-                    <div className="camera-rotation-mode" role="group" aria-label="Mode rotasi kamera">
-                      <button
-                        type="button"
-                        className={scannerPreferences.cameraRotationMode === 'auto' ? 'is-selected' : ''}
-                        aria-pressed={scannerPreferences.cameraRotationMode === 'auto'}
-                        onClick={() => void updateScannerPreferences({
-                          ...scannerPreferencesRef.current,
-                          cameraRotationMode: 'auto',
-                        })}
-                      >Auto</button>
-                      <button
-                        type="button"
-                        className={scannerPreferences.cameraRotationMode === 'manual' ? 'is-selected' : ''}
-                        aria-pressed={scannerPreferences.cameraRotationMode === 'manual'}
-                        onClick={() => void updateScannerPreferences({
-                          ...scannerPreferencesRef.current,
-                          cameraRotationMode: 'manual',
-                        })}
-                      >Manual</button>
-                    </div>
-                    {scannerPreferences.cameraRotationMode === 'manual' && (
-                      <button
-                        type="button"
-                        aria-label="Putar kamera 90 derajat searah jarum jam"
-                        onClick={() => void updateScannerPreferences({
-                          ...scannerPreferencesRef.current,
-                          cameraManualRotation: rotateCameraByQuarterTurn(cameraRotationRef.current),
-                        })}
-                      >Putar 90° · {cameraRotation}°</button>
-                    )}
-                    {scannerPreferences.cameraFacing === 'user' && (
-                      <button
-                        type="button"
-                        aria-label="Mirror kamera depan"
-                        aria-pressed={scannerPreferences.cameraMirror}
-                        className={scannerPreferences.cameraMirror ? 'is-selected' : ''}
-                        onClick={() => void updateScannerPreferences({
-                          ...scannerPreferencesRef.current,
-                          cameraMirror: !scannerPreferencesRef.current.cameraMirror,
-                        })}
-                      >Mirror {scannerPreferences.cameraMirror ? 'ON' : 'OFF'}</button>
-                    )}
+                  <div className={`camera-control-panel${cameraControlsExpanded ? ' is-expanded' : ''}`} aria-label="Kontrol kamera">
+                    <button
+                      type="button"
+                      className="camera-controls-toggle"
+                      aria-expanded={cameraControlsExpanded}
+                      onClick={() => setCameraControlsExpanded((expanded) => !expanded)}
+                    >{cameraControlsExpanded ? 'Tutup' : 'Kamera'}</button>
+                    {cameraControlsExpanded && <>
+                      <div className="camera-rotation-mode" role="group" aria-label="Mode rotasi kamera">
+                        <button
+                          type="button"
+                          className={scannerPreferences.cameraRotationMode === 'auto' ? 'is-selected' : ''}
+                          aria-pressed={scannerPreferences.cameraRotationMode === 'auto'}
+                          onClick={() => void updateScannerPreferences({
+                            ...scannerPreferencesRef.current,
+                            cameraRotationMode: 'auto',
+                          })}
+                        >Auto</button>
+                        <button
+                          type="button"
+                          className={scannerPreferences.cameraRotationMode === 'manual' ? 'is-selected' : ''}
+                          aria-pressed={scannerPreferences.cameraRotationMode === 'manual'}
+                          onClick={() => void updateScannerPreferences({
+                            ...scannerPreferencesRef.current,
+                            cameraRotationMode: 'manual',
+                          })}
+                        >Manual</button>
+                      </div>
+                      {scannerPreferences.cameraRotationMode === 'manual' && (
+                        <button
+                          type="button"
+                          aria-label="Putar kamera 90 derajat searah jarum jam"
+                          onClick={() => void updateScannerPreferences({
+                            ...scannerPreferencesRef.current,
+                            cameraManualRotation: rotateCameraByQuarterTurn(cameraRotationRef.current),
+                          })}
+                        >Putar 90° · {cameraRotation}°</button>
+                      )}
+                      {scannerPreferences.cameraFacing === 'user' && (
+                        <button
+                          type="button"
+                          aria-label="Mirror kamera depan"
+                          aria-pressed={scannerPreferences.cameraMirror}
+                          className={scannerPreferences.cameraMirror ? 'is-selected' : ''}
+                          onClick={() => void updateScannerPreferences({
+                            ...scannerPreferencesRef.current,
+                            cameraMirror: !scannerPreferencesRef.current.cameraMirror,
+                          })}
+                        >Mirror {scannerPreferences.cameraMirror ? 'ON' : 'OFF'}</button>
+                      )}
+                    </>}
                   </div>
                   {cameraActive && <div className="scan-target"><span className="scan-target-line" /></div>}
                   {!cameraActive && <div className="scan-camera-paused">Kamera dijeda</div>}

@@ -50,6 +50,14 @@ test('Apps Script groups attendance by participant across dynamic date columns',
       participant_code: 'P1',
       participant_name: 'Agung',
       attendance_date: '2026-11-01',
+      event_type: 'check_out',
+      client_timestamp: '2026-11-01 08:15:00.000',
+      late_minutes: 0,
+    },
+    {
+      participant_code: 'P1',
+      participant_name: 'Agung',
+      attendance_date: '2026-11-01',
       event_type: 'check_in',
       client_timestamp: '2026-11-01 00:54:09.000',
       late_minutes: 5,
@@ -83,7 +91,7 @@ test('Apps Script groups attendance by participant across dynamic date columns',
   assert.deepEqual(Array.from(dates), ['2026-11-01', '2026-11-02']);
   assert.equal(sandbox.formatDateLabel(dates[0]), '01-11-2026');
   assert.deepEqual(Array.from(rows, (row) => Array.from(row)), [
-    [1, 'Agung', '07:54:09', 5, '15:11:17', '07:49:58', 0, '', 5, 2],
+    [1, 'Agung', '07:54:09', 5, '15:15:00', '07:49:58', 0, '', 5, 2],
     [2, 'Budi', '', '', '', '07:50:00', 2, '', 2, 1],
   ]);
 });

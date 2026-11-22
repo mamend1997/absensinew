@@ -1890,33 +1890,33 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
         );
         if (sameDayEvent.length) {
           if (eventType === 'check_out') {
-            await pool.execute(
-              `UPDATE attendance_logs
-                  SET id_unik = ?, device_id = ?, recorded_by = ?,
-                      participant_code_snapshot = ?, participant_name_snapshot = ?,
-                      classroom_name_snapshot = ?, client_timestamp_utc = ?,
-                      server_received_at = CURRENT_TIMESTAMP(3), attendance_status = ?,
-                      late_minutes = ?, scan_method = ?
-                WHERE sekolah_id = ? AND participant_id = ?
-                  AND attendance_date = ? AND event_type = 'check_out'
-                  AND client_timestamp_utc < ?`,
-              [
-                id,
-                deviceId,
-                req.schoolUser?.id ?? null,
-                participant.participant_code,
-                participant.full_name,
-                participant.classroom_name,
-                timestamp,
-                calculation.status,
-                calculation.lateMinutes,
-                scanMethod,
-                schoolId,
-                participant.id,
-                calculation.date,
-                timestamp,
-              ],
-            );
+            await inTransaction(async (connection) => {
+              const [existingCheckout] = await connection.execute(
+                `SELECT id FROM attendance_logs
+                  WHERE sekolah_id = ? AND participant_id = ?
+                    AND attendance_date = ? AND event_type = 'check_out'
+                  LIMIT 1 FOR UPDATE`,
+                [schoolId, participant.id, calculation.date],
+              );
+              if (!existingCheckout.length) return;
+              const [deleted] = await connection.execute(
+                `DELETE FROM attendance_logs
+                  WHERE id = ? AND client_timestamp_utc < ?`,
+                [existingCheckout[0].id, timestamp],
+              );
+              if (!deleted.affectedRows) return;
+              await connection.execute(
+                `INSERT INTO attendance_logs
+                  (sekolah_id, id_unik, participant_id, device_id, recorded_by,
+                   participant_code_snapshot, participant_name_snapshot,
+                   classroom_name_snapshot, attendance_date, event_type,
+                   client_timestamp_utc, attendance_status, late_minutes, scan_method)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'check_out', ?, ?, ?, ?)`,
+                [schoolId, id, participant.id, deviceId, req.schoolUser?.id ?? null,
+                  participant.participant_code, participant.full_name, participant.classroom_name,
+                  calculation.date, timestamp, calculation.status, calculation.lateMinutes, scanMethod],
+              );
+            });
           }
           acceptedIds.push(id);
           continue;
