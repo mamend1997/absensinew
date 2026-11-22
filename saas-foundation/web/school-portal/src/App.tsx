@@ -1324,18 +1324,14 @@ export default function App() {
     const checkReachability = async () => {
       if (checking) return;
       checking = true;
-      const controller = new AbortController();
-      const timeout = window.setTimeout(() => controller.abort(), 5000);
       try {
-        const response = await fetch(`${API_BASE}/health`, {
-          cache: 'no-store',
-          signal: controller.signal,
-        });
-        updateReachability(response.ok);
-      } catch {
-        updateReachability(false);
+        if (Capacitor.isNativePlatform()) {
+          const status = await Network.getStatus();
+          updateReachability(status.connected);
+        } else {
+          updateReachability(navigator.onLine);
+        }
       } finally {
-        window.clearTimeout(timeout);
         checking = false;
       }
     };

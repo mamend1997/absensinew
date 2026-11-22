@@ -19,7 +19,8 @@ const allowedOrigins = new Set(
 app.use((req, res, next) => {
   const origin = req.get('origin');
   if (!origin) return next();
-  if (!allowedOrigins.has(origin)) {
+  const allowWildcard = allowedOrigins.has('*');
+  if (!allowWildcard && !allowedOrigins.has(origin)) {
     return res.status(403).json({ error: { code: 'ORIGIN_NOT_ALLOWED', message: 'Origin tidak diizinkan.' } });
   }
   res.setHeader('Access-Control-Allow-Origin', origin);
