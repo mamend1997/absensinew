@@ -14,6 +14,7 @@ import {
   createQueuedScan,
   mergeDailyAttendanceState,
   remainingScanCooldownMs,
+  shouldApplyAttendanceCooldown,
 } from './core/attendance.js';
 import { extractSchoolAccessToken } from './core/auth-session.js';
 import {
@@ -2388,7 +2389,13 @@ export default function App() {
         if (record.client_timestamp > lastScanAt) lastScanAt = record.client_timestamp;
       }
       const cooldownMinutes = Number(scanSettings.scan_cooldown_minutes ?? 5);
-      const remainingCooldown = remainingScanCooldownMs(lastScanAt || null, now, cooldownMinutes);
+      const hasCheckIn = participantScans.some((record) =>
+        record.jenis_absen === 'check_in',
+      ) || Boolean(dailyState?.check_in);
+      const eventType = attendanceEventTypeForMode(attendanceSessionMode, hasCheckIn);
+      const remainingCooldown = shouldApplyAttendanceCooldown(eventType)
+        ? remainingScanCooldownMs(lastScanAt || null, now, cooldownMinutes)
+        : 0;
       if (remainingCooldown > 0) {
         const totalSeconds = Math.ceil(remainingCooldown / 1000);
         const minutes = Math.floor(totalSeconds / 60);
@@ -2399,10 +2406,6 @@ export default function App() {
         ].join(' ');
         throw new Error(`Tunggu ${wait} sebelum scan peserta ini kembali.`);
       }
-      const hasCheckIn = participantScans.some((record) =>
-        record.jenis_absen === 'check_in',
-      ) || Boolean(dailyState?.check_in);
-      const eventType = attendanceEventTypeForMode(attendanceSessionMode, hasCheckIn);
 
       const calculation = eventType === 'check_in'
         ? initialCalculation

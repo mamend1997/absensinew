@@ -435,6 +435,7 @@ function buildPermissionSummary(records, timeZone) {
   const headers = [
     'No',
     'Nama Peserta',
+    'Tanggal',
     'Izin Keluar',
     'Masuk Kembali',
     'Jumlah Menit Keluar',
@@ -500,9 +501,10 @@ function buildPermissionSummary(records, timeZone) {
         rows.push([
           rowNumber,
           participant.name,
-          `${attendanceDateKey(pair.outTimestamp, timeZone)} ${formatClock(pair.outTimestamp, timeZone)}`,
+          attendanceDateKey(pair.outTimestamp, timeZone),
+          formatClock(pair.outTimestamp, timeZone),
           pair.returnTimestamp
-            ? `${attendanceDateKey(pair.returnTimestamp, timeZone)} ${formatClock(pair.returnTimestamp, timeZone)}`
+            ? formatClock(pair.returnTimestamp, timeZone)
             : '',
           pair.minutes,
           totalMinutes,
@@ -526,7 +528,7 @@ function renderPermissionSummary(spreadsheet, monthKey, records, timeZone) {
   sheet.setFrozenRows(1);
   if (!summary.rows.length) {
     sheet.getRange(2, 1, 1, summary.headers.length)
-      .setValues([['', 'Belum ada izin keluar', '', '', '', '', '']]);
+      .setValues([['', 'Belum ada izin keluar', '', '', '', '', '', '']]);
   } else {
     sheet.getRange(2, 1, summary.rows.length, summary.headers.length).setValues(summary.rows);
   }
@@ -535,11 +537,12 @@ function renderPermissionSummary(spreadsheet, monthKey, records, timeZone) {
   sheet.setColumnWidths(1, summary.headers.length, 160);
   sheet.setColumnWidth(1, 50);
   sheet.setColumnWidth(2, 220);
-  sheet.setColumnWidth(3, 220);
-  sheet.setColumnWidth(4, 220);
-  sheet.setColumnWidth(5, 180);
-  sheet.setColumnWidth(6, 170);
-  sheet.setColumnWidth(7, 190);
+  sheet.setColumnWidth(3, 120);
+  sheet.setColumnWidth(4, 130);
+  sheet.setColumnWidth(5, 130);
+  sheet.setColumnWidth(6, 180);
+  sheet.setColumnWidth(7, 170);
+  sheet.setColumnWidth(8, 190);
   sheet.setFrozenRows(1);
   return sheet;
 }

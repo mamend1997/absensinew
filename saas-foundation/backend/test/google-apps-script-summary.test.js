@@ -56,6 +56,7 @@ test('Apps Script builds monthly permission exit and return sheet', () => {
   assert.deepEqual(Array.from(summary.headers), [
     'No',
     'Nama Peserta',
+    'Tanggal',
     'Izin Keluar',
     'Masuk Kembali',
     'Jumlah Menit Keluar',
@@ -64,9 +65,12 @@ test('Apps Script builds monthly permission exit and return sheet', () => {
   ]);
   assert.equal(summary.rows.length, 1);
   assert.equal(summary.rows[0][1], 'Agung');
-  assert.equal(summary.rows[0][4], 25);
+  assert.equal(summary.rows[0][2], '2026-11-01');
+  assert.equal(summary.rows[0][3], '08:00:00');
+  assert.equal(summary.rows[0][4], '08:25:00');
   assert.equal(summary.rows[0][5], 25);
-  assert.equal(summary.rows[0][6], 1);
+  assert.equal(summary.rows[0][6], 25);
+  assert.equal(summary.rows[0][7], 1);
 });
 
 test('Apps Script groups attendance by participant across dynamic date columns', () => {

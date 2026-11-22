@@ -8,6 +8,7 @@ import {
   createQueuedScan as createBrowserQueuedScan,
   mergeDailyAttendanceState,
   remainingScanCooldownMs,
+  shouldApplyAttendanceCooldown,
 } from '../../web/school-portal/src/core/attendance.js';
 import {
   assertValidSchoolCode,
@@ -213,6 +214,10 @@ test('scanner session mode selects check-in, check-out, or automatic attendance'
   assert.equal(attendanceEventTypeForMode('permission_out', false), 'permission_out');
   assert.equal(attendanceEventTypeForMode('permission_in', false), 'permission_in');
   assert.throws(() => attendanceEventTypeForMode('unknown', false), /Mode sesi/);
+  assert.equal(shouldApplyAttendanceCooldown('check_in'), true);
+  assert.equal(shouldApplyAttendanceCooldown('check_out'), true);
+  assert.equal(shouldApplyAttendanceCooldown('permission_out'), false);
+  assert.equal(shouldApplyAttendanceCooldown('permission_in'), false);
 });
 
 test('local attendance state advances cooldown and retains check-in after repeated check-outs', () => {

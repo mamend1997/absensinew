@@ -100,6 +100,10 @@ export function attendanceEventTypeForMode(mode, hasCheckIn) {
   return mode === 'auto' ? (hasCheckIn ? 'check_out' : 'check_in') : mode;
 }
 
+export function shouldApplyAttendanceCooldown(eventType) {
+  return ['check_in', 'check_out'].includes(eventType);
+}
+
 export function mergeDailyAttendanceState(current, scan) {
   const scanTime = Date.parse(scan.client_timestamp);
   if (!Number.isFinite(scanTime)) throw new TypeError('Waktu scan tidak valid.');
