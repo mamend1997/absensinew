@@ -3,6 +3,7 @@ const LEGACY_SUMMARY_SHEET_NAME = 'Rekap Bulanan';
 const LEGACY_ORDER_SHEET_NAME = 'Urutan Peserta';
 const LEGACY_CORRECTIONS_SHEET_NAME = 'Koreksi Absensi';
 const PERMISSION_SHEET_PREFIX = 'Izin ';
+const PERMISSION_CORRECTIONS_SHEET_NAME = 'Koreksi Izin';
 const CLEAR_CUTOFF_PROPERTY = 'ATTENDANCE_CLEAR_CUTOFF_MS';
 const RESET_PIN_PROPERTY = 'RESET_PIN';
 const SUMMARY_PARTICIPANT_ID_HEADER = 'participant_id';
@@ -46,6 +47,12 @@ const CORRECTION_HEADERS = [
   'Jenis',
   'Aksi',
   'Waktu Koreksi',
+];
+const PERMISSION_CORRECTION_HEADERS = [
+  'id_unik',
+  'participant_id',
+  'Tanggal',
+  'Jenis',
 ];
 
 function onOpen() {
@@ -174,7 +181,8 @@ function clearAllAttendanceHistory() {
       .filter((sheet) => isMonthlySummarySheetName(sheet.getName()) ||
         sheet.getName().startsWith(PERMISSION_SHEET_PREFIX) ||
         [LEGACY_SUMMARY_SHEET_NAME, LEGACY_ORDER_SHEET_NAME,
-          LEGACY_CORRECTIONS_SHEET_NAME].includes(sheet.getName()))
+          LEGACY_CORRECTIONS_SHEET_NAME,
+          PERMISSION_CORRECTIONS_SHEET_NAME].includes(sheet.getName()))
       .filter((sheet) => sheet !== summarySheet)
       .forEach((sheet) => spreadsheet.deleteSheet(sheet));
     showSummaryMetadataColumns(summarySheet, findSummaryMetadata(summarySheet).columns);
@@ -438,9 +446,10 @@ function permissionSheetName(monthKey) {
   return `${PERMISSION_SHEET_PREFIX}${MONTH_NAMES[month - 1]} ${match[1]}`;
 }
 
-function buildPermissionSummary(records, timeZone) {
+function buildPermissionSummary(records, timeZone, deletedEventIds = new Set()) {
   const permissionRecords = (records || [])
     .filter((record) => ['permission_out', 'permission_in'].includes(record.event_type))
+    .filter((record) => !deletedEventIds.has(String(record.id_unik || '')))
     .map((record) => ({
       record,
       timestamp: parseTimestamp(record.client_timestamp),
@@ -499,11 +508,12 @@ function buildPermissionSummary(records, timeZone) {
   subHeaders.push('Total Menit Keluar', 'Total Kali Izin Keluar');
 
   const rows = [];
+  const participantIds = [];
   Array.from(participants.values())
     .sort((left, right) => left.name.localeCompare(right.name))
     .forEach((participant) => {
       const row = [rows.length + 1, participant.name];
-      let totalMinutes = 0;
+      let totalDurationMilliseconds = 0;
       let totalCount = 0;
       sortedDates.forEach((date) => {
         const day = participant.permissionsByDate.get(date);
@@ -513,7 +523,7 @@ function buildPermissionSummary(records, timeZone) {
         }
         day.outs.sort((left, right) => left.getTime() - right.getTime());
         day.ins.sort((left, right) => left.getTime() - right.getTime());
-        let dayMinutes = 0;
+        let dayDurationMilliseconds = 0;
         const outValues = [];
         const inValues = [];
         day.outs.forEach((outTimestamp) => {
@@ -521,12 +531,12 @@ function buildPermissionSummary(records, timeZone) {
             inTimestamp.getTime() >= outTimestamp.getTime());
           if (returnTimestamp) {
             day.ins = day.ins.filter((inTimestamp) => inTimestamp !== returnTimestamp);
-            const minutes = Math.max(
+            const durationMilliseconds = Math.max(
               0,
-              Math.ceil((returnTimestamp.getTime() - outTimestamp.getTime()) / 60000),
+              returnTimestamp.getTime() - outTimestamp.getTime(),
             );
-            dayMinutes += minutes;
-            totalMinutes += minutes;
+            dayDurationMilliseconds += durationMilliseconds;
+            totalDurationMilliseconds += durationMilliseconds;
             totalCount += 1;
             outValues.push(formatClock(outTimestamp, timeZone));
             inValues.push(formatClock(returnTimestamp, timeZone));
@@ -535,13 +545,18 @@ function buildPermissionSummary(records, timeZone) {
             inValues.push('');
           }
         });
+        const dayMinutes = roundDurationMillisecondsToMinutes(dayDurationMilliseconds);
         row.push(outValues.join('\n'), inValues.join('\n'), dayMinutes || '');
       });
-      row.push(totalMinutes, totalCount);
+      row.push(
+        roundDurationMillisecondsToMinutes(totalDurationMilliseconds),
+        totalCount,
+      );
       rows.push(row);
+      participantIds.push(participant.participantId);
     });
 
-  return { topHeaders, subHeaders, rows, sortedDates };
+  return { topHeaders, subHeaders, rows, sortedDates, participantIds };
 }
 
 function renderPermissionSummary(spreadsheet, monthKey, records, timeZone) {
@@ -549,12 +564,22 @@ function renderPermissionSummary(spreadsheet, monthKey, records, timeZone) {
   let sheet = spreadsheet.getSheetByName(sheetName);
   if (!sheet) sheet = spreadsheet.insertSheet(sheetName);
   sheet.showSheet();
+  sheet.showColumns(1, sheet.getMaxColumns());
   sheet.clear();
 
-  const summary = buildPermissionSummary(records, timeZone);
+  const deletedEventIds = readDeletedPermissionEventIds(spreadsheet);
+  const summary = buildPermissionSummary(records, timeZone, deletedEventIds);
   const columnCount = summary.topHeaders.length;
+  const participantIdColumn = columnCount + 1;
+  if (participantIdColumn > sheet.getMaxColumns()) {
+    sheet.insertColumnsAfter(
+      sheet.getMaxColumns(),
+      participantIdColumn - sheet.getMaxColumns(),
+    );
+  }
   sheet.getRange(1, 1, 1, columnCount).setValues([summary.topHeaders]);
   sheet.getRange(2, 1, 1, columnCount).setValues([summary.subHeaders]);
+  sheet.getRange(1, participantIdColumn).setValue('__permission_participant_id');
   sheet.getRange(1, 1, 2, columnCount).setFontWeight('bold');
   sheet.getRange(1, 1, 1, columnCount).setBackground('#fff200');
   sheet.getRange(2, 1, 1, columnCount).setBackground('#fff200');
@@ -576,6 +601,8 @@ function renderPermissionSummary(spreadsheet, monthKey, records, timeZone) {
       .setValues([['', 'Belum ada izin keluar', ...Array(columnCount - 2).fill('')]]);
   } else {
     sheet.getRange(3, 1, summary.rows.length, columnCount).setValues(summary.rows);
+    sheet.getRange(3, participantIdColumn, summary.participantIds.length, 1)
+      .setValues(summary.participantIds.map((participantId) => [participantId]));
   }
 
   sheet.setColumnWidth(1, 50);
@@ -583,7 +610,225 @@ function renderPermissionSummary(spreadsheet, monthKey, records, timeZone) {
   for (let column = 3; column <= columnCount; column += 1) {
     sheet.setColumnWidth(column, column <= columnCount - 2 ? 130 : 170);
   }
+  const dataRowCount = Math.max(summary.rows.length, 1);
+  for (let index = 0; index < summary.sortedDates.length; index += 1) {
+    sheet.getRange(3, 5 + index * 3, dataRowCount, 1).setNumberFormat('0.0');
+  }
+  sheet.getRange(3, columnCount - 1, dataRowCount, 1).setNumberFormat('0.0');
+  sheet.hideColumns(participantIdColumn);
   return sheet;
+}
+
+function roundDurationMillisecondsToMinutes(durationMilliseconds) {
+  if (durationMilliseconds <= 0) return 0;
+  return Math.max(0.1, Math.round((durationMilliseconds / 60000) * 10) / 10);
+}
+
+function savePermissionSheetEdit(event) {
+  const sheet = event.range.getSheet();
+  const spreadsheet = event.source;
+  const timeZone = spreadsheet.getSpreadsheetTimeZone() || 'Asia/Jakarta';
+  const dataSheet = getDataSheet(spreadsheet);
+  const records = readAttendanceRecords(dataSheet);
+  const metadataColumn = sheet.getLastColumn();
+  const editedValues = event.range.getDisplayValues();
+  const participantIds = sheet.getRange(
+    event.range.getRow(),
+    metadataColumn,
+    event.range.getNumRows(),
+    1,
+  ).getDisplayValues();
+  const correctionChanges = new Map();
+  let invalidEditCount = 0;
+
+  editedValues.forEach((row, rowIndex) => {
+    row.forEach((value, columnIndex) => {
+      const rowNumber = event.range.getRow() + rowIndex;
+      const columnNumber = event.range.getColumn() + columnIndex;
+      if (rowNumber < 3 || columnNumber < 3) return;
+      const dateStartColumn = 3 + Math.floor((columnNumber - 3) / 3) * 3;
+      const eventOffset = (columnNumber - 3) % 3;
+      if (eventOffset === 2) return;
+      const dateLabel = String(sheet.getRange(1, dateStartColumn).getDisplayValue() || '').trim();
+      const dateMatch = /^(\d{2})-(\d{2})-(\d{4})$/.exec(dateLabel);
+      const participantId = String(participantIds[rowIndex] && participantIds[rowIndex][0] || '').trim();
+      if (!dateMatch || !participantId) {
+        invalidEditCount += 1;
+        return;
+      }
+      const date = `${dateMatch[3]}-${dateMatch[2]}-${dateMatch[1]}`;
+      const eventType = eventOffset === 0 ? 'permission_out' : 'permission_in';
+      const matchingRecords = records
+        .filter((record) =>
+          String(
+            record.participant_id ||
+            record.participant_code ||
+            record.participant_name ||
+            '',
+          ).trim() === participantId &&
+          attendanceDateKey(record.attendance_date, timeZone) === date &&
+          record.event_type === eventType)
+        .sort((left, right) => {
+          const timeDifference = parseTimestamp(left.client_timestamp) -
+            parseTimestamp(right.client_timestamp);
+          return timeDifference || String(left.id_unik).localeCompare(String(right.id_unik));
+        });
+      if (matchingRecords.some((record) => !String(record.id_unik || '').trim())) {
+        invalidEditCount += 1;
+        return;
+      }
+      const requestedTimes = parsePermissionTimes(value);
+      if (!requestedTimes) {
+        invalidEditCount += 1;
+        return;
+      }
+      const desiredEventIds = permissionEventIdsForTimes(
+        matchingRecords,
+        requestedTimes,
+        timeZone,
+      );
+      if (!desiredEventIds) {
+        invalidEditCount += 1;
+        return;
+      }
+      matchingRecords.forEach((record) => {
+        correctionChanges.set(String(record.id_unik), {
+          id: String(record.id_unik),
+          participantId,
+          date,
+          eventType,
+          deleted: !desiredEventIds.has(String(record.id_unik)),
+        });
+      });
+    });
+  });
+
+  if (!correctionChanges.size) {
+    if (invalidEditCount) {
+      spreadsheet.toast(
+        'Edit tidak tersimpan. Hapus hanya waktu yang sudah tercatat; waktu baru harus dibuat dengan scan.',
+        'Rekap Izin',
+        8,
+      );
+      renderPermissionSummary(spreadsheet, monthKeyFromSheetName(sheet.getName()), records, timeZone);
+    }
+    return;
+  }
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    savePermissionCorrectionChanges(spreadsheet, correctionChanges);
+    renderPermissionSummary(
+      spreadsheet,
+      monthKeyFromSheetName(sheet.getName()),
+      records,
+      timeZone,
+    );
+    spreadsheet.toast(
+      invalidEditCount
+        ? 'Penghapusan waktu tersimpan. Edit lain diabaikan karena waktu tidak cocok dengan scan.'
+        : 'Perubahan waktu izin tersimpan dan tidak akan muncul kembali.',
+      'Rekap Izin',
+      6,
+    );
+  } finally {
+    if (lock.hasLock()) lock.releaseLock();
+  }
+}
+
+function parsePermissionTimes(value) {
+  const text = String(value || '').trim();
+  if (!text) return [];
+  const times = [];
+  for (const rawTime of text.split(/\r?\n/)) {
+    const match = /^(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(rawTime.trim());
+    if (!match) return null;
+    const hour = Number(match[1]);
+    const minute = Number(match[2]);
+    const second = Number(match[3] || 0);
+    if (hour > 23 || minute > 59 || second > 59) return null;
+    times.push(`${match[1]}:${match[2]}:${String(second).padStart(2, '0')}`);
+  }
+  return times;
+}
+
+function permissionEventIdsForTimes(records, requestedTimes, timeZone) {
+  const unusedRecords = records.slice();
+  const desiredEventIds = new Set();
+  for (const requestedTime of requestedTimes) {
+    const matchIndex = unusedRecords.findIndex((record) =>
+      formatClock(record.client_timestamp, timeZone) === requestedTime);
+    if (matchIndex < 0) return null;
+    const [record] = unusedRecords.splice(matchIndex, 1);
+    desiredEventIds.add(String(record.id_unik));
+  }
+  return desiredEventIds;
+}
+
+function getPermissionCorrectionSheet(spreadsheet) {
+  let sheet = spreadsheet.getSheetByName(PERMISSION_CORRECTIONS_SHEET_NAME);
+  if (!sheet) sheet = spreadsheet.insertSheet(PERMISSION_CORRECTIONS_SHEET_NAME);
+  if (sheet.getLastRow() === 0) {
+    sheet.getRange(1, 1, 1, PERMISSION_CORRECTION_HEADERS.length)
+      .setValues([PERMISSION_CORRECTION_HEADERS]);
+  } else {
+    const headers = sheet.getRange(1, 1, 1, PERMISSION_CORRECTION_HEADERS.length)
+      .getDisplayValues()[0];
+    if (PERMISSION_CORRECTION_HEADERS.some((header, index) => headers[index] !== header)) {
+      throw new Error(`Invalid headers in ${PERMISSION_CORRECTIONS_SHEET_NAME}`);
+    }
+  }
+  return sheet;
+}
+
+function readDeletedPermissionEventIds(spreadsheet) {
+  const sheet = spreadsheet.getSheetByName(PERMISSION_CORRECTIONS_SHEET_NAME);
+  if (!sheet || sheet.getLastRow() <= 1) return new Set();
+  const headers = sheet.getRange(1, 1, 1, PERMISSION_CORRECTION_HEADERS.length)
+    .getDisplayValues()[0];
+  if (PERMISSION_CORRECTION_HEADERS.some((header, index) => headers[index] !== header)) {
+    throw new Error(`Invalid headers in ${PERMISSION_CORRECTIONS_SHEET_NAME}`);
+  }
+  return new Set(sheet.getRange(
+    2,
+    1,
+    sheet.getLastRow() - 1,
+    PERMISSION_CORRECTION_HEADERS.length,
+  ).getDisplayValues()
+    .filter((row) => String(row[0] || '').trim())
+    .map((row) => String(row[0]).trim()));
+}
+
+function savePermissionCorrectionChanges(spreadsheet, changes) {
+  const sheet = getPermissionCorrectionSheet(spreadsheet);
+  const existingRows = sheet.getLastRow() > 1
+    ? sheet.getRange(2, 1, sheet.getLastRow() - 1, PERMISSION_CORRECTION_HEADERS.length)
+      .getDisplayValues()
+    : [];
+  const rowsById = new Map(existingRows
+    .filter((row) => String(row[0] || '').trim())
+    .map((row) => [String(row[0]).trim(), row]));
+  changes.forEach((change) => {
+    if (change.deleted) {
+      rowsById.set(change.id, [
+        change.id,
+        change.participantId,
+        change.date,
+        change.eventType,
+      ]);
+    } else {
+      rowsById.delete(change.id);
+    }
+  });
+  sheet.clearContents();
+  sheet.getRange(1, 1, 1, PERMISSION_CORRECTION_HEADERS.length)
+    .setValues([PERMISSION_CORRECTION_HEADERS]);
+  const rows = Array.from(rowsById.values());
+  if (rows.length) {
+    sheet.getRange(2, 1, rows.length, PERMISSION_CORRECTION_HEADERS.length).setValues(rows);
+  }
+  sheet.hideSheet();
 }
 
 function monthKeyFromSheetName(name) {
@@ -1006,6 +1251,12 @@ function renderMonthlySummary(
     .setBorder(true, true, true, true, true, true, '#000000', SpreadsheetApp.BorderStyle.SOLID);
   summarySheet.getRange(3, 1, Math.max(summary.rows.length, 1), lastColumn)
     .setHorizontalAlignment('center');
+  const dataRowCount = Math.max(summary.rows.length, 1);
+  summary.dates.forEach((_date, index) => {
+    summarySheet.getRange(3, 4 + index * DATE_HEADERS.length, dataRowCount, 1)
+      .setNumberFormat('0.0');
+  });
+  summarySheet.getRange(3, firstTotalColumn, dataRowCount, 1).setNumberFormat('0.0');
   summarySheet.setColumnWidth(1, 42);
   summarySheet.setColumnWidth(2, 250);
   summary.dates.forEach((date, index) => {
@@ -1160,10 +1411,11 @@ function normalizeSummaryCorrectionValue(value, eventType, timeZone, rowNumber) 
   }
   const text = String(value).trim();
   const minutes = Number(text);
-  if (!text || !Number.isInteger(minutes) || minutes < 0) {
-    throw new Error(`Menit keterlambatan pada baris ${rowNumber} harus berupa bilangan bulat nol atau lebih.`);
+  if (!text || !Number.isFinite(minutes) || minutes < 0 || minutes > 65535 ||
+      Math.abs(minutes * 10 - Math.round(minutes * 10)) > 1e-8) {
+    throw new Error(`Menit keterlambatan pada baris ${rowNumber} harus berupa angka nol atau lebih dengan maksimal satu angka desimal.`);
   }
-  return String(minutes);
+  return String(roundMinutesToTenth(minutes));
 }
 
 function compareParticipantIds(left, right) {
@@ -1299,14 +1551,14 @@ function buildMonthlySummary(records, timeZone, monthKey, participantOrder = new
         day?.checkOut || '',
       );
     }
-    baselineTotalRows[index] = [totalLateMinutes];
+    baselineTotalRows[index] = [roundMinutesToTenth(totalLateMinutes)];
     const totalCorrection = corrections.get(
       attendanceCorrectionKey(String(participant.id || ''), '', 'total_late_minutes'),
     );
     row.push(
       totalCorrection
         ? totalCorrection.action === 'clear' ? '' : Number(totalCorrection.value)
-        : totalLateMinutes,
+        : roundMinutesToTenth(totalLateMinutes),
       totalAttendance,
     );
     return row;
@@ -1323,6 +1575,10 @@ function buildMonthlySummary(records, timeZone, monthKey, participantOrder = new
 function formatDateLabel(value) {
   const [year, month, day] = value.split('-');
   return `${day}-${month}-${year}`;
+}
+
+function roundMinutesToTenth(minutes) {
+  return Math.round((Number(minutes) + Number.EPSILON) * 10) / 10;
 }
 
 function attendanceDateKey(value, timeZone) {

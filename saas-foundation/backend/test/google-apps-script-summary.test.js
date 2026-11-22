@@ -32,7 +32,7 @@ const sandbox = {
   },
 };
 runInNewContext(
-  `${script}\nthis.buildMonthlySummary = buildMonthlySummary;\nthis.readAttendanceCorrections = readAttendanceCorrections;\nthis.readMonthlySummaryState = readMonthlySummaryState;\nthis.buildSummaryEditCorrections = buildSummaryEditCorrections;\nthis.saveMonthlySummaryCorrections = saveMonthlySummaryCorrections;\nthis.monthSheetName = monthSheetName;\nthis.monthKeyFromSheetName = monthKeyFromSheetName;\nthis.getSummarySheet = getSummarySheet;\nthis.groupAttendanceRecordsByMonth = groupAttendanceRecordsByMonth;\nthis.formatDateLabel = formatDateLabel;\nthis.shouldIncludeAfterClear = shouldIncludeAfterClear;\nthis.clearSupersededAttendanceClearCorrections = clearSupersededAttendanceClearCorrections;\nthis.unmergeSummaryHeaders = unmergeSummaryHeaders;\n  this.isValidResetPin = isValidResetPin;\nthis.permissionSheetName = permissionSheetName;\nthis.buildPermissionSummary = buildPermissionSummary;`,
+  `${script}\nthis.buildMonthlySummary = buildMonthlySummary;\nthis.readAttendanceCorrections = readAttendanceCorrections;\nthis.readMonthlySummaryState = readMonthlySummaryState;\nthis.buildSummaryEditCorrections = buildSummaryEditCorrections;\nthis.saveMonthlySummaryCorrections = saveMonthlySummaryCorrections;\nthis.monthSheetName = monthSheetName;\nthis.monthKeyFromSheetName = monthKeyFromSheetName;\nthis.getSummarySheet = getSummarySheet;\nthis.groupAttendanceRecordsByMonth = groupAttendanceRecordsByMonth;\nthis.formatDateLabel = formatDateLabel;\nthis.shouldIncludeAfterClear = shouldIncludeAfterClear;\nthis.clearSupersededAttendanceClearCorrections = clearSupersededAttendanceClearCorrections;\nthis.unmergeSummaryHeaders = unmergeSummaryHeaders;\n  this.isValidResetPin = isValidResetPin;\n  this.permissionSheetName = permissionSheetName;\n  this.buildPermissionSummary = buildPermissionSummary;\nthis.permissionEventIdsForTimes = permissionEventIdsForTimes;\nthis.normalizeSummaryCorrectionValue = normalizeSummaryCorrectionValue;`,
   sandbox,
 );
 
@@ -93,6 +93,43 @@ test('Apps Script permission pairing stays within the same attendance date', () 
   assert.equal(summary.rows[0][4], '');
 });
 
+test('Apps Script sums permission seconds before rounding to tenths of a minute', () => {
+  const summary = sandbox.buildPermissionSummary([
+    {
+      participant_id: 'P1',
+      participant_name: 'Agung',
+      attendance_date: '2026-11-01',
+      event_type: 'permission_out',
+      client_timestamp: '2026-11-01 01:00:00.000',
+    },
+    {
+      participant_id: 'P1',
+      participant_name: 'Agung',
+      attendance_date: '2026-11-01',
+      event_type: 'permission_in',
+      client_timestamp: '2026-11-01 01:00:30.000',
+    },
+    {
+      participant_id: 'P1',
+      participant_name: 'Agung',
+      attendance_date: '2026-11-01',
+      event_type: 'permission_out',
+      client_timestamp: '2026-11-01 03:00:00.000',
+    },
+    {
+      participant_id: 'P1',
+      participant_name: 'Agung',
+      attendance_date: '2026-11-01',
+      event_type: 'permission_in',
+      client_timestamp: '2026-11-01 03:01:42.000',
+    },
+  ], 'Asia/Jakarta');
+
+  assert.equal(summary.rows[0][4], 2.2);
+  assert.equal(summary.rows[0][5], 2.2);
+  assert.equal(summary.rows[0][6], 2);
+});
+
 test('Apps Script permission sheet accepts stable participant code when numeric ID is missing', () => {
   const summary = sandbox.buildPermissionSummary([
     {
@@ -107,6 +144,55 @@ test('Apps Script permission sheet accepts stable participant code when numeric 
   assert.equal(summary.rows.length, 1);
   assert.equal(summary.rows[0][1], 'Siti');
   assert.equal(summary.rows[0][2], '09:00:00');
+});
+
+test('Apps Script keeps deleted permission events hidden after later scans', () => {
+  const summary = sandbox.buildPermissionSummary([
+    {
+      id_unik: 'deleted-scan-1',
+      participant_id: '17',
+      participant_name: 'Maman',
+      attendance_date: '2026-11-22',
+      event_type: 'permission_out',
+      client_timestamp: '2026-11-22 07:57:58.000',
+    },
+    {
+      id_unik: 'deleted-scan-2',
+      participant_id: '17',
+      participant_name: 'Maman',
+      attendance_date: '2026-11-22',
+      event_type: 'permission_out',
+      client_timestamp: '2026-11-22 08:15:55.000',
+    },
+    {
+      id_unik: 'new-scan',
+      participant_id: '17',
+      participant_name: 'Maman',
+      attendance_date: '2026-11-22',
+      event_type: 'permission_out',
+      client_timestamp: '2026-11-22 08:29:22.000',
+    },
+  ], 'Asia/Jakarta', new Set(['deleted-scan-1', 'deleted-scan-2']));
+
+  assert.equal(summary.rows.length, 1);
+  assert.equal(summary.rows[0][2], '15:29:22');
+  assert.deepEqual(Array.from(summary.participantIds), ['17']);
+});
+
+test('Apps Script maps repeated permission times to distinct scan IDs', () => {
+  const records = [
+    { id_unik: 'scan-a', client_timestamp: '2026-11-22 07:57:58.000' },
+    { id_unik: 'scan-b', client_timestamp: '2026-11-22 07:57:58.000' },
+  ];
+
+  assert.deepEqual(
+    Array.from(sandbox.permissionEventIdsForTimes(records, ['14:57:58'], 'Asia/Jakarta')),
+    ['scan-a'],
+  );
+  assert.equal(
+    sandbox.permissionEventIdsForTimes(records, ['14:57:58', '15:00:00'], 'Asia/Jakarta'),
+    null,
+  );
 });
 
 test('Apps Script groups attendance by participant across dynamic date columns', () => {
@@ -208,6 +294,44 @@ test('Apps Script merges code changes by stable participant ID', () => {
     [1, 'Siti', '07:54:09', 5, '15:11:17', 5, 1],
     [2, 'Siti', '08:00:00', 0, '', 0, 1],
   ]);
+});
+
+test('Apps Script retains fractional lateness in daily and monthly totals', () => {
+  const { rows } = sandbox.buildMonthlySummary([
+    {
+      participant_id: '17',
+      participant_code: 'P17',
+      participant_name: 'Zahra',
+      attendance_date: '2026-11-01',
+      event_type: 'check_in',
+      client_timestamp: '2026-11-01 01:05:30.000',
+      late_minutes: 0.5,
+    },
+    {
+      participant_id: '17',
+      participant_code: 'P17',
+      participant_name: 'Zahra',
+      attendance_date: '2026-11-02',
+      event_type: 'check_in',
+      client_timestamp: '2026-11-02 01:06:42.000',
+      late_minutes: 1.7,
+    },
+  ], 'Asia/Jakarta', '2026-11');
+
+  assert.equal(rows[0][3], 0.5);
+  assert.equal(rows[0][6], 1.7);
+  assert.equal(rows[0][8], 2.2);
+});
+
+test('Apps Script accepts lateness corrections with one decimal place', () => {
+  assert.equal(
+    sandbox.normalizeSummaryCorrectionValue('1.7', 'late_minutes', 'Asia/Jakarta', 3),
+    '1.7',
+  );
+  assert.throws(
+    () => sandbox.normalizeSummaryCorrectionValue('1.75', 'late_minutes', 'Asia/Jakarta', 3),
+    /maksimal satu angka desimal/,
+  );
 });
 
 test('Apps Script follows manual participant order and keeps time corrections', () => {
@@ -340,7 +464,7 @@ test('Apps Script supports daily lateness and total lateness corrections', () =>
     },
     { eventType: 'total_late_minutes', action: 'set', value: '20' },
   );
-  assert.throws(() => sandbox.buildSummaryEditCorrections(
+  const fractionalCorrection = sandbox.buildSummaryEditCorrections(
     [[1.5]],
     3,
     4,
@@ -348,7 +472,17 @@ test('Apps Script supports daily lateness and total lateness corrections', () =>
     ['17'],
     dateColumns,
     'Asia/Jakarta',
-  ), /bilangan bulat/);
+  );
+  assert.equal(fractionalCorrection.corrections[0].value, '1.5');
+  assert.throws(() => sandbox.buildSummaryEditCorrections(
+    [[1.55]],
+    3,
+    4,
+    3,
+    ['17'],
+    dateColumns,
+    'Asia/Jakarta',
+  ), /maksimal satu angka desimal/);
 });
 
 test('Apps Script reads saved lateness correction metadata', () => {

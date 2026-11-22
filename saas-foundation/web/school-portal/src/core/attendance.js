@@ -75,8 +75,12 @@ export function calculateAttendance({ eventType, clientTimestamp, participantId,
   return {
     date,
     status: 'terlambat',
-    lateMinutes: Math.ceil((seconds - threshold) / 60),
+    lateMinutes: roundMinutesToTenth((seconds - threshold) / 60),
   };
+}
+
+function roundMinutesToTenth(minutes) {
+  return Math.max(0.1, Math.round(minutes * 10) / 10);
 }
 
 export function remainingScanCooldownMs(lastScanAt, now, cooldownMinutes) {
@@ -157,7 +161,8 @@ export function createQueuedScan({
     throw new TypeError('Hasil validasi absensi yang dapat dicatat wajib tersedia.');
   }
   const lateMinutes = calculation.lateMinutes;
-  if (!Number.isInteger(lateMinutes) || lateMinutes < 0 || lateMinutes > 65535) {
+  if (!Number.isFinite(lateMinutes) || lateMinutes < 0 || lateMinutes > 65535 ||
+      Math.abs(lateMinutes * 10 - Math.round(lateMinutes * 10)) > 1e-8) {
     throw new RangeError('Menit keterlambatan tidak valid.');
   }
   if ((jenis_absen === 'check_out' && (calculation.status !== 'pulang' || lateMinutes !== 0)) ||

@@ -18,6 +18,14 @@ export async function ensureRuntimeMigrations(pool) {
          MODIFY COLUMN attendance_status ENUM('hadir','terlambat','pulang','izin_keluar','izin_masuk') NOT NULL`,
       );
     }
+    const lateMinutesColumn = attendanceColumns.find((column) => column.COLUMN_NAME === 'late_minutes');
+    if (lateMinutesColumn &&
+        !/^decimal\(7,1\)/i.test(String(lateMinutesColumn.COLUMN_TYPE))) {
+      await pool.execute(
+        `ALTER TABLE attendance_logs
+         MODIFY COLUMN late_minutes DECIMAL(7,1) UNSIGNED NOT NULL DEFAULT 0.0`,
+      );
+    }
 
     const [attendanceIndexes] = await pool.execute(
       `SELECT INDEX_NAME FROM information_schema.STATISTICS

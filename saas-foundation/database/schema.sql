@@ -474,7 +474,7 @@ CREATE TABLE IF NOT EXISTS attendance_logs (
     client_timestamp_utc DATETIME(3) NOT NULL,
     server_received_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     attendance_status ENUM('hadir', 'terlambat', 'pulang', 'izin_keluar', 'izin_masuk') NOT NULL,
-    late_minutes SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+    late_minutes DECIMAL(7,1) UNSIGNED NOT NULL DEFAULT 0.0,
     scan_method ENUM('SCAN_QR', 'MANUAL_INPUT') NOT NULL DEFAULT 'SCAN_QR',
     PRIMARY KEY (id),
     UNIQUE KEY uq_attendance_school_idempotency (sekolah_id, id_unik),

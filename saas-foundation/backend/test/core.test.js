@@ -121,6 +121,31 @@ test('attendance calculation uses tenant timezone and tolerance', () => {
   assert.equal(late.lateMinutes, 10);
 });
 
+test('attendance calculation retains seconds as tenths of a late minute', () => {
+  const halfMinuteLate = calculateAttendance({
+    eventType: 'check_in',
+    clientTimestamp: '2026-11-23T01:05:30.000Z',
+    participantId: 'p1',
+    settings,
+  });
+  const oneMinute42SecondsLate = calculateAttendance({
+    eventType: 'check_in',
+    clientTimestamp: '2026-11-23T01:06:42.000Z',
+    participantId: 'p1',
+    settings,
+  });
+  const browserResult = calculateBrowserAttendance({
+    eventType: 'check_in',
+    clientTimestamp: '2026-11-23T01:06:42.000Z',
+    participantId: 'p1',
+    settings,
+  });
+
+  assert.equal(halfMinuteLate.lateMinutes, 0.5);
+  assert.equal(oneMinute42SecondsLate.lateMinutes, 1.7);
+  assert.deepEqual(browserResult, oneMinute42SecondsLate);
+});
+
 test('attendance calculation uses a participant-specific entry deadline for its weekday', () => {
   const participantOverrideSettings = {
     ...settings,
@@ -355,6 +380,18 @@ test('queued scan model preserves idempotency key and original client timestamp'
   assert.equal(record.status_sync, 'pending');
   assert.equal(record.menit_terlambat, 10);
   assert.equal(record.scan_method, 'SCAN_QR');
+  const fractionalRecord = createQueuedScan({
+    sekolah_id: 10,
+    id_peserta: 'p1',
+    jenis_absen: 'check_in',
+    id_unik: '5a2c6ec7-33cb-4a2d-b205-7a2be89146e2',
+    calculation: {
+      date: '2026-11-23',
+      status: 'terlambat',
+      lateMinutes: 0.5,
+    },
+  });
+  assert.equal(fractionalRecord.menit_terlambat, 0.5);
   assert.throws(
     () => createQueuedScan({
       sekolah_id: 10,
