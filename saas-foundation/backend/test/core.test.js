@@ -4,6 +4,7 @@ import { calculateAttendance, createQueuedScan } from '../src/core/attendance.js
 import { aggregateAttendanceReport } from '../src/core/attendance-report.js';
 import {
   calculateAttendance as calculateBrowserAttendance,
+  attendanceEventTypeForMode,
   createQueuedScan as createBrowserQueuedScan,
   mergeDailyAttendanceState,
   remainingScanCooldownMs,
@@ -184,6 +185,14 @@ test('scan cooldown blocks scans until the configured interval has elapsed', () 
   assert.equal(remainingScanCooldownMs(lastScanAt, Date.parse('2026-11-23T01:05:00.000Z'), 5), 0);
   assert.equal(remainingScanCooldownMs(null, Date.parse('2026-11-23T01:00:00.000Z'), 5), 0);
   assert.throws(() => remainingScanCooldownMs(lastScanAt, Date.now(), 0), /1 dan 60 menit/);
+});
+
+test('scanner session mode selects check-in, check-out, or automatic attendance', () => {
+  assert.equal(attendanceEventTypeForMode('auto', false), 'check_in');
+  assert.equal(attendanceEventTypeForMode('auto', true), 'check_out');
+  assert.equal(attendanceEventTypeForMode('check_in', true), 'check_in');
+  assert.equal(attendanceEventTypeForMode('check_out', false), 'check_out');
+  assert.throws(() => attendanceEventTypeForMode('unknown', false), /Mode sesi/);
 });
 
 test('local attendance state advances cooldown and retains check-in after repeated check-outs', () => {
@@ -397,12 +406,17 @@ test('browser sync removes scans rejected by the server cooldown', async () => {
       },
     },
     async sendBatch() {
-      return { accepted_ids: [], ignored_ids: [id] };
+      return {
+        accepted_ids: [],
+        ignored_ids: [id],
+        ignored: [{ id_unik: id, reason: 'missing_check_in' }],
+      };
     },
   });
   await manager.enqueue(scan(id));
   const result = await manager.syncPending();
   assert.deepEqual(result.ignored_ids, [id]);
+  assert.deepEqual(result.ignored_details, [{ id_unik: id, reason: 'missing_check_in' }]);
   assert.deepEqual(result.rejected_ids, []);
   assert.deepEqual(ignored, [id]);
   assert.equal(pending.size, 0);

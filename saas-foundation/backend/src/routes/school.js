@@ -215,9 +215,7 @@ router.post('/auth/register/start', asyncRoute(async (req, res) => {
     challenge_id: challengeId,
     expires_in_seconds: 300,
     delivery_status: delivery.deliveryConfirmed ? 'delivered' : 'accepted',
-    message: delivery.deliveryConfirmed
-      ? 'Gateway mengonfirmasi OTP telah terkirim ke WhatsApp admin.'
-      : 'Gateway menerima permintaan OTP, tetapi belum mengonfirmasi pengiriman pesan. Periksa koneksi dan log gateway WhatsApp.',
+    message: `OTP berhasil dikirim ke WhatsApp nomor ${phone}. Periksa pesan masuk di WhatsApp.`,
   });
 }));
 
@@ -313,46 +311,54 @@ router.post('/auth/password-reset/start', asyncRoute(async (req, res) => {
     errorCode: 'RESET_RATE_LIMITED',
   });
 
-  const [accounts] = await pool.execute(
-    `SELECT u.id, u.sekolah_id
-       FROM schools s JOIN users u ON u.sekolah_id = s.id
-      WHERE s.school_code = ? AND u.whatsapp_phone = ? AND s.is_active = TRUE
-        AND s.subscription_status <> 'suspend' AND u.is_active = TRUE
+  const [[school]] = await pool.execute(
+    `SELECT id FROM schools
+      WHERE school_code = ? AND is_active = TRUE AND subscription_status <> 'suspend'
       LIMIT 1`,
-    [req.body.school_code, phone],
+    [req.body.school_code],
+  );
+  if (!school) {
+    throw fail(404, 'Kode sekolah tidak valid atau sekolah tidak aktif.', 'SCHOOL_NOT_FOUND');
+  }
+  const [accounts] = await pool.execute(
+    `SELECT id, sekolah_id FROM users
+      WHERE sekolah_id = ? AND whatsapp_phone = ? AND is_active = TRUE
+      LIMIT 1`,
+    [school.id, phone],
   );
   const account = accounts[0];
+  if (!account) {
+    throw fail(404, 'Nomor WhatsApp tidak terdaftar pada sekolah aktif.', 'ACCOUNT_PHONE_NOT_FOUND');
+  }
   const challengeId = randomUUID();
   const otp = createRegistrationOtp();
   await pool.execute(
     `INSERT INTO school_password_reset_challenges
       (id, school_code, sekolah_id, user_id, whatsapp_phone, otp_hash, expires_at, request_ip_hash)
      VALUES (?, ?, ?, ?, ?, ?, UTC_TIMESTAMP() + INTERVAL 5 MINUTE, ?)`,
-    [challengeId, req.body.school_code, account?.sekolah_id ?? null, account?.id ?? null,
+    [challengeId, req.body.school_code, account.sekolah_id, account.id,
       phone, hashRegistrationOtp(challengeId, otp, config.jwtSecret), ipHash],
   );
 
-  if (account) {
-    try {
-      await sendWhatsappMessage(
-        gateway.endpoint_url,
-        decryptGatewayToken(gateway),
-        phone,
-        `Kode reset kata sandi Ruang Hadir: ${otp}. Berlaku 5 menit. Jangan bagikan kode ini kepada siapa pun.`,
-      );
-    } catch (error) {
-      await pool.execute(
-        'UPDATE school_password_reset_challenges SET attempt_count = 5 WHERE id = ?',
-        [challengeId],
-      );
-      throw error;
-    }
+  try {
+    await sendWhatsappMessage(
+      gateway.endpoint_url,
+      decryptGatewayToken(gateway),
+      phone,
+      `Kode reset kata sandi Ruang Hadir: ${otp}. Berlaku 5 menit. Jangan bagikan kode ini kepada siapa pun.`,
+    );
+  } catch (error) {
+    await pool.execute(
+      'UPDATE school_password_reset_challenges SET attempt_count = 5 WHERE id = ?',
+      [challengeId],
+    );
+    throw error;
   }
 
   res.status(202).json({
     challenge_id: challengeId,
     expires_in_seconds: 300,
-    message: 'Jika kode sekolah dan nomor WhatsApp cocok dengan akun aktif, kode verifikasi akan dikirim ke nomor tersebut.',
+    message: `Kode OTP sudah dikirim ke WhatsApp nomor ${phone}.`,
   });
 }));
 
@@ -1793,6 +1799,7 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
   const acceptedIds = [];
   const rejectedIds = [];
   const ignoredIds = [];
+  const ignored = [];
   const rejected = [];
   const settings = await loadAttendanceSettings(schoolId);
   const cooldownMinutes = Number(settings.scan_cooldown_minutes ?? 5);
@@ -1875,7 +1882,7 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
                 LIMIT 1 FOR UPDATE`,
               [schoolId, participant.id, calculation.date],
             );
-            if (!checkInRows.length) return 'ignored';
+            if (!checkInRows.length) return 'ignored_missing_check_in';
             const [recentScans] = await connection.execute(
               `SELECT id FROM attendance_logs
                 WHERE sekolah_id = ? AND participant_id = ? AND attendance_date = ?
@@ -1884,7 +1891,7 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
                 FOR UPDATE`,
               [schoolId, participant.id, calculation.date, cooldownThreshold],
             );
-            if (recentScans.length) return 'ignored';
+            if (recentScans.length) return 'ignored_cooldown';
           }
           const [result] = await connection.execute(
             `INSERT INTO attendance_logs
@@ -1917,8 +1924,12 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
           }
           return 'saved';
         });
-        if (syncResult === 'ignored') {
+        if (syncResult === 'ignored_missing_check_in' || syncResult === 'ignored_cooldown') {
           ignoredIds.push(id);
+          ignored.push({
+            id_unik: id,
+            reason: syncResult === 'ignored_missing_check_in' ? 'missing_check_in' : 'cooldown',
+          });
           continue;
         }
       } catch (error) {
@@ -1991,7 +2002,7 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
   if (deviceId) {
     await pool.execute('UPDATE scanner_devices SET last_synced_at = CURRENT_TIMESTAMP WHERE id = ?', [deviceId]);
   }
-  res.json({ accepted_ids: acceptedIds, ignored_ids: ignoredIds, rejected_ids: rejectedIds, rejected });
+  res.json({ accepted_ids: acceptedIds, ignored_ids: ignoredIds, ignored, rejected_ids: rejectedIds, rejected });
 });
 
 router.post('/attendance/sync-batch', requireDevice, syncAttendanceBatch);

@@ -88,6 +88,16 @@ export function remainingScanCooldownMs(lastScanAt, now, cooldownMinutes) {
   return Math.max(0, lastScanTime + cooldownMinutes * 60_000 - now);
 }
 
+export function attendanceEventTypeForMode(mode, hasCheckIn) {
+  if (!['auto', 'check_in', 'check_out'].includes(mode)) {
+    throw new TypeError('Mode sesi absensi tidak valid.');
+  }
+  if (typeof hasCheckIn !== 'boolean') {
+    throw new TypeError('Status check-in peserta harus berupa boolean.');
+  }
+  return mode === 'auto' ? (hasCheckIn ? 'check_out' : 'check_in') : mode;
+}
+
 export function mergeDailyAttendanceState(current, scan) {
   const scanTime = Date.parse(scan.client_timestamp);
   if (!Number.isFinite(scanTime)) throw new TypeError('Waktu scan tidak valid.');

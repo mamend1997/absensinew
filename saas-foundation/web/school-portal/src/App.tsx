@@ -6,6 +6,7 @@ import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 import QRCode from 'qrcode';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
+  attendanceEventTypeForMode,
   calculateAttendance,
   createQueuedScan,
   mergeDailyAttendanceState,
@@ -902,6 +903,7 @@ export default function App() {
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraRotation, setCameraRotation] = useState(initialScannerPreferences.cameraManualRotation);
   const [cameraControlsExpanded, setCameraControlsExpanded] = useState(false);
+  const [attendanceSessionMode, setAttendanceSessionMode] = useState<'auto' | 'check_in' | 'check_out'>('auto');
   const [cameraFrameSize, setCameraFrameSize] = useState({ width: 0, height: 0 });
   const [scannerIdle, setScannerIdle] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -1245,18 +1247,53 @@ export default function App() {
   }, [page, session?.token, googleSheetsSettings.is_enabled]);
 
   useEffect(() => {
+    let active = true;
+    let checking = false;
+    let lastReachability: boolean | null = null;
+    const updateReachability = (reachable: boolean) => {
+      if (!active) return;
+      if (reachable && lastReachability === false) {
+        setConnectivityVersion((current) => current + 1);
+      }
+      lastReachability = reachable;
+      setOnline(reachable);
+      setOfflineMode(!reachable);
+    };
+    const checkReachability = async () => {
+      if (checking) return;
+      if (!navigator.onLine) {
+        updateReachability(false);
+        return;
+      }
+      checking = true;
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 2500);
+      try {
+        const response = await fetch(`${API_BASE}/health`, {
+          cache: 'no-store',
+          signal: controller.signal,
+        });
+        updateReachability(response.ok);
+      } catch {
+        updateReachability(false);
+      } finally {
+        window.clearTimeout(timeout);
+        checking = false;
+      }
+    };
     const onOnline = () => {
-      setOnline(true);
-      setOfflineMode(false);
-      setConnectivityVersion((current) => current + 1);
+      void checkReachability();
     };
     const onOffline = () => {
-      setOnline(false);
-      setOfflineMode(true);
+      updateReachability(false);
     };
     window.addEventListener('online', onOnline);
     window.addEventListener('offline', onOffline);
+    const timer = window.setInterval(() => void checkReachability(), 3000);
+    void checkReachability();
     return () => {
+      active = false;
+      window.clearInterval(timer);
       window.removeEventListener('online', onOnline);
       window.removeEventListener('offline', onOffline);
     };
@@ -1881,7 +1918,12 @@ export default function App() {
       },
       async sendBatch({ records }: { sekolah_id: string; records: QueuedScan[] }) {
         const serverRecords = records.map(({ local_previous_state: _localState, ...record }) => record);
-        return request<{ accepted_ids: string[]; ignored_ids?: string[]; rejected_ids?: string[] }>(
+        return request<{
+          accepted_ids: string[];
+          ignored_ids?: string[];
+          ignored?: Array<{ id_unik: string; reason: string }>;
+          rejected_ids?: string[];
+        }>(
           '/school/attendance/sync-batch/session',
           session.token,
           { method: 'POST', body: { records: serverRecords } },
@@ -1897,7 +1939,7 @@ export default function App() {
       setQueueRefreshVersion((current) => current + 1);
     }
     if (result.ignored_ids.length) {
-      setMessage('Scan tidak dicatat karena peserta baru saja melakukan scan di perangkat lain; jeda scan tetap berlaku.');
+      setMessage('Sebagian scan tidak dicatat karena status absensi di server berbeda atau jeda scan masih berlaku.');
     }
     if (result.batches > 0) setOfflineMode(false);
     return result;
@@ -2119,7 +2161,7 @@ export default function App() {
       const hasCheckIn = participantScans.some((record) =>
         record.jenis_absen === 'check_in',
       ) || Boolean(dailyState?.check_in);
-      const eventType = hasCheckIn ? 'check_out' : 'check_in';
+      const eventType = attendanceEventTypeForMode(attendanceSessionMode, hasCheckIn);
 
       const calculation = eventType === 'check_in'
         ? initialCalculation
@@ -2167,7 +2209,67 @@ export default function App() {
         try {
           const syncResult = await syncPending();
           if (syncResult.ignored_ids.includes(scan.id_unik)) {
-            const reason = 'Scan tidak dicatat karena peserta baru saja melakukan scan di perangkat lain.';
+            const ignoredDetail = syncResult.ignored_details.find(
+              (item: { id_unik: string; reason: string }) => item.id_unik === scan.id_unik,
+            );
+            if (attendanceSessionMode === 'auto' &&
+                eventType === 'check_out' &&
+                ignoredDetail?.reason === 'missing_check_in') {
+              const key = dailyAttendanceKey(matchedParticipant.id, initialCalculation.date);
+              const resetTransaction = db.transaction(['queue', 'attendanceState'], 'readwrite');
+              const queueStore = resetTransaction.objectStore('queue');
+              const localScans = await queueStore.getAll();
+              for (const localScan of localScans) {
+                if (localScan.status_sync === 'synced' &&
+                    String(localScan.id_peserta) === participantKey &&
+                    localScan.attendance_date === initialCalculation.date) {
+                  await queueStore.delete(localScan.id_unik);
+                }
+              }
+              await resetTransaction.objectStore('attendanceState').delete(key);
+              await resetTransaction.done;
+              const correctedScan = createQueuedScan({
+                sekolah_id: String(session.school.id),
+                id_peserta: matchedParticipant.id,
+                id_perangkat: null,
+                jenis_absen: 'check_in',
+                scan_method: scanMethod,
+                client_timestamp: scanTimestamp,
+                calculation: initialCalculation,
+              }) as QueuedScan;
+              correctedScan.participant_name = matchedParticipant.full_name;
+              correctedScan.local_previous_state = null;
+              await syncManager().enqueue(correctedScan);
+              const correctedState = db.transaction('attendanceState', 'readwrite');
+              await correctedState.objectStore('attendanceState').put(
+                mergeDailyAttendanceState(null, correctedScan),
+              );
+              await correctedState.done;
+              try {
+                await syncPending();
+              } catch (reason) {
+                if (!isNetworkUnavailableError(reason)) throw reason;
+                setOfflineMode(true);
+                setOnline(false);
+              }
+              const correctedStatus = initialCalculation.status === 'terlambat'
+                ? `terlambat${initialCalculation.lateMinutes ? ` ${initialCalculation.lateMinutes} menit` : ''}`
+                : 'hadir tepat waktu';
+              const correctedMessage = attendanceMessage(scanSettings.scan_success_message, {
+                name: matchedParticipant.full_name,
+                status: correctedStatus,
+                reason: '',
+              });
+              showScanFeedback(correctedMessage, true);
+              void announceAttendance(correctedMessage, true);
+              return true;
+            }
+            const reason = ignoredDetail?.reason === 'cooldown'
+              ? 'Jeda scan peserta masih berlaku.'
+              : attendanceSessionMode === 'check_out' &&
+                  ignoredDetail?.reason === 'missing_check_in'
+                ? 'Absen pulang belum bisa dicatat karena absen masuk belum tersedia.'
+              : 'Status absensi peserta di server perlu disinkronkan sebelum scan dicatat.';
             const failureMessage = attendanceMessage(scanSettings.scan_failure_message, {
               name: matchedParticipant.full_name,
               status: '',
@@ -3790,6 +3892,21 @@ export default function App() {
                       aria-expanded={cameraControlsExpanded}
                       onClick={() => setCameraControlsExpanded((expanded) => !expanded)}
                     >{cameraControlsExpanded ? 'Tutup' : 'Kamera'}</button>
+                    <select
+                      className="camera-session-select"
+                      aria-label="Sesi absensi"
+                      value={attendanceSessionMode}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setAttendanceSessionMode(
+                          value === 'check_in' || value === 'check_out' ? value : 'auto',
+                        );
+                      }}
+                    >
+                      <option value="auto">Otomatis</option>
+                      <option value="check_in">Masuk</option>
+                      <option value="check_out">Pulang</option>
+                    </select>
                     {cameraControlsExpanded && <>
                       <div className="camera-rotation-mode" role="group" aria-label="Mode rotasi kamera">
                         <button

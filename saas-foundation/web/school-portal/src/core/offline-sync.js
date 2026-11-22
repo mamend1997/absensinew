@@ -47,6 +47,7 @@ export function createOfflineSyncManager({ schoolId, storage, sendBatch, batchSi
   async function runSync() {
     const acceptedIds = [];
     const ignoredIds = [];
+    const ignoredDetails = [];
     const rejectedIds = [];
     let batches = 0;
     while (true) {
@@ -67,6 +68,10 @@ export function createOfflineSyncManager({ schoolId, storage, sendBatch, batchSi
       if (!Array.isArray(ignoredList)) {
         throw new TypeError('Respons sync berisi ignored_ids yang tidak valid.');
       }
+      const detailsList = response.ignored ?? [];
+      if (!Array.isArray(detailsList)) {
+        throw new TypeError('Respons sync berisi ignored yang tidak valid.');
+      }
       const ignored = new Set(ignoredList);
       if (accepted.size !== response.accepted_ids.length) {
         throw new TypeError('Respons sync berisi id_unik duplikat.');
@@ -79,6 +84,17 @@ export function createOfflineSyncManager({ schoolId, storage, sendBatch, batchSi
       }
       for (const id of ignored) {
         if (!submittedIds.has(id)) throw new Error('Server mengabaikan id_unik yang tidak dikirim pada batch ini.');
+      }
+      const detailIds = new Set();
+      for (const detail of detailsList) {
+        if (!detail || typeof detail.id_unik !== 'string' || typeof detail.reason !== 'string' ||
+            !ignored.has(detail.id_unik) || detailIds.has(detail.id_unik)) {
+          throw new TypeError('Respons sync berisi detail scan yang diabaikan tidak valid.');
+        }
+        detailIds.add(detail.id_unik);
+      }
+      if (detailsList.length && detailsList.length !== ignored.size) {
+        throw new TypeError('Respons sync tidak memberikan detail untuk setiap scan yang diabaikan.');
       }
       const newlyAccepted = [...accepted];
       const newlyIgnored = [...ignored];
@@ -93,6 +109,7 @@ export function createOfflineSyncManager({ schoolId, storage, sendBatch, batchSi
       if (newlyIgnored.length) {
         await storage.markIgnored({ sekolah_id: String(schoolId), ids: newlyIgnored });
         ignoredIds.push(...newlyIgnored);
+        ignoredDetails.push(...detailsList);
       }
       rejectedIds.push(...rejected);
       batches += 1;
@@ -102,6 +119,7 @@ export function createOfflineSyncManager({ schoolId, storage, sendBatch, batchSi
     return {
       accepted_ids: acceptedIds,
       ignored_ids: ignoredIds,
+      ignored_details: ignoredDetails,
       rejected_ids: rejectedIds,
       batches,
     };
