@@ -424,7 +424,7 @@ test('Apps Script supports daily lateness and total lateness corrections', () =>
   assert.deepEqual(Array.from(summary.baselineRows[0]), [
     '07:40:00', 5, '', '07:45:00', 3, '',
   ]);
-  assert.deepEqual(Array.from(summary.baselineTotalRows[0]), [15]);
+  assert.deepEqual(Array.from(summary.baselineTotalRows[0]), [15, 2]);
 
   const dateColumns = new Map([[3, date]]);
   const editedLateMinutes = sandbox.buildSummaryEditCorrections(
@@ -483,6 +483,101 @@ test('Apps Script supports daily lateness and total lateness corrections', () =>
     dateColumns,
     'Asia/Jakarta',
   ), /maksimal satu angka desimal/);
+});
+
+test('Apps Script supports correcting and clearing total attendance', () => {
+  const rows = [
+    [
+      'No', 'Nama', '21-11-2026', '', '', 'Total Terlambat', 'Total Hadir',
+      'participant_id',
+      '__attendance_override__total_attendance',
+      '__attendance_baseline__total_attendance',
+    ],
+    ['No', 'Nama', 'Masuk', 'Terlambat', 'Keluar', 'Total Terlambat', 'Total Hadir',
+      '', '', ''],
+    [1, 'Zahra', '07:40:00', 5, '', 5, 1, '17', '', 1],
+  ];
+  const sheet = {
+    getLastRow: () => rows.length,
+    getLastColumn: () => rows[0].length,
+    getRange(row, column, rowCount = 1, columnCount = 1) {
+      return {
+        getDisplayValues: () => rows.slice(row - 1, row - 1 + rowCount)
+          .map((values) => values.slice(column - 1, column - 1 + columnCount)
+            .map((value) => String(value ?? ''))),
+        setValue(value) {
+          rows[row - 1][column - 1] = value;
+        },
+      };
+    },
+  };
+  const correctionKey = '17\u0000\u0000total_attendance';
+  const dateColumns = new Map([[3, '2026-11-21']]);
+  const baselineValues = new Map([[correctionKey, '1']]);
+  const editedTotal = sandbox.buildSummaryEditCorrections(
+    [[4]],
+    3,
+    7,
+    3,
+    ['17'],
+    dateColumns,
+    'Asia/Jakarta',
+    baselineValues,
+  ).corrections[0];
+  assert.deepEqual(
+    { eventType: editedTotal.eventType, action: editedTotal.action, value: editedTotal.value },
+    { eventType: 'total_attendance', action: 'set', value: '4' },
+  );
+  assert.throws(() => sandbox.buildSummaryEditCorrections(
+    [[1.5]],
+    3,
+    7,
+    3,
+    ['17'],
+    dateColumns,
+    'Asia/Jakarta',
+    baselineValues,
+  ), /Total hadir.*bilangan bulat/);
+
+  sandbox.saveMonthlySummaryCorrections(sheet, [editedTotal]);
+  let state = sandbox.readMonthlySummaryState(sheet, 'Asia/Jakarta');
+  let summary = sandbox.buildMonthlySummary([{
+    participant_id: '17',
+    participant_code: 'P17',
+    participant_name: 'Zahra',
+    attendance_date: '2026-11-21',
+    event_type: 'check_in',
+    client_timestamp: '2026-11-21 00:40:00.000',
+    late_minutes: 5,
+  }], 'Asia/Jakarta', '2026-11', state.order, state.corrections);
+  assert.equal(rows[2][6], 4);
+  assert.equal(summary.rows[0][6], 4);
+
+  const clearedTotal = sandbox.buildSummaryEditCorrections(
+    [['']],
+    3,
+    7,
+    3,
+    ['17'],
+    dateColumns,
+    'Asia/Jakarta',
+    baselineValues,
+    new Map([[correctionKey, '4']]),
+  ).corrections[0];
+  assert.equal(clearedTotal.action, 'clear');
+  sandbox.saveMonthlySummaryCorrections(sheet, [clearedTotal]);
+  state = sandbox.readMonthlySummaryState(sheet, 'Asia/Jakarta');
+  summary = sandbox.buildMonthlySummary([{
+    participant_id: '17',
+    participant_code: 'P17',
+    participant_name: 'Zahra',
+    attendance_date: '2026-11-21',
+    event_type: 'check_in',
+    client_timestamp: '2026-11-21 00:40:00.000',
+    late_minutes: 5,
+  }], 'Asia/Jakarta', '2026-11', state.order, state.corrections);
+  assert.equal(rows[2][6], '');
+  assert.equal(summary.rows[0][6], '');
 });
 
 test('Apps Script reads saved lateness correction metadata', () => {

@@ -21,11 +21,14 @@ aktif. Susunan tersebut dipertahankan saat data baru masuk dan diwariskan ke
 tab bulan berikutnya. Kolom metadata di sebelah kanan tabel disembunyikan oleh
 script; jangan ditampilkan atau diedit.
 
-Edit sel **Masuk**, **Terlambat**, **Keluar**, atau **Total Terlambat** langsung
-untuk menyimpan koreksi. Nilai keterlambatan harus berupa bilangan bulat menit
-nol atau lebih. Koreksi dan ID peserta disimpan di kolom metadata tersembunyi
-pada tab bulan yang sama, sehingga scan baru tidak mengembalikan nilai yang
-diedit atau dihapus. Jangan hapus kolom metadata tersembunyi.
+Edit sel **Masuk**, **Terlambat**, **Keluar**, **Total Terlambat**, atau
+**Total Hadir** langsung untuk menyimpan koreksi. Nilai keterlambatan harus
+berupa angka menit nol atau lebih dengan maksimal satu angka desimal; **Total
+Hadir** harus berupa bilangan bulat dari 0 sampai 31. Mengosongkan sel **Total
+Hadir** akan menghapus angka total dari rekap, dan koreksinya tetap disimpan.
+Koreksi dan ID peserta disimpan di kolom metadata tersembunyi pada tab bulan
+yang sama, sehingga scan baru tidak mengembalikan nilai yang diedit atau
+dihapus. Jangan hapus kolom metadata tersembunyi.
 
 Tab **Absensi** disembunyikan; tab itu menyimpan semua catatan sumber dan ID
 sinkronisasi beserta ID peserta yang stabil agar kiriman ulang dan perubahan

@@ -918,11 +918,13 @@ function findSummaryMetadata(sheet) {
     const match = new RegExp(
       `^${SUMMARY_OVERRIDE_PREFIX}(\\d{4}-\\d{2}-\\d{2})__(check_in|late_minutes|check_out)$`,
     ).exec(text);
-    const totalMatch = new RegExp(`^${SUMMARY_OVERRIDE_PREFIX}total_late_minutes$`).exec(text);
+    const totalMatch = new RegExp(
+      `^${SUMMARY_OVERRIDE_PREFIX}(total_late_minutes|total_attendance)$`,
+    ).exec(text);
     if (match) {
       correctionColumns.set(attendanceCorrectionKey('', match[1], match[2]), index + 1);
     } else if (totalMatch) {
-      correctionColumns.set(attendanceCorrectionKey('', '', 'total_late_minutes'), index + 1);
+      correctionColumns.set(attendanceCorrectionKey('', '', totalMatch[1]), index + 1);
     } else {
       return;
     }
@@ -934,11 +936,13 @@ function findSummaryMetadata(sheet) {
     const match = new RegExp(
       `^${SUMMARY_BASELINE_PREFIX}(\\d{4}-\\d{2}-\\d{2})__(check_in|late_minutes|check_out)$`,
     ).exec(text);
-    const totalMatch = new RegExp(`^${SUMMARY_BASELINE_PREFIX}total_late_minutes$`).exec(text);
+    const totalMatch = new RegExp(
+      `^${SUMMARY_BASELINE_PREFIX}(total_late_minutes|total_attendance)$`,
+    ).exec(text);
     if (match) {
       baselineColumns.set(attendanceCorrectionKey('', match[1], match[2]), index + 1);
     } else if (totalMatch) {
-      baselineColumns.set(attendanceCorrectionKey('', '', 'total_late_minutes'), index + 1);
+      baselineColumns.set(attendanceCorrectionKey('', '', totalMatch[1]), index + 1);
     } else {
       return;
     }
@@ -1119,7 +1123,9 @@ function saveMonthlySummaryCorrections(sheet, corrections) {
     );
     const firstColumn = correction.eventType === 'total_late_minutes'
       ? firstTotalColumn
-      : firstColumnByDate.get(correction.date);
+      : correction.eventType === 'total_attendance'
+        ? firstTotalColumn + 1
+        : firstColumnByDate.get(correction.date);
     if (!row || !metadataColumn || !firstColumn) {
       throw new Error(`Could not locate ${correction.eventType} correction cell for ${correction.date || 'total'}.`);
     }
@@ -1129,7 +1135,7 @@ function saveMonthlySummaryCorrections(sheet, corrections) {
         : correction.action === 'clear'
           ? 'clear'
           : correction.value);
-    const visibleColumn = correction.eventType === 'total_late_minutes'
+    const visibleColumn = ['total_late_minutes', 'total_attendance'].includes(correction.eventType)
       ? firstColumn
       : firstColumn + (
         correction.eventType === 'check_in' ? 0
@@ -1139,7 +1145,7 @@ function saveMonthlySummaryCorrections(sheet, corrections) {
     sheet.getRange(row, visibleColumn)
       .setValue(correction.action === 'clear'
         ? ''
-        : correction.eventType.includes('late_minutes')
+        : ['late_minutes', 'total_late_minutes', 'total_attendance'].includes(correction.eventType)
           ? Number(correction.value)
           : correction.value);
   });
@@ -1175,9 +1181,11 @@ function renderMonthlySummary(
     ...summary.dates.flatMap((date) => ['check_in', 'late_minutes', 'check_out']
       .map((eventType) => `${SUMMARY_OVERRIDE_PREFIX}${date}__${eventType}`)),
     `${SUMMARY_OVERRIDE_PREFIX}total_late_minutes`,
+    `${SUMMARY_OVERRIDE_PREFIX}total_attendance`,
     ...summary.dates.flatMap((date) => ['check_in', 'late_minutes', 'check_out']
       .map((eventType) => `${SUMMARY_BASELINE_PREFIX}${date}__${eventType}`)),
     `${SUMMARY_BASELINE_PREFIX}total_late_minutes`,
+    `${SUMMARY_BASELINE_PREFIX}total_attendance`,
   ];
 
   const filter = summarySheet.getFilter();
@@ -1219,6 +1227,9 @@ function renderMonthlySummary(
       const totalCorrection = corrections.get(
         attendanceCorrectionKey(participantId, '', 'total_late_minutes'),
       );
+      const attendanceCorrection = corrections.get(
+        attendanceCorrectionKey(participantId, '', 'total_attendance'),
+      );
       return [
         participantId,
         ...summary.dates.flatMap((date) => ['check_in', 'late_minutes', 'check_out'].map((eventType) => {
@@ -1230,6 +1241,9 @@ function renderMonthlySummary(
         })),
         totalCorrection
           ? totalCorrection.action === 'clear' ? 'clear' : totalCorrection.value
+          : '',
+        attendanceCorrection
+          ? attendanceCorrection.action === 'clear' ? 'clear' : attendanceCorrection.value
           : '',
         ...summary.baselineRows[index],
         ...summary.baselineTotalRows[index],
@@ -1331,6 +1345,8 @@ function buildSummaryEditCorrections(
       let eventType = '';
       if (absoluteColumn === firstTotalColumn) {
         eventType = 'total_late_minutes';
+      } else if (absoluteColumn === firstTotalColumn + 1) {
+        eventType = 'total_attendance';
       } else {
         columnOffset = (absoluteColumn - 3) % DATE_HEADERS.length;
         const firstDateColumn = absoluteColumn - columnOffset;
@@ -1411,6 +1427,12 @@ function normalizeSummaryCorrectionValue(value, eventType, timeZone, rowNumber) 
   }
   const text = String(value).trim();
   const minutes = Number(text);
+  if (eventType === 'total_attendance') {
+    if (!text || !Number.isInteger(minutes) || minutes < 0 || minutes > 31) {
+      throw new Error(`Total hadir pada baris ${rowNumber} harus berupa bilangan bulat dari 0 sampai 31.`);
+    }
+    return String(minutes);
+  }
   if (!text || !Number.isFinite(minutes) || minutes < 0 || minutes > 65535 ||
       Math.abs(minutes * 10 - Math.round(minutes * 10)) > 1e-8) {
     throw new Error(`Menit keterlambatan pada baris ${rowNumber} harus berupa angka nol atau lebih dengan maksimal satu angka desimal.`);
@@ -1493,11 +1515,11 @@ function buildMonthlySummary(records, timeZone, monthKey, participantOrder = new
   }
 
   for (const correction of corrections.values()) {
-    if (correction.eventType !== 'total_late_minutes' &&
+    if (!['total_late_minutes', 'total_attendance'].includes(correction.eventType) &&
         correction.date.slice(0, 7) !== monthKey) continue;
     const participant = participants.get(`id:${correction.participantId}`);
     if (!participant) continue;
-    if (correction.eventType === 'total_late_minutes') continue;
+    if (['total_late_minutes', 'total_attendance'].includes(correction.eventType)) continue;
     const day = participant?.days.get(correction.date);
     if (!day) continue;
     const value = correction.action === 'clear' ? '' : correction.value;
@@ -1551,15 +1573,20 @@ function buildMonthlySummary(records, timeZone, monthKey, participantOrder = new
         day?.checkOut || '',
       );
     }
-    baselineTotalRows[index] = [roundMinutesToTenth(totalLateMinutes)];
+    baselineTotalRows[index] = [roundMinutesToTenth(totalLateMinutes), totalAttendance];
     const totalCorrection = corrections.get(
       attendanceCorrectionKey(String(participant.id || ''), '', 'total_late_minutes'),
+    );
+    const attendanceCorrection = corrections.get(
+      attendanceCorrectionKey(String(participant.id || ''), '', 'total_attendance'),
     );
     row.push(
       totalCorrection
         ? totalCorrection.action === 'clear' ? '' : Number(totalCorrection.value)
         : roundMinutesToTenth(totalLateMinutes),
-      totalAttendance,
+      attendanceCorrection
+        ? attendanceCorrection.action === 'clear' ? '' : Number(attendanceCorrection.value)
+        : totalAttendance,
     );
     return row;
   });
