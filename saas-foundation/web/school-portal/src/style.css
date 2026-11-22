@@ -212,8 +212,11 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
 .camera-control-panel { position: absolute; z-index: 3; top: 10px; left: 10px; display: flex; max-width: calc(100% - 20px); flex-wrap: wrap; align-items: center; gap: 5px; border: 1px solid rgba(255,255,255,.2); border-radius: 12px; background: rgba(7,15,28,.76); padding: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.2); backdrop-filter: blur(8px); }
 .camera-control-panel:not(.is-expanded) { gap: 0; padding: 3px; }
 .camera-control-panel button { min-height: 30px; border: 1px solid rgba(226,232,240,.2); border-radius: 8px; background: rgba(255,255,255,.08); padding: 0 8px; color: #f1f5f9; font-size: 10px; font-weight: 700; white-space: nowrap; }
+.camera-session-panel { position: absolute; z-index: 3; top: 10px; right: 10px; border: 1px solid rgba(255,255,255,.2); border-radius: 12px; background: rgba(7,15,28,.76); padding: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.2); backdrop-filter: blur(8px); }
 .camera-session-select { min-height: 30px; max-width: 112px; border: 1px solid rgba(226,232,240,.2); border-radius: 8px; background: rgba(255,255,255,.08); padding: 0 7px; color: #f1f5f9; font-size: 10px; font-weight: 700; }
 .camera-session-select option { background: #fff; color: #0f172a; }
+.camera-facing-select { min-height: 30px; max-width: 150px; border: 1px solid rgba(226,232,240,.2); border-radius: 8px; background: rgba(255,255,255,.08); padding: 0 7px; color: #f1f5f9; font-size: 10px; font-weight: 700; }
+.camera-facing-select option { background: #fff; color: #0f172a; }
 .camera-control-panel button.is-selected { border-color: rgba(45,212,191,.65); background: rgba(20,129,111,.65); color: #e6fffa; }
 .camera-rotation-mode { display: flex; gap: 3px; }
 .camera-rotation-mode button { padding: 0 7px; }
@@ -478,8 +481,10 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
   .scan-camera-shell { width: 100%; height: auto; aspect-ratio: auto; max-height: none; min-height: 0; flex: 1 1 0; align-self: stretch; margin: 7px 0 14px; border-radius: 25px; padding: 6px; }
   .scan-camera-frame { height: 100%; max-height: 100%; border-radius: 19px; }
   .camera-control-panel { top: 6px; left: 6px; gap: 4px; padding: 4px; }
+  .camera-session-panel { top: 6px; right: 6px; padding: 4px; }
   .camera-control-panel button { min-height: 27px; padding: 0 6px; font-size: 9px; }
   .camera-session-select { min-height: 27px; max-width: 100px; padding: 0 5px; font-size: 9px; }
+  .camera-facing-select { min-height: 27px; max-width: 132px; padding: 0 5px; font-size: 9px; }
   .scanner-wedge-form { gap: 4px; margin: 7px 1px 0; }
   .scanner-wedge-controls { gap: 6px; }
   .scanner-wedge-controls input { min-height: 34px; padding: 6px 8px; font-size: 10px; }

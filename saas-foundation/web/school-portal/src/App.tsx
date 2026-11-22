@@ -4039,22 +4039,19 @@ export default function App() {
                       aria-expanded={cameraControlsExpanded}
                       onClick={() => setCameraControlsExpanded((expanded) => !expanded)}
                     >{cameraControlsExpanded ? 'Tutup' : 'Kamera'}</button>
-                    <select
-                      className="camera-session-select"
-                      aria-label="Sesi absensi"
-                      value={attendanceSessionMode}
-                      onChange={(event) => {
-                        const value = event.target.value;
-                        setAttendanceSessionMode(
-                          value === 'check_in' || value === 'check_out' ? value : 'auto',
-                        );
-                      }}
-                    >
-                      <option value="auto">Otomatis</option>
-                      <option value="check_in">Masuk</option>
-                      <option value="check_out">Pulang</option>
-                    </select>
                     {cameraControlsExpanded && <>
+                      <select
+                        className="camera-facing-select"
+                        aria-label="Pilih kamera depan atau belakang"
+                        value={scannerPreferences.cameraFacing}
+                        onChange={(event) => void updateScannerPreferences({
+                          ...scannerPreferencesRef.current,
+                          cameraFacing: event.target.value === 'user' ? 'user' : 'environment',
+                        })}
+                      >
+                        <option value="environment">Kamera Belakang</option>
+                        <option value="user">Kamera Depan</option>
+                      </select>
                       <div className="camera-rotation-mode" role="group" aria-label="Mode rotasi kamera">
                         <button
                           type="button"
@@ -4098,6 +4095,23 @@ export default function App() {
                         >Mirror {scannerPreferences.cameraMirror ? 'ON' : 'OFF'}</button>
                       )}
                     </>}
+                  </div>
+                  <div className="camera-session-panel" aria-label="Sesi absensi">
+                    <select
+                      className="camera-session-select"
+                      aria-label="Sesi absensi"
+                      value={attendanceSessionMode}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setAttendanceSessionMode(
+                          value === 'check_in' || value === 'check_out' ? value : 'auto',
+                        );
+                      }}
+                    >
+                      <option value="auto">Otomatis</option>
+                      <option value="check_in">Masuk</option>
+                      <option value="check_out">Pulang</option>
+                    </select>
                   </div>
                   {cameraActive && <div className="scan-target"><span className="scan-target-line" /></div>}
                   {!cameraActive && <div className="scan-camera-paused">Kamera dijeda</div>}
