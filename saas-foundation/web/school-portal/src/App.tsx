@@ -2162,16 +2162,40 @@ export default function App() {
       },
       async sendBatch({ records }: { sekolah_id: string; records: QueuedScan[] }) {
         const serverRecords = records.map(({ local_previous_state: _localState, ...record }) => record);
-        return request<{
-          accepted_ids: string[];
-          ignored_ids?: string[];
-          ignored?: Array<{ id_unik: string; reason: string }>;
-          rejected_ids?: string[];
-        }>(
-          '/school/attendance/sync-batch/session',
-          session.token,
-          { method: 'POST', body: { records: serverRecords } },
+        const permissions = serverRecords.filter((record) =>
+          record.jenis_absen === 'permission_out' || record.jenis_absen === 'permission_in',
         );
+        const normal = serverRecords.filter((record) =>
+          record.jenis_absen !== 'permission_out' && record.jenis_absen !== 'permission_in',
+        );
+        const permissionResult = permissions.length
+          ? await request<{
+            accepted_ids: string[];
+            ignored_ids?: string[];
+            ignored?: Array<{ id_unik: string; reason: string }>;
+            rejected_ids?: string[];
+          }>('/school/attendance/permissions/sync-batch/session', session.token, {
+            method: 'POST',
+            body: { records: permissions },
+          })
+          : { accepted_ids: [], ignored_ids: [], ignored: [], rejected_ids: [] };
+        const normalResult = normal.length
+          ? await request<{
+            accepted_ids: string[];
+            ignored_ids?: string[];
+            ignored?: Array<{ id_unik: string; reason: string }>;
+            rejected_ids?: string[];
+          }>('/school/attendance/sync-batch/session', session.token, {
+            method: 'POST',
+            body: { records: normal },
+          })
+          : { accepted_ids: [], ignored_ids: [], ignored: [], rejected_ids: [] };
+        return {
+          accepted_ids: [...permissionResult.accepted_ids, ...normalResult.accepted_ids],
+          ignored_ids: [...(permissionResult.ignored_ids ?? []), ...(normalResult.ignored_ids ?? [])],
+          ignored: [...(permissionResult.ignored ?? []), ...(normalResult.ignored ?? [])],
+          rejected_ids: [...(permissionResult.rejected_ids ?? []), ...(normalResult.rejected_ids ?? [])],
+        };
       },
     });
   }

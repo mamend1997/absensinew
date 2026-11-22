@@ -1878,6 +1878,91 @@ router.post('/devices/:id/revoke', requireSchoolUser, requirePermission('scanner
   res.json({ message: 'Kunci perangkat telah dicabut.' });
 }));
 
+const syncPermissionBatch = asyncRoute(async (req, res) => {
+  const schoolId = req.schoolUser?.sekolah_id ?? req.device?.sekolah_id;
+  const deviceId = req.device?.id ?? null;
+  const records = req.body?.records;
+  if (!Array.isArray(records) || records.length < 1 || records.length > 100) {
+    throw fail(400, 'records harus berisi 1–100 izin.', 'VALIDATION_ERROR');
+  }
+  const acceptedIds = [];
+  const rejectedIds = [];
+  const rejected = [];
+  const seen = new Set();
+  const settings = await loadAttendanceSettings(schoolId);
+  for (const record of records) {
+    const id = record?.id_unik;
+    const eventType = record?.event_type ?? record?.jenis_absen;
+    const participantId = record?.participant_id ?? record?.id_peserta;
+    const scanMethod = record?.scan_method ?? 'SCAN_QR';
+    if (typeof id !== 'string' || !UUID.test(id)) {
+      if (id) rejectedIds.push(id);
+      rejected.push({ id_unik: id ?? null, reason: 'invalid_id' });
+      continue;
+    }
+    if (seen.has(id) || !['permission_out', 'permission_in'].includes(eventType) ||
+        !/^[1-9]\d*$/.test(String(participantId ?? '')) ||
+        !['SCAN_QR', 'MANUAL_INPUT'].includes(scanMethod) ||
+        typeof record.client_timestamp !== 'string' ||
+        !/(?:Z|[+-]\d{2}:\d{2})$/i.test(record.client_timestamp) ||
+        !Number.isFinite(Date.parse(record.client_timestamp))) {
+      seen.add(id);
+      rejectedIds.push(id);
+      rejected.push({ id_unik: id, reason: seen.has(id) ? 'invalid_record' : 'duplicate_in_batch' });
+      continue;
+    }
+    seen.add(id);
+    try {
+      const [participants] = await pool.execute(
+        `SELECT p.id, p.participant_code, p.full_name, c.name AS classroom_name
+           FROM participants p
+           JOIN classrooms c ON c.id = p.classroom_id AND c.sekolah_id = p.sekolah_id
+          WHERE p.sekolah_id = ? AND p.id = ? AND p.is_active = TRUE`,
+        [schoolId, participantId],
+      );
+      if (!participants.length) throw new Error('participant_not_found');
+      const participant = participants[0];
+      const calculation = calculateAttendance({
+        eventType,
+        clientTimestamp: record.client_timestamp,
+        participantId: participant.id,
+        settings,
+      });
+      if (!calculation.status) throw new Error(calculation.reason);
+      const timestamp = new Date(record.client_timestamp).toISOString()
+        .slice(0, 23).replace('T', ' ');
+      await inTransaction(async (connection) => {
+        const [existing] = await connection.execute(
+          `SELECT id FROM attendance_logs
+            WHERE sekolah_id = ? AND id_unik = ? FOR UPDATE`,
+          [schoolId, id],
+        );
+        if (existing.length) return;
+        await connection.execute(
+          `INSERT INTO attendance_logs
+            (sekolah_id, id_unik, participant_id, device_id, recorded_by,
+             participant_code_snapshot, participant_name_snapshot, classroom_name_snapshot,
+             attendance_date, event_type, client_timestamp_utc, attendance_status,
+             late_minutes, scan_method)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [schoolId, id, participant.id, deviceId, req.schoolUser?.id ?? null,
+            participant.participant_code, participant.full_name, participant.classroom_name,
+            calculation.date, eventType, timestamp, calculation.status, 0, scanMethod],
+        );
+      });
+      acceptedIds.push(id);
+    } catch (error) {
+      rejectedIds.push(id);
+      rejected.push({
+        id_unik: id,
+        reason: ['participant_not_found', 'non_working_day', 'daily_duplicate']
+          .includes(error.message) ? error.message : 'invalid_record',
+      });
+    }
+  }
+  res.json({ accepted_ids: acceptedIds, ignored_ids: [], rejected_ids: rejectedIds, rejected });
+});
+
 const syncAttendanceBatch = asyncRoute(async (req, res) => {
   const schoolId = req.schoolUser?.sekolah_id ?? req.device.sekolah_id;
   const deviceId = req.device?.id ?? null;
@@ -2102,6 +2187,8 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
 router.post('/attendance/sync-batch', requireDevice, syncAttendanceBatch);
 router.post('/attendance/sync-batch/session', requireSchoolUser,
   requirePermission('scanner.use'), syncAttendanceBatch);
+router.post('/attendance/permissions/sync-batch/session', requireSchoolUser,
+  requirePermission('scanner.use'), syncPermissionBatch);
 
 router.get('/attendance/report', requireSchoolUser, requirePermission('attendance.view'), asyncRoute(async (req, res) => {
   const from = req.query.from;
