@@ -2,6 +2,8 @@ import { TextToSpeech } from '@capacitor-community/text-to-speech';
 import { BrowserMultiFormatReader } from '@zxing/browser';
 import { App as CapacitorApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
+import { Filesystem, Directory } from '@capacitor/filesystem';
+import { Share } from '@capacitor/share';
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 import QRCode from 'qrcode';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
@@ -59,6 +61,13 @@ function blobToDataUrl(blob: Blob): Promise<string> {
     reader.onerror = () => reject(reader.error ?? new Error('Logo platform gagal dikonversi.'));
     reader.readAsDataURL(blob);
   });
+}
+
+async function blobToBase64(blob: Blob): Promise<string> {
+  const dataUrl = await blobToDataUrl(blob);
+  const separatorIndex = dataUrl.indexOf(',');
+  if (separatorIndex < 0) throw new Error('File Excel gagal dikonversi.');
+  return dataUrl.slice(separatorIndex + 1);
 }
 
 type Page = 'dashboard' | 'scanner' | 'reports' | 'participants' | 'settings' | 'roles' | 'downloads' | 'billing';
@@ -1800,6 +1809,16 @@ export default function App() {
     setNotice('');
     try {
       const exported = await createOfflineHistoryWorkbook();
+      if (Capacitor.isNativePlatform()) {
+        const result = await Filesystem.writeFile({
+          path: `Download/${exported.filename}`,
+          data: await blobToBase64(exported.blob),
+          directory: Directory.Documents,
+          recursive: true,
+        });
+        setNotice(`${exported.rowCount} data riwayat scan berhasil disimpan: ${result.uri}`);
+        return;
+      }
       const savePicker = (window as Window & {
         showSaveFilePicker?: (options: {
           suggestedName: string;
@@ -1838,15 +1857,31 @@ export default function App() {
   }
 
   async function shareOfflineHistoryExcel() {
-    if (!session || !navigator.share) {
-      await saveOfflineHistoryExcel();
-      return;
-    }
+    if (!session) return;
     setOfflineExportBusy(true);
     setError('');
     setNotice('');
     try {
       const exported = await createOfflineHistoryWorkbook();
+      if (Capacitor.isNativePlatform()) {
+        const saved = await Filesystem.writeFile({
+          path: exported.filename,
+          data: await blobToBase64(exported.blob),
+          directory: Directory.Cache,
+        });
+        await Share.share({
+          title: 'Riwayat scan absensi',
+          text: `${exported.rowCount} data riwayat scan`,
+          files: [saved.uri],
+          dialogTitle: 'Bagikan riwayat scan',
+        });
+        setNotice(`${exported.rowCount} data riwayat scan siap dibagikan.`);
+        return;
+      }
+      if (!navigator.share) {
+        await saveOfflineHistoryExcel();
+        return;
+      }
       const file = new File([exported.blob], exported.filename, {
         type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       });
