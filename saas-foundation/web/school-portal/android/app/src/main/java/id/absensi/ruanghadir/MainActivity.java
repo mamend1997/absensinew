@@ -12,6 +12,7 @@ import com.getcapacitor.BridgeActivity;
 public class MainActivity extends BridgeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        registerPlugin(DocumentSaverPlugin.class);
         super.onCreate(savedInstanceState);
         getBridge().getWebView().getSettings().setMediaPlaybackRequiresUserGesture(false);
         clearKeepScreenOn();

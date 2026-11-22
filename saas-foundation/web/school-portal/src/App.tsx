@@ -1,7 +1,7 @@
 import { TextToSpeech } from '@capacitor-community/text-to-speech';
 import { BrowserMultiFormatReader } from '@zxing/browser';
 import { App as CapacitorApp } from '@capacitor/app';
-import { Capacitor } from '@capacitor/core';
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Network } from '@capacitor/network';
 import { Share } from '@capacitor/share';
@@ -31,6 +31,13 @@ import {
 } from './core/offline-sync.js';
 
 const DEFAULT_NATIVE_API_BASE = 'https://saas-backend-production-82a0b10c.up.railway.app/api';
+const DocumentSaver = registerPlugin<{
+  saveFile(options: {
+    filename: string;
+    mimeType: string;
+    data: string;
+  }): Promise<{ canceled: boolean; uri?: string }>;
+}>('DocumentSaver');
 const API_BASE = (
   import.meta.env.VITE_API_BASE_URL ||
   (Capacitor.isNativePlatform() ? DEFAULT_NATIVE_API_BASE : '/api')
@@ -1823,6 +1830,17 @@ export default function App() {
     setNotice('');
     try {
       const exported = await createOfflineHistoryWorkbook();
+      if (Capacitor.getPlatform() === 'android') {
+        const result = await DocumentSaver.saveFile({
+          filename: exported.filename,
+          mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          data: await blobToBase64(exported.blob),
+        });
+        if (!result.canceled) {
+          setNotice(`${exported.rowCount} data riwayat scan berhasil disimpan ke Excel.`);
+        }
+        return;
+      }
       if (Capacitor.isNativePlatform()) {
         const result = await Filesystem.writeFile({
           path: `Download/${exported.filename}`,

@@ -335,7 +335,11 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
 .scanner-page[data-school-theme="white"] .scan-camera-select,
 .scanner-page[data-school-theme="white"] .scan-menu-trigger { color: #25352d; }
 .scanner-page[data-school-theme="white"] .hamburger-icon i { background: #334940; }
-.scanner-page[data-school-theme="white"] .scan-welcome { color: #14532d; box-shadow: none; }
+.scanner-page[data-school-theme="white"] .scan-welcome {
+  background: linear-gradient(100deg, #c2410c, #f97316);
+  color: #fff;
+  box-shadow: 0 7px 18px rgba(249,115,22,.2);
+}
 .scanner-page[data-school-theme="white"] .queue-mini-count { background: #fff; color: #412e13; }
 .scanner-page[data-school-theme="white"] .scan-camera-shell { box-shadow: 0 8px 24px rgba(31,65,53,.08); }
 .scanner-page[data-school-theme="white"] .scan-history-card { background: #fff; box-shadow: 0 8px 26px rgba(31,65,53,.08); }
@@ -343,6 +347,16 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
 .scanner-page[data-school-theme="white"] .scan-history-card td { border-bottom-color: #e7eeea; color: #34483e; }
 .scanner-page[data-school-theme="white"] .history-pending { color: #8a641c; }
 .scanner-page[data-school-theme="white"] .history-reset-button { border-color: #cbd5d1; color: #334940; }
+.scanner-page[data-school-theme="white"] .history-export-button,
+.scanner-page[data-school-theme="white"] .history-share-button {
+  border-color: #1d4ed8;
+  background: #2563eb;
+  color: #fff;
+}
+.scanner-page[data-school-theme="white"] .history-export-button:hover:not(:disabled),
+.scanner-page[data-school-theme="white"] .history-share-button:hover:not(:disabled) {
+  background: #1d4ed8;
+}
 .scanner-page[data-school-theme="white"] .scan-camera-paused { color: #172b27; }
 .scanner-page[data-school-theme="white"] .scanner-wedge-controls input { color: #172b27; }
 .scanner-page[data-school-theme="white"] .scanner-wedge-controls .button { color: #25352d; }
@@ -390,6 +404,15 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
 .scanner-page[data-school-theme="white_blue"] .scan-history-card td { border-bottom-color: rgba(147,197,253,.28); color: #274a6b; }
 .scanner-page[data-school-theme="white_blue"] .queue-mini-count { background: #2563eb; color: #fff; }
 .scanner-page[data-school-theme="white_blue"] .scan-camera-paused { background: #edf5ff; color: #15324a; }
+.scanner-page[data-school-theme="white_blue"] .scan-manual-button {
+  border-color: #1d4ed8;
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  color: #fff;
+  box-shadow: 0 5px 14px rgba(37,99,235,.24);
+}
+.scanner-page[data-school-theme="white_blue"] .scan-manual-button:hover:not(:disabled) {
+  background: linear-gradient(135deg, #1d4ed8, #1e40af);
+}
 .participant-import, .participant-schedule-editor { display: grid; gap: 12px; }
 .school-branding-panel, .school-branding-form { display: grid; gap: 12px; }
 .school-backup-panel { display: grid; grid-template-columns: minmax(0, .9fr) minmax(280px, 1.1fr); align-items: start; gap: 20px; }
