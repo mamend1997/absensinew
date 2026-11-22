@@ -164,6 +164,28 @@ router.post('/auth/register/start', asyncRoute(async (req, res) => {
     throw fail(400, 'Kata sandi minimal 8 karakter dan wajib memiliki huruf besar, angka, serta simbol.', 'VALIDATION_ERROR');
   }
 
+  const [registeredUsers] = await pool.execute(
+    `SELECT u.id
+       FROM users u
+       JOIN schools s ON s.id = u.sekolah_id
+      WHERE u.whatsapp_phone = ?
+      LIMIT 1`,
+    [phone],
+  );
+  const [[superAdmin]] = await pool.execute(
+    `SELECT id FROM super_admins
+      WHERE whatsapp_phone = ? AND is_active = TRUE
+      LIMIT 1`,
+    [phone],
+  );
+  if (registeredUsers.length || superAdmin) {
+    throw fail(
+      409,
+      'Nomor WhatsApp sudah terdaftar pada akun sekolah lain. Gunakan nomor WhatsApp yang belum digunakan.',
+      'PHONE_ALREADY_REGISTERED',
+    );
+  }
+
   const [[gateway]] = await pool.execute(
     `SELECT endpoint_url, token_ciphertext, token_iv, token_auth_tag, is_enabled
        FROM whatsapp_gateway_config WHERE id = 1`,
@@ -249,6 +271,20 @@ router.post('/auth/register/verify', asyncRoute(async (req, res) => {
       return { error: 'OTP tidak valid atau sudah kedaluwarsa.' };
     }
 
+    const [registeredUsers] = await connection.execute(
+      'SELECT id FROM users WHERE whatsapp_phone = ? LIMIT 1',
+      [challenge.whatsapp_phone],
+    );
+    const [[superAdmin]] = await connection.execute(
+      'SELECT id FROM super_admins WHERE whatsapp_phone = ? AND is_active = TRUE LIMIT 1',
+      [challenge.whatsapp_phone],
+    );
+    if (registeredUsers.length || superAdmin) {
+      return {
+        conflict: 'Nomor WhatsApp sudah terdaftar pada akun sekolah lain. Gunakan nomor WhatsApp yang belum digunakan.',
+      };
+    }
+
     const schoolCode = await generateUniqueSchoolCode({
       isTaken: async (code) => {
         const [rows] = await connection.execute(
@@ -276,6 +312,9 @@ router.post('/auth/register/verify', asyncRoute(async (req, res) => {
       admin_username: challenge.admin_username ?? challenge.whatsapp_phone,
     };
   });
+  if (result.conflict) {
+    throw fail(409, result.conflict, 'PHONE_ALREADY_REGISTERED');
+  }
   if (result.error) throw fail(400, result.error, 'INVALID_OTP');
   res.status(201).json({
     ...result,

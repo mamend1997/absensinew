@@ -48,6 +48,10 @@ test('WhatsApp numbers normalize to E.164 and reject invalid values', () => {
   assert.equal(normalizeWhatsappPhone('6281234567890'), '+6281234567890');
   assert.equal(normalizeWhatsappPhone('+1 (202) 555-0123'), '+12025550123');
   assert.equal(normalizeWhatsappPhone('1234'), null);
+  assert.equal(
+    normalizeWhatsappPhone('0812 3456-7890'),
+    normalizeWhatsappPhone('6281234567890'),
+  );
 });
 
 test('registration usernames accept supported characters and enforce length', () => {

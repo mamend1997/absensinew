@@ -32,6 +32,8 @@ const API_BASE = (
 ).replace(/\/$/, '');
 const DEFAULT_WHATSAPP_GATEWAY_URL = 'https://gateway-production-a1168195.up.railway.app/api/send-message';
 const SESSION_KEY = 'saas_school_session';
+const PLATFORM_APPLICATION_NAME_KEY = 'saas_platform_application_name';
+const PLATFORM_LOGO_KEY = 'saas_platform_logo';
 const EXCELJS_CHUNK_RELOAD_KEY = 'saas_school_exceljs_chunk_reloaded';
 
 window.addEventListener('vite:preloadError', (event) => {
@@ -48,6 +50,15 @@ async function loadExcelJS() {
   const { default: ExcelJS } = await import('exceljs');
   sessionStorage.removeItem(EXCELJS_CHUNK_RELOAD_KEY);
   return ExcelJS;
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+    reader.onerror = () => reject(reader.error ?? new Error('Logo platform gagal dikonversi.'));
+    reader.readAsDataURL(blob);
+  });
 }
 
 type Page = 'dashboard' | 'scanner' | 'reports' | 'participants' | 'settings' | 'roles' | 'downloads' | 'billing';
@@ -788,7 +799,20 @@ function downloadReport(
 
 export default function App() {
   const [session, setSession] = useState<SchoolSession | null>(readSession);
-  const [applicationName, setApplicationName] = useState('Ruang Hadir');
+  const [applicationName, setApplicationName] = useState(() => {
+    try {
+      return localStorage.getItem(PLATFORM_APPLICATION_NAME_KEY)?.trim() || 'Ruang Hadir';
+    } catch {
+      return 'Ruang Hadir';
+    }
+  });
+  const [platformLogoUrl, setPlatformLogoUrl] = useState(() => {
+    try {
+      return localStorage.getItem(PLATFORM_LOGO_KEY) || '';
+    } catch {
+      return '';
+    }
+  });
   const [schoolBranding, setSchoolBranding] = useState<SchoolBranding | null>(null);
   const [schoolBrandingName, setSchoolBrandingName] = useState('');
   const [schoolLogoUpload, setSchoolLogoUpload] = useState('');
@@ -1015,10 +1039,28 @@ export default function App() {
         if (!response.ok) throw new Error(`Logo platform gagal dimuat (${response.status}).`);
         return response.blob();
       })
-      .then((blob) => {
-        if (!active || !blob) return;
+      .then(async (blob) => {
+        if (!active) return;
+        if (!blob) {
+          setPlatformLogoUrl('');
+          try {
+            localStorage.removeItem(PLATFORM_LOGO_KEY);
+          } catch {
+            // Local cache may be unavailable in private browsing.
+          }
+          return;
+        }
         objectUrl = URL.createObjectURL(blob);
+        const dataUrl = await blobToDataUrl(blob);
         link.href = objectUrl;
+        if (active && dataUrl) {
+          setPlatformLogoUrl(dataUrl);
+          try {
+            localStorage.setItem(PLATFORM_LOGO_KEY, dataUrl);
+          } catch (reason) {
+            console.warn('Logo platform tidak dapat disimpan secara lokal.', reason);
+          }
+        }
       })
       .catch((reason: unknown) => console.error('Favicon platform gagal dimuat.', reason));
     return () => {
@@ -1037,7 +1079,14 @@ export default function App() {
         return response.json() as Promise<{ application_name?: string }>;
       })
       .then((result) => {
-        if (active && result.application_name) setApplicationName(result.application_name);
+        if (active && result.application_name) {
+          setApplicationName(result.application_name);
+          try {
+            localStorage.setItem(PLATFORM_APPLICATION_NAME_KEY, result.application_name);
+          } catch {
+            // Local cache may be unavailable in private browsing.
+          }
+        }
       })
       .catch((reason: unknown) => console.error('Nama aplikasi gagal dimuat.', reason));
     return () => { active = false; };
@@ -3834,7 +3883,7 @@ export default function App() {
     return (
       <main className="login-shell">
         {loginView === 'login' && <form className="login-card" onSubmit={(event) => void login(event)}>
-          <div className="brand-mark">RH</div>
+          <div className={`brand-mark${platformLogoUrl ? ' has-logo' : ''}`}>{platformLogoUrl ? <img src={platformLogoUrl} alt={applicationName} /> : 'RH'}</div>
           <p className="eyebrow">PORTAL SEKOLAH</p>
           <h1>Masuk ke {applicationName}</h1>
           <label>Kode sekolah
@@ -3868,7 +3917,7 @@ export default function App() {
         </form>}
         {loginView === 'register' && <form className="login-card registration-card" onSubmit={(event) => void startRegistration(event)}>
           <button className="text-button back-link" type="button" onClick={() => { setLoginView('login'); setError(''); setNotice(''); }}>← Kembali ke login</button>
-          <div className="brand-mark">RH</div>
+          <div className={`brand-mark${platformLogoUrl ? ' has-logo' : ''}`}>{platformLogoUrl ? <img src={platformLogoUrl} alt={applicationName} /> : 'RH'}</div>
           <h1>Daftarkan sekolah</h1>
           <p className="muted">Kode sekolah 4 digit dibuat otomatis setelah verifikasi dan digunakan saat login.</p>
           <label>Nama sekolah<input autoComplete="organization" maxLength={180} required value={registrationForm.school_name} onChange={(event) => setRegistrationForm((current) => ({ ...current, school_name: event.target.value }))} /></label>
@@ -3896,7 +3945,7 @@ export default function App() {
         </form>}
         {loginView === 'verify' && <form className="login-card registration-card" onSubmit={(event) => void verifyRegistration(event)}>
           <button className="text-button back-link" type="button" onClick={() => { setLoginView('register'); setError(''); setNotice(''); }}>← Kembali</button>
-          <div className="brand-mark">RH</div>
+          <div className={`brand-mark${platformLogoUrl ? ' has-logo' : ''}`}>{platformLogoUrl ? <img src={platformLogoUrl} alt={applicationName} /> : 'RH'}</div>
           <p className="eyebrow">VERIFIKASI WHATSAPP</p>
           <h1>Masukkan kode OTP</h1>
           <p className="muted">Kode dikirim ke +62 {registrationForm.whatsapp_phone} dan berlaku selama 5 menit.</p>
@@ -3906,7 +3955,7 @@ export default function App() {
         </form>}
         {loginView === 'forgot-password' && <form className="login-card registration-card" onSubmit={(event) => void startPasswordReset(event)}>
           <button className="text-button back-link" type="button" onClick={() => { setLoginView('login'); setError(''); setNotice(''); }}>← Kembali ke login</button>
-          <div className="brand-mark">RH</div>
+          <div className={`brand-mark${platformLogoUrl ? ' has-logo' : ''}`}>{platformLogoUrl ? <img src={platformLogoUrl} alt={applicationName} /> : 'RH'}</div>
           <p className="eyebrow">PEMULIHAN AKUN</p>
           <h1>Lupa kata sandi?</h1>
           <p className="muted">Masukkan kode sekolah dan nomor WhatsApp yang terdaftar. Jika cocok dengan akun aktif, kode verifikasi akan dikirim ke nomor tersebut.</p>
@@ -3923,7 +3972,7 @@ export default function App() {
         </form>}
         {loginView === 'reset-password' && <form className="login-card registration-card" onSubmit={(event) => void verifyPasswordReset(event)}>
           <button className="text-button back-link" type="button" onClick={() => { setLoginView('forgot-password'); setError(''); setNotice(''); }}>← Kembali</button>
-          <div className="brand-mark">RH</div>
+          <div className={`brand-mark${platformLogoUrl ? ' has-logo' : ''}`}>{platformLogoUrl ? <img src={platformLogoUrl} alt={applicationName} /> : 'RH'}</div>
           <p className="eyebrow">PEMULIHAN AKUN</p>
           <h1>Buat kata sandi baru</h1>
           <label>Kode OTP WhatsApp
