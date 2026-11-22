@@ -904,6 +904,7 @@ export default function App() {
   const [cameraRotation, setCameraRotation] = useState(initialScannerPreferences.cameraManualRotation);
   const [cameraControlsExpanded, setCameraControlsExpanded] = useState(false);
   const [attendanceSessionMode, setAttendanceSessionMode] = useState<'auto' | 'check_in' | 'check_out'>('auto');
+  const [offlineExportBusy, setOfflineExportBusy] = useState(false);
   const [cameraFrameSize, setCameraFrameSize] = useState({ width: 0, height: 0 });
   const [scannerIdle, setScannerIdle] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -1669,6 +1670,152 @@ export default function App() {
       setMessage('Riwayat scan yang sudah tersinkron berhasil dihapus. Scan pending tetap tersimpan.');
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : 'Riwayat scanner gagal dihapus.', true);
+    }
+  }
+
+  async function createOfflineHistoryWorkbook(): Promise<{ blob: Blob; filename: string; rowCount: number }> {
+    if (!session) throw new Error('Sesi sekolah tidak tersedia.');
+    const db = await database(session.school.id);
+    const [scans, participants] = await Promise.all([
+      db.getAll('queue'),
+      db.getAll('participants'),
+    ]);
+    if (!scans.length) throw new Error('Belum ada data riwayat offline untuk diekspor.');
+
+    const participantNames = new Map(participants.map((participant) => [
+      String(participant.id),
+      participant.full_name,
+    ]));
+    const sortedScans = [...scans].sort((left, right) =>
+      right.client_timestamp.localeCompare(left.client_timestamp),
+    );
+    const ExcelJS = await loadExcelJS();
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'Ruang Hadir';
+    workbook.created = new Date();
+    const sheet = workbook.addWorksheet('Riwayat Scan');
+    sheet.columns = [
+      { header: 'Nama Peserta', key: 'participant_name', width: 32 },
+      { header: 'ID Peserta', key: 'participant_id', width: 14 },
+      { header: 'Tanggal', key: 'attendance_date', width: 14 },
+      { header: 'Waktu', key: 'client_timestamp', width: 24 },
+      { header: 'Jenis Absensi', key: 'event_type', width: 16 },
+      { header: 'Status Kehadiran', key: 'attendance_status', width: 18 },
+      { header: 'Menit Terlambat', key: 'late_minutes', width: 16 },
+      { header: 'Metode Scan', key: 'scan_method', width: 16 },
+      { header: 'Status Sinkronisasi', key: 'sync_status', width: 20 },
+      { header: 'ID Unik', key: 'id_unik', width: 38 },
+    ];
+    sheet.views = [{ state: 'frozen', ySplit: 1 }];
+    sheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    sheet.getRow(1).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF176F4C' },
+    };
+    sortedScans.forEach((scan) => {
+      sheet.addRow({
+        participant_name: scan.participant_name ??
+          participantNames.get(scan.id_peserta) ??
+          'Nama tidak tersedia',
+        participant_id: scan.id_peserta,
+        attendance_date: formatAttendanceDate(scan.attendance_date),
+        client_timestamp: toLocalTime(scan.client_timestamp),
+        event_type: scan.jenis_absen === 'check_in' ? 'Masuk' : 'Pulang',
+        attendance_status: scan.status_kehadiran || '',
+        late_minutes: Number(scan.menit_terlambat ?? 0),
+        scan_method: scan.scan_method === 'MANUAL_INPUT' ? 'Input Manual' : 'QR/Barcode',
+        sync_status: scan.status_sync === 'synced' ? 'Tersimpan di server' : 'Belum ke server',
+        id_unik: scan.id_unik,
+      });
+    });
+    sheet.autoFilter = {
+      from: 'A1',
+      to: `J${sortedScans.length + 1}`,
+    };
+    const bytes = new Uint8Array(await workbook.xlsx.writeBuffer());
+    const filename = `riwayat-scan-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    return {
+      blob: new Blob([bytes.buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      }),
+      filename,
+      rowCount: sortedScans.length,
+    };
+  }
+
+  async function saveOfflineHistoryExcel() {
+    if (!session) return;
+    setOfflineExportBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const exported = await createOfflineHistoryWorkbook();
+      const savePicker = (window as Window & {
+        showSaveFilePicker?: (options: {
+          suggestedName: string;
+          types: Array<{ description: string; accept: Record<string, string[]> }>;
+        }) => Promise<{ createWritable: () => Promise<{ write: (value: Blob) => Promise<void>; close: () => Promise<void> }> }>;
+      }).showSaveFilePicker;
+      if (typeof savePicker === 'function') {
+        const handle = await savePicker.call(window, {
+          suggestedName: exported.filename,
+          types: [{
+            description: 'Excel Workbook',
+            accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] },
+          }],
+        });
+        const writable = await handle.createWritable();
+        await writable.write(exported.blob);
+        await writable.close();
+        setNotice(`${exported.rowCount} data riwayat scan berhasil disimpan ke Excel.`);
+      } else {
+        const url = URL.createObjectURL(exported.blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = exported.filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        setNotice(`${exported.rowCount} data riwayat scan berhasil diekspor ke Excel.`);
+      }
+    } catch (reason) {
+      if (reason instanceof DOMException && reason.name === 'AbortError') return;
+      setMessage(reason instanceof Error ? reason.message : 'Riwayat offline gagal diekspor.', true);
+    } finally {
+      setOfflineExportBusy(false);
+    }
+  }
+
+  async function shareOfflineHistoryExcel() {
+    if (!session || !navigator.share) {
+      await saveOfflineHistoryExcel();
+      return;
+    }
+    setOfflineExportBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const exported = await createOfflineHistoryWorkbook();
+      const file = new File([exported.blob], exported.filename, {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      if (navigator.canShare && !navigator.canShare({ files: [file] })) {
+        await saveOfflineHistoryExcel();
+        return;
+      }
+      await navigator.share({
+        title: 'Riwayat scan absensi',
+        text: `${exported.rowCount} data riwayat scan`,
+        files: [file],
+      });
+      setNotice(`${exported.rowCount} data riwayat scan siap dibagikan.`);
+    } catch (reason) {
+      if (reason instanceof DOMException && reason.name === 'AbortError') return;
+      setMessage(reason instanceof Error ? reason.message : 'Riwayat offline gagal dibagikan.', true);
+    } finally {
+      setOfflineExportBusy(false);
     }
   }
 
@@ -3970,6 +4117,18 @@ export default function App() {
                   <div><h2>Log kehadiran terbaru</h2><p>Riwayat scan yang tersimpan di perangkat ini</p></div>
                   <div className="scan-history-actions">
                     {pendingCount > 0 && <span className="history-pending">{pendingCount} pending</span>}
+                    <button
+                      type="button"
+                      className="button secondary small history-export-button"
+                      disabled={offlineExportBusy}
+                      onClick={() => void saveOfflineHistoryExcel()}
+                    >{offlineExportBusy ? 'Menyiapkan…' : 'Simpan Excel'}</button>
+                    <button
+                      type="button"
+                      className="button secondary small history-share-button"
+                      disabled={offlineExportBusy}
+                      onClick={() => void shareOfflineHistoryExcel()}
+                    >Bagikan</button>
                     <button type="button" className="button secondary small history-reset-button" onClick={() => requestScannerMenu('reset-history')}>Reset riwayat</button>
                   </div>
                 </div>

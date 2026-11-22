@@ -233,7 +233,9 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
 .scan-history-heading h2 { color: var(--scan-content); font-size: 17px; }
 .scan-history-heading p { margin: 4px 0 0; color: var(--scan-muted); font-size: 9px; }
 .scan-history-actions { display: flex; align-items: center; gap: 7px; }
-.history-reset-button { min-height: 26px; border-color: rgba(226,232,240,.25); background: rgba(255,255,255,.08); color: #e2e8f0; font-size: 9px; }
+.history-reset-button,
+.history-export-button,
+.history-share-button { min-height: 26px; border-color: rgba(226,232,240,.25); background: rgba(255,255,255,.08); color: #e2e8f0; font-size: 9px; }
 .history-pending { border-radius: 12px; background: rgba(251,191,36,.12); padding: 5px 8px; color: #fcd34d; font-size: 8px; font-weight: 700; }
 .scan-history-card .table-scroll { height: 150px; overflow-y: auto; border-radius: 14px; background: rgba(7,15,28,.62); }
 .scan-history-card table { border-collapse: collapse; }
@@ -485,6 +487,10 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
   .scan-history-card { height: 150px; min-height: 150px; flex: 0 0 150px; margin-top: 0; border-radius: 17px; padding: 0 10px 8px; }
   .scan-history-heading { min-height: 48px; padding: 9px 2px 7px; }
   .scan-history-heading h2 { font-size: 13px; }
+  .scan-history-actions { gap: 4px; }
+  .history-reset-button,
+  .history-export-button,
+  .history-share-button { min-height: 24px; padding: 0 5px; font-size: 8px; }
   .scan-history-card .table-scroll { height: 96px; }
   .scan-history-card th, .scan-history-card td { padding: 6px 5px; font-size: 8px; }
   .scan-resume-button { min-height: 38px; height: 38px; margin-top: 7px; }
