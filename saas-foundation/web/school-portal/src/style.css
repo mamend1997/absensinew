@@ -207,8 +207,13 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
 .queue-mini-count { display: grid; width: 23px; height: 23px; place-items: center; border-radius: 50%; background: #f4a92f; color: #412e13; font-weight: 800; }
 .scan-camera-shell { overflow: hidden; width: 100%; min-height: 100px; flex: 1 1 0; margin: 14px 0; border-radius: 38px; background: linear-gradient(135deg, #2dd4bf 0%, #3b82f6 52%, #8b5cf6 100%); padding: 9px; box-shadow: 0 16px 38px rgba(0,0,0,.22), 0 0 26px rgba(45,212,191,.16); }
 .scan-camera-frame { position: relative; min-height: 0; height: 100%; overflow: hidden; border-radius: 30px; background: #070b14; }
-.camera-video { position: absolute; top: 50%; left: 50%; display: block; width: 100%; height: 100%; min-height: 0; opacity: 0; object-fit: cover; }
+.camera-video { position: absolute; top: 50%; left: 50%; display: block; width: 100%; height: 100%; min-height: 0; opacity: 0; object-fit: contain; }
 .camera-live .camera-video { opacity: 1; }
+.camera-control-panel { position: absolute; z-index: 3; top: 10px; left: 10px; display: flex; max-width: calc(100% - 20px); flex-wrap: wrap; align-items: center; gap: 5px; border: 1px solid rgba(255,255,255,.2); border-radius: 12px; background: rgba(7,15,28,.76); padding: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.2); backdrop-filter: blur(8px); }
+.camera-control-panel button { min-height: 30px; border: 1px solid rgba(226,232,240,.2); border-radius: 8px; background: rgba(255,255,255,.08); padding: 0 8px; color: #f1f5f9; font-size: 10px; font-weight: 700; white-space: nowrap; }
+.camera-control-panel button.is-selected { border-color: rgba(45,212,191,.65); background: rgba(20,129,111,.65); color: #e6fffa; }
+.camera-rotation-mode { display: flex; gap: 3px; }
+.camera-rotation-mode button { padding: 0 7px; }
 .scan-target { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
 .scan-target::before { width: min(86%,520px); height: 50%; border: 2px solid rgba(255,255,255,.7); border-radius: 17px; content: ''; box-shadow: 0 0 0 999px rgba(6,10,14,.14); }
 .scan-target-line { position: absolute; left: 7%; right: 7%; top: 50%; height: 2px; background: var(--scan-accent); box-shadow: 0 0 12px rgba(45,212,191,.8); animation: scan-line 2.4s ease-in-out infinite alternate; }
@@ -467,6 +472,8 @@ code { border-radius: 5px; background: #f2f6f2; padding: 3px 5px; color: #286247
   .scan-controls-row { margin: 7px 1px; }
   .scan-camera-shell { width: 100%; height: auto; aspect-ratio: auto; max-height: none; min-height: 0; flex: 1 1 0; align-self: stretch; margin: 7px 0 14px; border-radius: 25px; padding: 6px; }
   .scan-camera-frame { height: 100%; max-height: 100%; border-radius: 19px; }
+  .camera-control-panel { top: 6px; left: 6px; gap: 4px; padding: 4px; }
+  .camera-control-panel button { min-height: 27px; padding: 0 6px; font-size: 9px; }
   .scanner-wedge-form { gap: 4px; margin: 7px 1px 0; }
   .scanner-wedge-controls { gap: 6px; }
   .scanner-wedge-controls input { min-height: 34px; padding: 6px 8px; font-size: 10px; }

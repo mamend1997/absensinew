@@ -9,7 +9,11 @@ import {
   createQueuedScan,
 } from './core/attendance.js';
 import { extractSchoolAccessToken } from './core/auth-session.js';
-import { cameraRotationForScreen } from './core/camera-orientation.js';
+import {
+  cameraRotationForScreen,
+  normalizeCameraRotation,
+  rotateCameraByQuarterTurn,
+} from './core/camera-orientation.js';
 import { getDefaultPage } from './core/navigation.js';
 import {
   createOfflineSyncManager,
@@ -330,6 +334,9 @@ interface DailyAttendanceState {
 }
 interface ScannerPreferences {
   cameraFacing: 'user' | 'environment';
+  cameraRotationMode: 'auto' | 'manual';
+  cameraManualRotation: number;
+  cameraMirror: boolean;
   scanSpeed: 'fast' | 'balanced';
   usbScannerEnabled: boolean;
   screenSleepMinutes: number;
@@ -382,6 +389,9 @@ const initialSettings: OperationalSettings = {
 };
 const initialScannerPreferences: ScannerPreferences = {
   cameraFacing: 'environment',
+  cameraRotationMode: 'auto',
+  cameraManualRotation: 0,
+  cameraMirror: true,
   scanSpeed: 'fast',
   usbScannerEnabled: true,
   screenSleepMinutes: 1,
@@ -866,6 +876,7 @@ export default function App() {
   const controlsRef = useRef<{ stop: () => void } | null>(null);
   const cameraStartGenerationRef = useRef(0);
   const cameraRotationRef = useRef(0);
+  const autoCameraRotationRef = useRef(0);
   const cameraScreenAngleRef = useRef(0);
   const deviceOrientationRef = useRef<{ beta: number | null; gamma: number | null }>({
     beta: null,
@@ -1185,10 +1196,12 @@ export default function App() {
         deviceOrientationRef.current.beta,
         deviceOrientationRef.current.gamma,
         screenAngle,
-        cameraRotationRef.current,
+        autoCameraRotationRef.current,
         cameraScreenAngleRef.current,
       );
       cameraScreenAngleRef.current = screenAngle;
+      autoCameraRotationRef.current = nextRotation;
+      if (scannerPreferencesRef.current.cameraRotationMode !== 'auto') return;
       if (nextRotation !== cameraRotationRef.current) {
         cameraRotationRef.current = nextRotation;
         setCameraRotation(nextRotation);
@@ -1246,14 +1259,31 @@ export default function App() {
     let active = true;
     setScannerPreferencesReady(false);
     setScannerPreferences(initialScannerPreferences);
+    scannerPreferencesRef.current = initialScannerPreferences;
+    cameraRotationRef.current = 0;
+    autoCameraRotationRef.current = 0;
+    cameraScreenAngleRef.current = window.screen.orientation?.angle ?? 0;
+    deviceOrientationRef.current = { beta: null, gamma: null };
+    setCameraRotation(0);
     void database(session.school.id)
       .then(async (db) => {
         const preferences = await db.get('scannerPreferences', 'default');
         if (!active || !preferences) return;
         const restored = { ...initialScannerPreferences, ...preferences };
+        restored.cameraRotationMode = preferences.cameraRotationMode === 'manual' ? 'manual' : 'auto';
+        restored.cameraManualRotation = normalizeCameraRotation(Number(preferences.cameraManualRotation));
+        restored.cameraMirror = typeof preferences.cameraMirror === 'boolean'
+          ? preferences.cameraMirror
+          : initialScannerPreferences.cameraMirror;
         restored.screenSleepMinutes = Number.isFinite(Number(restored.screenSleepMinutes))
           ? Math.min(60, Math.max(1, Math.round(Number(restored.screenSleepMinutes))))
           : initialScannerPreferences.screenSleepMinutes;
+        const restoredRotation = restored.cameraRotationMode === 'manual'
+          ? restored.cameraManualRotation
+          : 0;
+        scannerPreferencesRef.current = restored;
+        cameraRotationRef.current = restoredRotation;
+        setCameraRotation(restoredRotation);
         setScannerPreferences(restored);
         await db.put('scannerPreferences', restored, 'default');
       })
@@ -2119,26 +2149,59 @@ export default function App() {
 
   async function updateScannerPreferences(next: ScannerPreferences) {
     if (!session) return;
+    const previousPreferences = scannerPreferencesRef.current;
+    const previousRotation = cameraRotationRef.current;
+    let updated = {
+      ...next,
+      cameraRotationMode: next.cameraRotationMode === 'manual' ? 'manual' as const : 'auto' as const,
+      cameraManualRotation: normalizeCameraRotation(Number(next.cameraManualRotation)),
+      cameraMirror: Boolean(next.cameraMirror),
+    };
+    const modeChanged = updated.cameraRotationMode !== previousPreferences.cameraRotationMode;
+    let nextRotation = cameraRotationRef.current;
+    if (modeChanged && updated.cameraRotationMode === 'manual') {
+      nextRotation = normalizeCameraRotation(cameraRotationRef.current);
+      updated = { ...updated, cameraManualRotation: nextRotation };
+    } else if (updated.cameraRotationMode === 'manual') {
+      nextRotation = updated.cameraManualRotation;
+    } else if (modeChanged) {
+      nextRotation = autoCameraRotationRef.current;
+    }
+    const applyRotation = modeChanged ||
+      (updated.cameraRotationMode === 'manual' && nextRotation !== cameraRotationRef.current);
+    scannerPreferencesRef.current = updated;
+    setScannerPreferences(updated);
+    if (applyRotation) {
+      cameraRotationRef.current = nextRotation;
+      setCameraRotation(nextRotation);
+    }
     try {
       const db = await database(session.school.id);
-      await db.put('scannerPreferences', next, 'default');
-      setScannerPreferences(next);
+      await db.put('scannerPreferences', updated, 'default');
       setMessage('Pengaturan scanner disimpan pada perangkat ini.');
-      if (!next.usbScannerEnabled) {
+      if (!updated.usbScannerEnabled) {
         if (wedgeTimerRef.current) window.clearTimeout(wedgeTimerRef.current);
         wedgeTimerRef.current = undefined;
         setManualCode('');
       }
       const cameraSettingsChanged =
-        next.cameraFacing !== scannerPreferences.cameraFacing ||
-        next.scanSpeed !== scannerPreferences.scanSpeed;
+        updated.cameraFacing !== previousPreferences.cameraFacing ||
+        updated.scanSpeed !== previousPreferences.scanSpeed;
       if (cameraActive && cameraSettingsChanged) {
         controlsRef.current?.stop();
         controlsRef.current = null;
         setCameraActive(false);
-        await startCamera(next);
+        await startCamera(updated);
       }
     } catch (reason) {
+      if (scannerPreferencesRef.current === updated) {
+        scannerPreferencesRef.current = previousPreferences;
+        setScannerPreferences(previousPreferences);
+        if (applyRotation) {
+          cameraRotationRef.current = previousRotation;
+          setCameraRotation(previousRotation);
+        }
+      }
       setMessage(reason instanceof Error ? reason.message : 'Pengaturan scanner gagal disimpan.', true);
     }
   }
@@ -3496,9 +3559,53 @@ export default function App() {
                       height: Math.abs(cameraRotation) === 90 && cameraFrameSize.width
                         ? `${cameraFrameSize.width}px`
                         : undefined,
-                      transform: `translate(-50%, -50%) scaleX(${scannerPreferences.cameraFacing === 'user' ? -1 : 1}) rotate(${cameraRotation}deg)`,
+                      transform: `translate(-50%, -50%) scaleX(${scannerPreferences.cameraFacing === 'user' && scannerPreferences.cameraMirror ? -1 : 1}) rotate(${cameraRotation}deg)`,
                     }}
                   />
+                  <div className="camera-control-panel" aria-label="Kontrol kamera">
+                    <div className="camera-rotation-mode" role="group" aria-label="Mode rotasi kamera">
+                      <button
+                        type="button"
+                        className={scannerPreferences.cameraRotationMode === 'auto' ? 'is-selected' : ''}
+                        aria-pressed={scannerPreferences.cameraRotationMode === 'auto'}
+                        onClick={() => void updateScannerPreferences({
+                          ...scannerPreferencesRef.current,
+                          cameraRotationMode: 'auto',
+                        })}
+                      >Auto</button>
+                      <button
+                        type="button"
+                        className={scannerPreferences.cameraRotationMode === 'manual' ? 'is-selected' : ''}
+                        aria-pressed={scannerPreferences.cameraRotationMode === 'manual'}
+                        onClick={() => void updateScannerPreferences({
+                          ...scannerPreferencesRef.current,
+                          cameraRotationMode: 'manual',
+                        })}
+                      >Manual</button>
+                    </div>
+                    {scannerPreferences.cameraRotationMode === 'manual' && (
+                      <button
+                        type="button"
+                        aria-label="Putar kamera 90 derajat searah jarum jam"
+                        onClick={() => void updateScannerPreferences({
+                          ...scannerPreferencesRef.current,
+                          cameraManualRotation: rotateCameraByQuarterTurn(cameraRotationRef.current),
+                        })}
+                      >Putar 90° · {cameraRotation}°</button>
+                    )}
+                    {scannerPreferences.cameraFacing === 'user' && (
+                      <button
+                        type="button"
+                        aria-label="Mirror kamera depan"
+                        aria-pressed={scannerPreferences.cameraMirror}
+                        className={scannerPreferences.cameraMirror ? 'is-selected' : ''}
+                        onClick={() => void updateScannerPreferences({
+                          ...scannerPreferencesRef.current,
+                          cameraMirror: !scannerPreferencesRef.current.cameraMirror,
+                        })}
+                      >Mirror {scannerPreferences.cameraMirror ? 'ON' : 'OFF'}</button>
+                    )}
+                  </div>
                   {cameraActive && <div className="scan-target"><span className="scan-target-line" /></div>}
                   {!cameraActive && <div className="scan-camera-paused">Kamera dijeda</div>}
                 </div>

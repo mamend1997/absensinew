@@ -24,6 +24,8 @@ import { extractSchoolAccessToken } from '../../web/school-portal/src/core/auth-
 import {
   cameraRotationForScreen,
   cameraRotationFromOrientation,
+  normalizeCameraRotation,
+  rotateCameraByQuarterTurn,
 } from '../../web/school-portal/src/core/camera-orientation.js';
 import { getDefaultPage } from '../../web/school-portal/src/core/navigation.js';
 
@@ -363,4 +365,7 @@ test('camera rotation follows physical device orientation while keeping the near
   assert.equal(cameraRotationFromOrientation(null, null, 90), 90);
   assert.equal(cameraRotationForScreen(0, 90, 0, 0), 90);
   assert.equal(cameraRotationForScreen(0, 90, 90, 0), 0);
+  assert.deepEqual([0, 90, 180, -90].map(rotateCameraByQuarterTurn), [90, -180, -90, 0]);
+  assert.equal(normalizeCameraRotation(270), -90);
+  assert.equal(normalizeCameraRotation(Number.NaN), 0);
 });
