@@ -23,7 +23,11 @@ import {
   NetworkUnavailableError,
 } from './core/offline-sync.js';
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '');
+const DEFAULT_NATIVE_API_BASE = 'https://saas-backend-production-82a0b10c.up.railway.app/api';
+const API_BASE = (
+  import.meta.env.VITE_API_BASE_URL ||
+  (Capacitor.isNativePlatform() ? DEFAULT_NATIVE_API_BASE : '/api')
+).replace(/\/$/, '');
 const DEFAULT_WHATSAPP_GATEWAY_URL = 'https://gateway-production-a1168195.up.railway.app/api/send-message';
 const SESSION_KEY = 'saas_school_session';
 const EXCELJS_CHUNK_RELOAD_KEY = 'saas_school_exceljs_chunk_reloaded';

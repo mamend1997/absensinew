@@ -130,8 +130,9 @@ Jika field USB/Bluetooth dinonaktifkan, field tersebut disembunyikan dari layar 
 
 1. Pasang Android Studio, JDK 21, Android SDK Platform 36, Build-Tools, dan
    Platform-Tools. Node.js 22.5 atau lebih baru diperlukan.
-2. Dari `saas-foundation/web`, instal dependency workspace dan isi URL backend
-   publik sebelum membangun. Nilai URL bukan rahasia; jangan memasukkan API key:
+2. Dari `saas-foundation/web`, instal dependency workspace. APK Android memakai
+   backend produksi proyek sebagai default; jika menggunakan backend lain, atur
+   URL publiknya sebelum membangun. Nilai URL bukan rahasia; jangan memasukkan API key:
    ```powershell
    npm.cmd install
    $env:VITE_API_BASE_URL = "https://<domain-api>/api"
