@@ -3,6 +3,7 @@ import { BrowserMultiFormatReader } from '@zxing/browser';
 import { App as CapacitorApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
 import { Filesystem, Directory } from '@capacitor/filesystem';
+import { Network } from '@capacitor/network';
 import { Share } from '@capacitor/share';
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 import QRCode from 'qrcode';
@@ -902,7 +903,7 @@ export default function App() {
   const [reportClassroom, setReportClassroom] = useState('');
   const [selectedReportEntries, setSelectedReportEntries] = useState<Set<string>>(new Set());
   const [pendingCount, setPendingCount] = useState(0);
-  const [online, setOnline] = useState(navigator.onLine);
+  const [online, setOnline] = useState(Capacitor.isNativePlatform() ? true : navigator.onLine);
   const [connectivityVersion, setConnectivityVersion] = useState(0);
   const [lastScan, setLastScan] = useState('');
   const [scanPopup, setScanPopup] = useState<{ message: string; success: boolean; id: number } | null>(null);
@@ -1120,7 +1121,6 @@ export default function App() {
   const markOfflineIfNeeded = (reason: unknown) => {
     if (!isNetworkUnavailableError(reason)) return false;
     setOfflineMode(true);
-    if (!navigator.onLine) setOnline(false);
     return true;
   };
 
@@ -1157,7 +1157,6 @@ export default function App() {
         if (!active) return;
         setOfflineMode(true);
         if (isNetworkUnavailableError(reason)) {
-          if (!navigator.onLine) setOnline(false);
           if (firstCheck && !offlineBootstrapDone) {
             offlineBootstrapDone = true;
             setPage(initialPage(session));
@@ -1312,9 +1311,10 @@ export default function App() {
     let active = true;
     let checking = false;
     let lastReachability: boolean | null = null;
+    let networkListener: { remove: () => Promise<void> } | undefined;
     const updateReachability = (reachable: boolean) => {
       if (!active) return;
-      if (reachable && lastReachability === false) {
+      if (reachable && lastReachability !== true) {
         setConnectivityVersion((current) => current + 1);
       }
       lastReachability = reachable;
@@ -1323,13 +1323,9 @@ export default function App() {
     };
     const checkReachability = async () => {
       if (checking) return;
-      if (!navigator.onLine) {
-        updateReachability(false);
-        return;
-      }
       checking = true;
       const controller = new AbortController();
-      const timeout = window.setTimeout(() => controller.abort(), 2500);
+      const timeout = window.setTimeout(() => controller.abort(), 5000);
       try {
         const response = await fetch(`${API_BASE}/health`, {
           cache: 'no-store',
@@ -1349,13 +1345,26 @@ export default function App() {
     const onOffline = () => {
       updateReachability(false);
     };
+    void Network.getStatus().then((status) => {
+      if (!active) return;
+      if (status.connected) void checkReachability();
+      else updateReachability(false);
+    }).catch(() => void checkReachability());
+    void Network.addListener('networkStatusChange', (status) => {
+      if (status.connected) void checkReachability();
+      else updateReachability(false);
+    }).then((listener) => {
+      if (active) networkListener = listener;
+      else void listener.remove();
+    });
     window.addEventListener('online', onOnline);
     window.addEventListener('offline', onOffline);
-    const timer = window.setInterval(() => void checkReachability(), 3000);
+    const timer = window.setInterval(() => void checkReachability(), 2000);
     void checkReachability();
     return () => {
       active = false;
       window.clearInterval(timer);
+      void networkListener?.remove();
       window.removeEventListener('online', onOnline);
       window.removeEventListener('offline', onOffline);
     };
@@ -1581,7 +1590,6 @@ export default function App() {
     void syncPending().catch((reason: unknown) => {
       if (isNetworkUnavailableError(reason)) {
         setOfflineMode(true);
-        if (!navigator.onLine) setOnline(false);
         return;
       }
       setError(reason instanceof Error ? reason.message : 'Sinkronisasi otomatis gagal.');
@@ -1599,7 +1607,6 @@ export default function App() {
       void syncPending().catch((reason: unknown) => {
         if (isNetworkUnavailableError(reason)) {
           setOfflineMode(true);
-          if (!navigator.onLine) setOnline(false);
           return;
         }
         setError(reason instanceof Error ? reason.message : 'Sinkronisasi otomatis gagal.');
@@ -1613,7 +1620,6 @@ export default function App() {
     void syncPendingSettings().catch((reason: unknown) => {
       if (isNetworkUnavailableError(reason)) {
         setOfflineMode(true);
-        if (!navigator.onLine) setOnline(false);
         return;
       }
       setError(reason instanceof Error ? reason.message : 'Pengaturan lokal gagal disinkronkan.');
@@ -1636,7 +1642,7 @@ export default function App() {
       setSettings(normalizedCachedSettings);
       setOperationalForm(normalizedCachedSettings);
     }
-    if (!navigator.onLine) {
+    if (!online) {
       setOfflineMode(true);
       if (canReadMaster && !cached.length) {
         setError('Master peserta lokal belum tersedia. Hubungkan internet untuk menyinkronkannya sebelum scan.');
@@ -2202,13 +2208,13 @@ export default function App() {
   }
 
   async function syncPendingSettings() {
-    if (!session || !navigator.onLine) return;
+    if (!session || !online) return;
     if (settingsSyncPromiseRef.current) return settingsSyncPromiseRef.current;
     const currentSession = session;
     const syncTask = (async () => {
       const db = await database(currentSession.school.id);
       let synced = 0;
-      while (navigator.onLine) {
+      while (online) {
         const operation = (await db.getAll('pendingSettings'))[0];
         if (!operation) break;
         if (operation.kind === 'operational') {
@@ -2317,7 +2323,7 @@ export default function App() {
         participant = findParticipantByScanCode(cachedParticipants, value);
         if (cachedParticipants.length) setParticipants(cachedParticipants);
       }
-      if (!participant && online && navigator.onLine) {
+      if (!participant && online && !offlineMode) {
         try {
           const result = await request<unknown>('/school/participants', session.token);
           const refreshedParticipants = unwrapArray<Participant>(result, 'participants')
@@ -2331,7 +2337,6 @@ export default function App() {
         } catch (reason) {
           if (!isNetworkUnavailableError(reason)) throw reason;
           setOfflineMode(true);
-          if (!navigator.onLine) setOnline(false);
         }
       }
       if (!participant) {
@@ -2351,7 +2356,7 @@ export default function App() {
         participantId: matchedParticipant.id,
         settings: scanSettings,
       }) as ScanResult;
-      if (initialCalculation.reason === 'non_working_day' && online && navigator.onLine) {
+      if (initialCalculation.reason === 'non_working_day' && online && !offlineMode) {
         try {
           scanSettings = operationalSettingsFromResponse(
             await request<unknown>('/school/settings', session.token),
@@ -2367,7 +2372,6 @@ export default function App() {
         } catch (reason) {
           if (!isNetworkUnavailableError(reason)) throw reason;
           setOfflineMode(true);
-          if (!navigator.onLine) setOnline(false);
         }
       }
       const dailyState = await db.get(
@@ -3129,9 +3133,8 @@ export default function App() {
       };
       await persistPendingSettings(operation, nextSettings);
       savedLocally = true;
-      if (!online || !navigator.onLine || offlineMode) {
+      if (!online || offlineMode) {
         setOfflineMode(true);
-        if (!navigator.onLine) setOnline(false);
         setScheduleParticipantId('');
         setMessage('Jadwal khusus peserta tersimpan di perangkat dan akan disinkronkan saat online.');
         return;
@@ -3140,7 +3143,7 @@ export default function App() {
       await syncPendingSettings();
       const db = await database(session.school.id);
       let pending = await db.get('pendingSettings', operation.id);
-      if (pending?.revision === operation.revision && navigator.onLine) {
+      if (pending?.revision === operation.revision && online && !offlineMode) {
         await syncPendingSettings();
         pending = await db.get('pendingSettings', operation.id);
       }
@@ -3154,7 +3157,6 @@ export default function App() {
     } catch (reason) {
       if (isNetworkUnavailableError(reason) && savedLocally) {
         setOfflineMode(true);
-        if (!navigator.onLine) setOnline(false);
         setScheduleParticipantId('');
         setMessage('Jadwal khusus peserta tersimpan di perangkat dan akan disinkronkan saat online.');
       } else {
@@ -3367,9 +3369,8 @@ export default function App() {
       const offlineMessage = scannerPinForm
         ? 'Pengaturan operasional tersimpan di perangkat dan akan disinkronkan saat online. PIN scanner tidak disimpan offline; simpan kembali saat online.'
         : 'Pengaturan tersimpan di perangkat dan akan disinkronkan saat online.';
-      if (!online || !navigator.onLine || offlineMode) {
+      if (!online || offlineMode) {
         setOfflineMode(true);
-        if (!navigator.onLine) setOnline(false);
         setMessage(offlineMessage);
         return;
       }
@@ -3385,14 +3386,13 @@ export default function App() {
           return;
         }
         setOfflineMode(true);
-        if (!navigator.onLine) setOnline(false);
         setMessage(offlineMessage);
         return;
       }
 
       const db = await database(session.school.id);
       let pending = await db.get('pendingSettings', operation.id);
-      if (pending?.revision === operation.revision && navigator.onLine) {
+      if (pending?.revision === operation.revision && online && !offlineMode) {
         await syncPendingSettings();
         pending = await db.get('pendingSettings', operation.id);
       }
@@ -3423,7 +3423,6 @@ export default function App() {
     } catch (reason) {
       if (isNetworkUnavailableError(reason)) {
         setOfflineMode(true);
-        if (!navigator.onLine) setOnline(false);
         setMessage('Pengaturan operasional tersimpan. Perubahan PIN scanner belum berhasil disimpan dan harus dicoba saat online.');
         return;
       }
@@ -3459,7 +3458,7 @@ export default function App() {
     event.preventDefault();
     if (!session || !scannerMenuTarget) return;
     const target = scannerMenuTarget;
-    if (!connected || !navigator.onLine) {
+    if (!connected) {
       setOfflineMode(true);
       continueToScannerMenuTarget(target);
       return;
