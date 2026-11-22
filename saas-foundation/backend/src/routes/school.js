@@ -1900,18 +1900,22 @@ const syncPermissionBatch = asyncRoute(async (req, res) => {
       rejected.push({ id_unik: id ?? null, reason: 'invalid_id' });
       continue;
     }
-    if (seen.has(id) || !['permission_out', 'permission_in'].includes(eventType) ||
+    if (seen.has(id)) {
+      rejectedIds.push(id);
+      rejected.push({ id_unik: id, reason: 'duplicate_in_batch' });
+      continue;
+    }
+    seen.add(id);
+    if (!['permission_out', 'permission_in'].includes(eventType) ||
         !/^[1-9]\d*$/.test(String(participantId ?? '')) ||
         !['SCAN_QR', 'MANUAL_INPUT'].includes(scanMethod) ||
         typeof record.client_timestamp !== 'string' ||
         !/(?:Z|[+-]\d{2}:\d{2})$/i.test(record.client_timestamp) ||
         !Number.isFinite(Date.parse(record.client_timestamp))) {
-      seen.add(id);
       rejectedIds.push(id);
-      rejected.push({ id_unik: id, reason: seen.has(id) ? 'invalid_record' : 'duplicate_in_batch' });
+      rejected.push({ id_unik: id, reason: 'invalid_record' });
       continue;
     }
-    seen.add(id);
     try {
       const [participants] = await pool.execute(
         `SELECT p.id, p.participant_code, p.full_name, c.name AS classroom_name

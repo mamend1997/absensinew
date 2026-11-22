@@ -30,11 +30,6 @@ export async function ensureRuntimeMigrations(pool) {
          ADD INDEX idx_attendance_school_participant (sekolah_id, participant_id)`,
       );
     }
-    if (indexNames.has('uq_attendance_daily_event')) {
-      await pool.execute(
-        'ALTER TABLE attendance_logs DROP INDEX uq_attendance_daily_event',
-      );
-    }
   }
 
   const [schoolColumns] = await pool.execute(

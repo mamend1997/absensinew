@@ -3782,12 +3782,34 @@ export default function App() {
     setError('');
     setNotice('');
     try {
+      const db = await database(session.school.id);
+      const pendingPermissions = (await db.getAllFromIndex('queue', 'by-status', 'pending'))
+        .filter((record) =>
+          record.jenis_absen === 'permission_out' ||
+          record.jenis_absen === 'permission_in',
+        );
+      if (!pendingPermissions.length) {
+        setNotice('Tidak ada record izin lokal yang menunggu sinkronisasi.');
+        return;
+      }
+      const syncResult = await syncManager().syncPending();
+      if (syncResult.rejected_ids.length) {
+        throw new Error(
+          `Sebanyak ${syncResult.rejected_ids.length} record izin ditolak server. Periksa record peserta dan URL Google Sheets.`,
+        );
+      }
+      const sentCount = pendingPermissions.filter((record) =>
+        syncResult.accepted_ids.includes(record.id_unik),
+      ).length;
+      if (!sentCount) {
+        throw new Error('Record izin lokal belum diterima server. Coba sinkronkan kembali saat koneksi stabil.');
+      }
       const result = await request<{ sent_count: number; message: string }>(
         '/school/settings/google-sheets/resync-permissions',
         session.token,
         { method: 'POST' },
       );
-      setNotice(result.message);
+      setNotice(`${sentCount} record izin dikirim ke server. ${result.message}`);
       setGoogleSheetsSettings((current) => ({
         ...current,
         permission_record_count: result.sent_count,
