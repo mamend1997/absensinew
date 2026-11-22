@@ -196,6 +196,18 @@ test('attendance calculation respects non-working days and records checkout afte
     participantId: 'p1',
     settings,
   }).status, 'izin_masuk');
+
+  const sundayPermission = calculateAttendance({
+    eventType: 'permission_out',
+    clientTimestamp: '2026-11-22T03:00:00.000Z',
+    participantId: 'p1',
+    settings,
+  });
+  assert.deepEqual(sundayPermission, {
+    date: '2026-11-22',
+    status: 'izin_keluar',
+    lateMinutes: 0,
+  });
 });
 
 test('scan cooldown blocks scans until the configured interval has elapsed', () => {

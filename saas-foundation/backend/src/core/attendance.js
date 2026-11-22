@@ -63,18 +63,17 @@ export function calculateAttendance({
   const working = isWorkingDay(schedule?.is_working_day, weekday >= 1 && weekday <= 5);
   const holiday = settings.holidays?.some((item) => item.date === date);
 
-  if (!working || holiday) {
-    return { date, status: null, lateMinutes: 0, reason: 'non_working_day' };
-  }
-
-  if (eventType === 'check_out') {
-    return { date, status: 'pulang', lateMinutes: 0 };
-  }
   if (eventType === 'permission_out') {
     return { date, status: 'izin_keluar', lateMinutes: 0 };
   }
   if (eventType === 'permission_in') {
     return { date, status: 'izin_masuk', lateMinutes: 0 };
+  }
+  if (!working || holiday) {
+    return { date, status: null, lateMinutes: 0, reason: 'non_working_day' };
+  }
+  if (eventType === 'check_out') {
+    return { date, status: 'pulang', lateMinutes: 0 };
   }
 
   const override = settings.participant_overrides?.find(
