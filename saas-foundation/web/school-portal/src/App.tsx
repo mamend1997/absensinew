@@ -1,5 +1,6 @@
 import { TextToSpeech } from '@capacitor-community/text-to-speech';
 import { BrowserMultiFormatReader } from '@zxing/browser';
+import { App as CapacitorApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 import QRCode from 'qrcode';
@@ -317,6 +318,13 @@ interface SchoolWhatsappGatewaySettings {
   last_test_at: string | null;
   last_test_status: 'success' | 'failed' | 'accepted' | null;
   last_test_message: string | null;
+  late_notifications?: {
+    pending: number;
+    sending: number;
+    failed: number;
+    participants_without_phone: number;
+    latest_error: string | null;
+  };
 }
 interface QueuedScan {
   id_unik: string;
@@ -355,6 +363,7 @@ interface ScannerPreferences {
 interface ScannerCache extends DBSchema {
   participants: { key: string; value: Participant };
   settings: { key: string; value: OperationalSettings };
+  branding: { key: string; value: SchoolBranding };
   pendingSettings: { key: string; value: PendingSettingsOperation };
   scannerPreferences: { key: string; value: ScannerPreferences };
   queue: {
@@ -667,7 +676,7 @@ function PasswordEye({ visible }: { visible: boolean }) {
 
 function database(schoolId: string | number): Promise<IDBPDatabase<ScannerCache>> {
   if (!('indexedDB' in window)) throw new Error('Penyimpanan lokal tidak tersedia pada browser ini.');
-  return openDB<ScannerCache>(`saas-school-${schoolId}`, 5, {
+  return openDB<ScannerCache>(`saas-school-${schoolId}`, 6, {
     upgrade(db, oldVersion) {
       if (oldVersion < 1) {
         db.createObjectStore('participants', { keyPath: 'id' });
@@ -678,6 +687,7 @@ function database(schoolId: string | number): Promise<IDBPDatabase<ScannerCache>
       if (oldVersion < 3) db.createObjectStore('scannerPreferences');
       if (oldVersion < 4) db.createObjectStore('attendanceState', { keyPath: 'key' });
       if (oldVersion < 5) db.createObjectStore('pendingSettings');
+      if (oldVersion < 6) db.createObjectStore('branding');
     },
   });
 }
@@ -828,6 +838,13 @@ export default function App() {
     last_test_at: null,
     last_test_status: null,
     last_test_message: null,
+    late_notifications: {
+      pending: 0,
+      sending: 0,
+      failed: 0,
+      participants_without_phone: 0,
+      latest_error: null,
+    },
   });
   const [whatsappToken, setWhatsappToken] = useState('');
   const [whatsappBusy, setWhatsappBusy] = useState(false);
@@ -916,6 +933,32 @@ export default function App() {
   const scanInFlightParticipantRef = useRef(new Set<string>());
   const confirmationResolverRef = useRef<((accepted: boolean) => void) | null>(null);
   const reportAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    let active = true;
+    let listener: { remove: () => Promise<void> } | undefined;
+    void CapacitorApp.addListener('backButton', () => {
+      if (confirmationResolverRef.current) return;
+      void requestConfirmation({
+        title: 'Keluar dari aplikasi?',
+        message: 'Apakah Anda yakin ingin menutup aplikasi?',
+        confirmLabel: 'Keluar',
+      }).then((accepted) => {
+        if (accepted) void CapacitorApp.exitApp();
+      });
+    })
+      .then((handle) => {
+        if (active) listener = handle;
+        else void handle.remove();
+      })
+      .catch((reason: unknown) => {
+        if (active) setError(reason instanceof Error ? reason.message : 'Tombol kembali gagal diaktifkan.');
+      });
+    return () => {
+      active = false;
+      void listener?.remove();
+    };
+  }, []);
   useEffect(() => () => {
     if (scanFeedbackTimerRef.current !== undefined) {
       window.clearTimeout(scanFeedbackTimerRef.current);
@@ -1124,17 +1167,41 @@ export default function App() {
     setSchoolBranding(null);
     setSchoolBrandingName(session.school.name);
     setSchoolLogoUpload('');
-    request<{ branding: SchoolBranding }>('/school/branding', session.token)
-      .then(({ branding }) => {
+    void (async () => {
+      let db: IDBPDatabase<ScannerCache> | null = null;
+      try {
+        db = await database(session.school.id);
+        const cachedBranding = await db.get('branding', 'school');
         if (!active) return;
+        if (cachedBranding) {
+          setSchoolBranding(cachedBranding);
+          setSchoolBrandingName(cachedBranding.application_name);
+        }
+      } catch (reason) {
+        if (active) setError(reason instanceof Error ? reason.message : 'Identitas sekolah lokal gagal dimuat.');
+      }
+      if (!active) return;
+      let fetchedBranding: SchoolBranding;
+      try {
+        const { branding } = await request<{ branding: SchoolBranding }>('/school/branding', session.token);
+        if (!active) return;
+        fetchedBranding = branding;
         setSchoolBranding(branding);
         setSchoolBrandingName(branding.application_name);
-      })
-      .catch((reason: unknown) => {
+      } catch (reason) {
         if (active && !markOfflineIfNeeded(reason)) {
           setError(reason instanceof Error ? reason.message : 'Identitas sekolah gagal dimuat.');
         }
-      });
+        return;
+      }
+      if (db) {
+        try {
+          await db.put('branding', fetchedBranding, 'school');
+        } catch (reason) {
+          if (active) setError(reason instanceof Error ? reason.message : 'Identitas sekolah gagal disimpan secara lokal.');
+        }
+      }
+    })();
     return () => { active = false; };
   }, [session?.token, session?.school.id]);
 
@@ -1723,7 +1790,12 @@ export default function App() {
     }
   }
 
-  function signOut() {
+  async function signOut() {
+    if (!await requestConfirmation({
+      title: 'Keluar dari akun?',
+      message: 'Apakah Anda yakin ingin keluar dari akun sekolah ini?',
+      confirmLabel: 'Keluar akun',
+    })) return;
     controlsRef.current?.stop();
     controlsRef.current = null;
     localStorage.removeItem(SESSION_KEY);
@@ -3135,6 +3207,8 @@ export default function App() {
           ...(schoolLogoUpload ? { logo_data_url: schoolLogoUpload } : {}),
         },
       });
+      const db = await database(session.school.id);
+      await db.put('branding', result.branding, 'school');
       setSchoolBranding(result.branding);
       setSchoolBrandingName(result.branding.application_name);
       setSchoolLogoUpload('');
@@ -3203,7 +3277,9 @@ export default function App() {
         await Promise.all([
           loadSchoolData(session),
           request<{ branding: SchoolBranding }>('/school/branding', session.token)
-            .then(({ branding }) => {
+            .then(async ({ branding }) => {
+              const db = await database(session.school.id);
+              await db.put('branding', branding, 'school');
               setSchoolBranding(branding);
               setSchoolBrandingName(branding.application_name);
             }),
@@ -3234,7 +3310,12 @@ export default function App() {
     setSchoolBrandingBusy(true);
     try {
       await request('/school/branding/logo', session.token, { method: 'DELETE' });
-      setSchoolBranding((current) => current ? { ...current, logo_data_url: null } : current);
+      if (schoolBranding) {
+        const nextBranding = { ...schoolBranding, logo_data_url: null };
+        const db = await database(session.school.id);
+        await db.put('branding', nextBranding, 'school');
+        setSchoolBranding(nextBranding);
+      }
       setSchoolLogoUpload('');
       setMessage('Logo sekolah berhasil dihapus.');
     } catch (reason) {
@@ -3348,6 +3429,34 @@ export default function App() {
     }
   }
 
+  async function retryFailedLateAttendanceNotifications() {
+    if (!session) return;
+    setWhatsappTestBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await request<{ requeued: number; message: string }>(
+        '/school/settings/whatsapp-gateway/retry-failed',
+        session.token,
+        { method: 'POST' },
+      );
+      const latest = await request<{ settings: SchoolWhatsappGatewaySettings }>(
+        '/school/settings/whatsapp-gateway',
+        session.token,
+      );
+      setWhatsappSettings((current) => ({
+        ...latest.settings,
+        endpoint_url: latest.settings.endpoint_url || DEFAULT_WHATSAPP_GATEWAY_URL,
+        late_notifications: latest.settings.late_notifications ?? current.late_notifications,
+      }));
+      setNotice(result.message);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Notifikasi gagal tidak dapat dijadwalkan ulang.');
+    } finally {
+      setWhatsappTestBusy(false);
+    }
+  }
+
   async function startBillingPayment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!session) return;
@@ -3454,6 +3563,23 @@ export default function App() {
       ? item.permission.some((permission) => can(permission))
       : can(item.permission)));
   }, [session?.user.permissions, session?.user.role_key]);
+  const confirmationPrompt = confirmationDialog ? <div
+    className="pin-modal-backdrop"
+    role="presentation"
+    onMouseDown={(event) => {
+      if (event.target === event.currentTarget) resolveConfirmation(false);
+    }}
+  >
+    <section className="pin-modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title" aria-describedby="confirm-dialog-message">
+      <div className="pin-modal-icon" aria-hidden="true">!</div>
+      <h2 id="confirm-dialog-title">{confirmationDialog.title}</h2>
+      <p id="confirm-dialog-message">{confirmationDialog.message}</p>
+      <div className="pin-modal-actions">
+        <button type="button" className="button secondary" onClick={() => resolveConfirmation(false)}>Batal</button>
+        <button type="button" className="button danger" onClick={() => resolveConfirmation(true)}>{confirmationDialog.confirmLabel}</button>
+      </div>
+    </section>
+  </div> : null;
 
   if (!session) {
     return (
@@ -3577,6 +3703,7 @@ export default function App() {
             <span>{error || notice}</span>
           </div>
         </div>}
+        {confirmationPrompt}
       </main>
     );
   }
@@ -3590,7 +3717,7 @@ export default function App() {
           <span className="pending-pill">{pendingCount} pending</span>
           {!page ? null : page === 'scanner'
             ? <button className="button scanner-menu-button" type="button" onClick={() => requestScannerMenu('dashboard')}>Menu</button>
-            : <><span className="user-chip">{session.user.display_name} · {session.user.role_name}</span><button className="button secondary" onClick={signOut}>Keluar</button></>}
+            : <><span className="user-chip">{session.user.display_name} · {session.user.role_name}</span><button className="button secondary" onClick={() => void signOut()}>Keluar</button></>}
         </div>
       </header>
       <div className={page === 'scanner' ? 'portal-layout kiosk-layout' : 'portal-layout'}>
@@ -4109,6 +4236,20 @@ export default function App() {
                     <p>{whatsappSettings.last_test_message}</p>
                     {whatsappSettings.last_test_status === 'accepted' && <p className="muted">HTTP 202 berarti gateway menerima pesan untuk diproses. Status ini bukan gagal, tetapi gateway belum memberikan konfirmasi bahwa pesan telah delivered.</p>}
                   </div>}
+                  {whatsappSettings.late_notifications && <div className="gateway-test-log">
+                    <strong>Status notifikasi absensi telat</strong>
+                    <p>
+                      {whatsappSettings.late_notifications.pending} menunggu · {whatsappSettings.late_notifications.sending} sedang dikirim · {whatsappSettings.late_notifications.failed} gagal.
+                      {' '}{whatsappSettings.late_notifications.participants_without_phone} peserta aktif belum memiliki nomor WA.
+                    </p>
+                    {whatsappSettings.late_notifications.latest_error && <p>{whatsappSettings.late_notifications.latest_error}</p>}
+                    {whatsappSettings.late_notifications.failed > 0 && <button
+                      type="button"
+                      className="button secondary small"
+                      disabled={whatsappBusy || whatsappTestBusy || !whatsappSettings.is_enabled}
+                      onClick={() => void retryFailedLateAttendanceNotifications()}
+                    >Coba ulang notifikasi gagal</button>}
+                  </div>}
                 </form> : <p className="muted">Konfigurasi tersedia untuk dilihat oleh akun ini.</p>}
               </section>}
               {can('settings.operational.view') && <section className="panel google-sheets-panel">
@@ -4306,23 +4447,7 @@ export default function App() {
           <span>{error || notice}</span>
         </div>
       </div>}
-      {confirmationDialog && <div
-        className="pin-modal-backdrop"
-        role="presentation"
-        onMouseDown={(event) => {
-          if (event.target === event.currentTarget) resolveConfirmation(false);
-        }}
-      >
-        <section className="pin-modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title" aria-describedby="confirm-dialog-message">
-          <div className="pin-modal-icon" aria-hidden="true">!</div>
-          <h2 id="confirm-dialog-title">{confirmationDialog.title}</h2>
-          <p id="confirm-dialog-message">{confirmationDialog.message}</p>
-          <div className="pin-modal-actions">
-            <button type="button" className="button secondary" onClick={() => resolveConfirmation(false)}>Batal</button>
-            <button type="button" className="button danger" onClick={() => resolveConfirmation(true)}>{confirmationDialog.confirmLabel}</button>
-          </div>
-        </section>
-      </div>}
+      {confirmationPrompt}
       {scannerMenuOpen && <div className="pin-modal-backdrop" role="presentation">
         <form className="pin-modal" onSubmit={(event) => void unlockScannerMenu(event)} role="dialog" aria-modal="true" aria-labelledby="scanner-pin-title">
           <div className="pin-modal-icon" aria-hidden="true">PIN</div>

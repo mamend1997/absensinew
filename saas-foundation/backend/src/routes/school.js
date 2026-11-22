@@ -1242,11 +1242,34 @@ router.post('/settings/scanner-pin/verify', requireSchoolUser,
   }));
 
 router.get('/settings/whatsapp-gateway', requireSchoolUser, requirePermission('settings.operational.view'), asyncRoute(async (req, res) => {
+  const schoolId = req.schoolUser.sekolah_id;
   const [[settings]] = await pool.execute(
     `SELECT endpoint_url, token_ciphertext, is_enabled,
             last_test_at, last_test_status, last_test_message
        FROM school_whatsapp_gateway_config WHERE sekolah_id = ?`,
-    [req.schoolUser.sekolah_id],
+    [schoolId],
+  );
+  const [[notificationCounts]] = await pool.execute(
+    `SELECT SUM(status = 'pending') AS pending,
+            SUM(status = 'sending') AS sending,
+            SUM(status = 'failed') AS failed
+       FROM participant_late_notifications
+      WHERE sekolah_id = ?`,
+    [schoolId],
+  );
+  const [[latestNotificationError]] = await pool.execute(
+    `SELECT last_error FROM participant_late_notifications
+      WHERE sekolah_id = ? AND status = 'failed' AND last_error IS NOT NULL
+      ORDER BY updated_at DESC, id DESC LIMIT 1`,
+    [schoolId],
+  );
+  const participantScope = classroomScope(req.schoolUser, 'p');
+  const [[participantsWithoutPhone]] = await pool.execute(
+    `SELECT COUNT(*) AS total FROM participants p
+      WHERE p.sekolah_id = ? AND p.is_active = TRUE
+        ${participantScope.sql}
+        AND (p.participant_phone IS NULL OR p.participant_phone = '')`,
+    [schoolId, ...participantScope.params],
   );
   res.json({
     settings: {
@@ -1257,6 +1280,13 @@ router.get('/settings/whatsapp-gateway', requireSchoolUser, requirePermission('s
       last_test_at: settings?.last_test_at ?? null,
       last_test_status: settings?.last_test_status ?? null,
       last_test_message: settings?.last_test_message ?? null,
+      late_notifications: {
+        pending: Number(notificationCounts?.pending ?? 0),
+        sending: Number(notificationCounts?.sending ?? 0),
+        failed: Number(notificationCounts?.failed ?? 0),
+        participants_without_phone: Number(participantsWithoutPhone?.total ?? 0),
+        latest_error: latestNotificationError?.last_error ?? null,
+      },
     },
   });
 }));
@@ -1336,6 +1366,31 @@ router.post('/settings/whatsapp-gateway/test', requireSchoolUser, requirePermiss
   );
   res.json({ log });
 }));
+
+router.post('/settings/whatsapp-gateway/retry-failed', requireSchoolUser,
+  requirePermission('settings.operational.edit'), asyncRoute(async (req, res) => {
+    const [[gateway]] = await pool.execute(
+      `SELECT is_enabled, endpoint_url, token_ciphertext
+         FROM school_whatsapp_gateway_config WHERE sekolah_id = ?`,
+      [req.schoolUser.sekolah_id],
+    );
+    if (!gateway?.is_enabled || !gateway.endpoint_url || !gateway.token_ciphertext) {
+      throw fail(409, 'Aktifkan dan simpan gateway WhatsApp sebelum mencoba ulang notifikasi.', 'CONFIGURATION_ERROR');
+    }
+    const [result] = await pool.execute(
+      `UPDATE participant_late_notifications
+          SET status = 'pending', attempts = 0, next_attempt_at = UTC_TIMESTAMP(),
+              last_error = NULL, sent_at = NULL
+        WHERE sekolah_id = ? AND status = 'failed'`,
+      [req.schoolUser.sekolah_id],
+    );
+    res.json({
+      requeued: result.affectedRows,
+      message: result.affectedRows
+        ? `${result.affectedRows} notifikasi dijadwalkan untuk dicoba ulang.`
+        : 'Tidak ada notifikasi gagal yang perlu dicoba ulang.',
+    });
+  }));
 
 router.delete('/settings/whatsapp-gateway', requireSchoolUser, requirePermission('settings.operational.edit'), asyncRoute(async (req, res) => {
   await pool.execute(
