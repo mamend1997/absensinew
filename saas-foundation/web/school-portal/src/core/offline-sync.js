@@ -27,7 +27,7 @@ function assertQueuedScan(scan, schoolId) {
 export function createOfflineSyncManager({ schoolId, storage, sendBatch, batchSize = 100 }) {
   if (!schoolId) throw new TypeError('schoolId wajib tersedia.');
   if (!storage || typeof storage.putPendingIfAbsent !== 'function' ||
-      typeof storage.listPending !== 'function' || typeof storage.markSynced !== 'function') {
+    typeof storage.listPending !== 'function' || typeof storage.markSynced !== 'function') {
     throw new TypeError('Adapter storage antrean tidak lengkap.');
   }
   if (typeof sendBatch !== 'function') throw new TypeError('sendBatch wajib berupa fungsi.');
@@ -115,6 +115,16 @@ export function createOfflineSyncManager({ schoolId, storage, sendBatch, batchSi
         await storage.markIgnored({ sekolah_id: String(schoolId), ids: newlyIgnored });
         ignoredIds.push(...newlyIgnored);
         ignoredDetails.push(...detailsList);
+      }
+      if (rejected.length && typeof storage.markRejected === 'function') {
+        await storage.markRejected({
+          sekolah_id: String(schoolId),
+          ids: rejected,
+          details: rejectedList.filter((detail) =>
+            detail && typeof detail.id_unik === 'string' &&
+            rejected.includes(detail.id_unik) &&
+            typeof detail.reason === 'string'),
+        });
       }
       rejectedIds.push(...rejected);
       rejectedDetails.push(...rejectedList.filter((detail) =>

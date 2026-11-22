@@ -434,17 +434,6 @@ function permissionSheetName(monthKey) {
 }
 
 function buildPermissionSummary(records, timeZone) {
-  const headers = [
-    'No',
-    'Nama Peserta',
-    'Tanggal',
-    'Izin Keluar',
-    'Masuk Kembali',
-    'Jumlah Menit Keluar',
-    'Total Menit Keluar',
-    'Total Kali Izin Keluar',
-  ];
-
   const permissionRecords = (records || [])
     .filter((record) => ['permission_out', 'permission_in'].includes(record.event_type))
     .map((record) => ({
@@ -453,7 +442,8 @@ function buildPermissionSummary(records, timeZone) {
     }))
     .filter((item) => item.timestamp);
 
-  const participantEvents = new Map();
+  const participants = new Map();
+  const dates = new Set();
   permissionRecords.forEach((item) => {
     const participantId = String(
       item.record.participant_id ||
@@ -467,21 +457,19 @@ function buildPermissionSummary(records, timeZone) {
       attendanceDateKey(item.timestamp, timeZone),
       timeZone,
     );
-    const eventKey = `${participantId}:${attendanceDate}`;
-    if (!participantEvents.has(eventKey)) {
-      participantEvents.set(eventKey, {
+    dates.add(attendanceDate);
+    if (!participants.has(participantId)) {
+      participants.set(participantId, {
         participantId,
-        attendanceDate,
         name: String(
           item.record.participant_name ||
           item.record.participant_name_snapshot ||
           'Nama tidak tersedia',
         ).trim() || 'Nama tidak tersedia',
-        outs: [],
-        ins: [],
+        permissionsByDate: new Map(),
       });
     }
-    const participant = participantEvents.get(eventKey);
+    const participant = participants.get(participantId);
     if (!participant.name || participant.name === 'Nama tidak tersedia') {
       participant.name = String(
         item.record.participant_name ||
@@ -489,54 +477,66 @@ function buildPermissionSummary(records, timeZone) {
         '',
       ).trim() || participant.name;
     }
-    if (item.record.event_type === 'permission_out') participant.outs.push(item.timestamp);
-    else participant.ins.push(item.timestamp);
+    if (!participant.permissionsByDate.has(attendanceDate)) {
+      participant.permissionsByDate.set(attendanceDate, { outs: [], ins: [] });
+    }
+    const day = participant.permissionsByDate.get(attendanceDate);
+    if (item.record.event_type === 'permission_out') day.outs.push(item.timestamp);
+    else day.ins.push(item.timestamp);
   });
 
+  const sortedDates = Array.from(dates).sort();
+  const topHeaders = ['No', 'Nama Peserta'];
+  sortedDates.forEach((date) => topHeaders.push(formatDateLabel(date), '', ''));
+  topHeaders.push('Total Menit Keluar', 'Total Kali Izin Keluar');
+  const subHeaders = ['No', 'Nama Peserta'];
+  sortedDates.forEach(() => subHeaders.push('Izin Keluar', 'Masuk Kembali', 'Durasi Keluar'));
+  subHeaders.push('Total Menit Keluar', 'Total Kali Izin Keluar');
+
   const rows = [];
-  let rowNumber = 0;
-  Array.from(participantEvents.values())
+  Array.from(participants.values())
     .sort((left, right) => left.name.localeCompare(right.name))
     .forEach((participant) => {
-      participant.outs.sort((left, right) => left.getTime() - right.getTime());
-      participant.ins.sort((left, right) => left.getTime() - right.getTime());
-
+      const row = [rows.length + 1, participant.name];
       let totalMinutes = 0;
-      const pairs = participant.outs.map((outTimestamp) => {
-        const returnTimestamp = participant.ins.find((inTimestamp) =>
-          inTimestamp.getTime() >= outTimestamp.getTime() &&
-          attendanceDateKey(inTimestamp, timeZone) === participant.attendanceDate);
-        if (returnTimestamp) {
-          participant.ins = participant.ins.filter((inTimestamp) =>
-            inTimestamp !== returnTimestamp);
-          const minutes = Math.max(
-            0,
-            Math.ceil((returnTimestamp.getTime() - outTimestamp.getTime()) / 60000),
-          );
-          totalMinutes += minutes;
-          return { outTimestamp, returnTimestamp, minutes };
+      let totalCount = 0;
+      sortedDates.forEach((date) => {
+        const day = participant.permissionsByDate.get(date);
+        if (!day) {
+          row.push('', '', '');
+          return;
         }
-        return { outTimestamp, returnTimestamp: null, minutes: '' };
+        day.outs.sort((left, right) => left.getTime() - right.getTime());
+        day.ins.sort((left, right) => left.getTime() - right.getTime());
+        let dayMinutes = 0;
+        const outValues = [];
+        const inValues = [];
+        day.outs.forEach((outTimestamp) => {
+          const returnTimestamp = day.ins.find((inTimestamp) =>
+            inTimestamp.getTime() >= outTimestamp.getTime());
+          if (returnTimestamp) {
+            day.ins = day.ins.filter((inTimestamp) => inTimestamp !== returnTimestamp);
+            const minutes = Math.max(
+              0,
+              Math.ceil((returnTimestamp.getTime() - outTimestamp.getTime()) / 60000),
+            );
+            dayMinutes += minutes;
+            totalMinutes += minutes;
+            totalCount += 1;
+            outValues.push(formatClock(outTimestamp, timeZone));
+            inValues.push(formatClock(returnTimestamp, timeZone));
+          } else {
+            outValues.push(formatClock(outTimestamp, timeZone));
+            inValues.push('');
+          }
+        });
+        row.push(outValues.join('\n'), inValues.join('\n'), dayMinutes || '');
       });
-
-      pairs.forEach((pair) => {
-        rowNumber += 1;
-        rows.push([
-          rowNumber,
-          participant.name,
-          attendanceDateKey(pair.outTimestamp, timeZone),
-          formatClock(pair.outTimestamp, timeZone),
-          pair.returnTimestamp
-            ? formatClock(pair.returnTimestamp, timeZone)
-            : '',
-          pair.minutes,
-          totalMinutes,
-          participant.outs.length,
-        ]);
-      });
+      row.push(totalMinutes, totalCount);
+      rows.push(row);
     });
 
-  return { headers, rows };
+  return { topHeaders, subHeaders, rows, sortedDates };
 }
 
 function renderPermissionSummary(spreadsheet, monthKey, records, timeZone) {
@@ -547,26 +547,37 @@ function renderPermissionSummary(spreadsheet, monthKey, records, timeZone) {
   sheet.clear();
 
   const summary = buildPermissionSummary(records, timeZone);
-  sheet.getRange(1, 1, 1, summary.headers.length).setValues([summary.headers]);
-  sheet.setFrozenRows(1);
+  const columnCount = summary.topHeaders.length;
+  sheet.getRange(1, 1, 1, columnCount).setValues([summary.topHeaders]);
+  sheet.getRange(2, 1, 1, columnCount).setValues([summary.subHeaders]);
+  sheet.getRange(1, 1, 2, columnCount).setFontWeight('bold');
+  sheet.getRange(1, 1, 1, columnCount).setBackground('#fff200');
+  sheet.getRange(2, 1, 1, columnCount).setBackground('#fff200');
+  sheet.setFrozenRows(2);
+
+  const dateStartColumns = [];
+  let columnIndex = 3;
+  summary.sortedDates.forEach(() => {
+    dateStartColumns.push(columnIndex);
+    columnIndex += 3;
+  });
+  dateStartColumns.forEach((startColumn) => {
+    sheet.getRange(1, startColumn, 1, 3).merge();
+  });
+  sheet.getRange(1, 1, 2, 2).mergeAcross();
+
   if (!summary.rows.length) {
-    sheet.getRange(2, 1, 1, summary.headers.length)
-      .setValues([['', 'Belum ada izin keluar', '', '', '', '', '', '']]);
+    sheet.getRange(3, 1, 1, columnCount)
+      .setValues([['', 'Belum ada izin keluar', ...Array(columnCount - 2).fill('')]]);
   } else {
-    sheet.getRange(2, 1, summary.rows.length, summary.headers.length).setValues(summary.rows);
+    sheet.getRange(3, 1, summary.rows.length, columnCount).setValues(summary.rows);
   }
 
-  sheet.getRange(1, 1, 1, summary.headers.length).setFontWeight('bold');
-  sheet.setColumnWidths(1, summary.headers.length, 160);
   sheet.setColumnWidth(1, 50);
   sheet.setColumnWidth(2, 220);
-  sheet.setColumnWidth(3, 120);
-  sheet.setColumnWidth(4, 130);
-  sheet.setColumnWidth(5, 130);
-  sheet.setColumnWidth(6, 180);
-  sheet.setColumnWidth(7, 170);
-  sheet.setColumnWidth(8, 190);
-  sheet.setFrozenRows(1);
+  for (let column = 3; column <= columnCount; column += 1) {
+    sheet.setColumnWidth(column, column <= columnCount - 2 ? 130 : 170);
+  }
   return sheet;
 }
 

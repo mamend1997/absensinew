@@ -53,24 +53,20 @@ test('Apps Script builds monthly permission exit and return sheet', () => {
     },
   ], 'Asia/Jakarta');
 
-  assert.deepEqual(Array.from(summary.headers), [
-    'No',
-    'Nama Peserta',
-    'Tanggal',
-    'Izin Keluar',
-    'Masuk Kembali',
-    'Jumlah Menit Keluar',
-    'Total Menit Keluar',
-    'Total Kali Izin Keluar',
+  assert.deepEqual(Array.from(summary.topHeaders), [
+    'No', 'Nama Peserta', '01-11-2026', '', '', 'Total Menit Keluar', 'Total Kali Izin Keluar',
+  ]);
+  assert.deepEqual(Array.from(summary.subHeaders), [
+    'No', 'Nama Peserta', 'Izin Keluar', 'Masuk Kembali', 'Durasi Keluar',
+    'Total Menit Keluar', 'Total Kali Izin Keluar',
   ]);
   assert.equal(summary.rows.length, 1);
   assert.equal(summary.rows[0][1], 'Agung');
-  assert.equal(summary.rows[0][2], '2026-11-01');
-  assert.equal(summary.rows[0][3], '08:00:00');
-  assert.equal(summary.rows[0][4], '08:25:00');
+  assert.equal(summary.rows[0][2], '08:00:00');
+  assert.equal(summary.rows[0][3], '08:25:00');
+  assert.equal(summary.rows[0][4], 25);
   assert.equal(summary.rows[0][5], 25);
-  assert.equal(summary.rows[0][6], 25);
-  assert.equal(summary.rows[0][7], 1);
+  assert.equal(summary.rows[0][6], 1);
 });
 
 test('Apps Script permission pairing stays within the same attendance date', () => {
@@ -92,9 +88,9 @@ test('Apps Script permission pairing stays within the same attendance date', () 
   ], 'Asia/Jakarta');
 
   assert.equal(summary.rows.length, 1);
-  assert.equal(summary.rows[0][2], '2026-11-01');
+  assert.equal(summary.rows[0][2], '08:00:00');
+  assert.equal(summary.rows[0][3], '');
   assert.equal(summary.rows[0][4], '');
-  assert.equal(summary.rows[0][5], '');
 });
 
 test('Apps Script permission sheet accepts stable participant code when numeric ID is missing', () => {
@@ -110,7 +106,7 @@ test('Apps Script permission sheet accepts stable participant code when numeric 
 
   assert.equal(summary.rows.length, 1);
   assert.equal(summary.rows[0][1], 'Siti');
-  assert.equal(summary.rows[0][2], '2026-11-02');
+  assert.equal(summary.rows[0][2], '09:00:00');
 });
 
 test('Apps Script groups attendance by participant across dynamic date columns', () => {

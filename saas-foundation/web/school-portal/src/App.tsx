@@ -2159,6 +2159,26 @@ export default function App() {
           }
           await tx.done;
         },
+        async markRejected({ ids }: { sekolah_id: string; ids: string[] }) {
+          const db = await database(session.school.id);
+          const tx = db.transaction(['queue', 'attendanceState'], 'readwrite');
+          const queue = tx.objectStore('queue');
+          const attendanceState = tx.objectStore('attendanceState');
+          for (const id of ids) {
+            const record = await queue.get(id);
+            if (!record) continue;
+            await queue.delete(id);
+            const key = dailyAttendanceKey(record.id_peserta, record.attendance_date);
+            const current = await attendanceState.get(key);
+            if (current?.last_scan_at !== record.client_timestamp) continue;
+            if (record.local_previous_state) {
+              await attendanceState.put(record.local_previous_state);
+            } else {
+              await attendanceState.delete(key);
+            }
+          }
+          await tx.done;
+        },
       },
       async sendBatch({ records }: { sekolah_id: string; records: QueuedScan[] }) {
         const serverRecords = records.map(({ local_previous_state: _localState, ...record }) => record);
@@ -3809,6 +3829,8 @@ export default function App() {
           database_status_constraint: 'status izin ditolak constraint database',
           non_working_day: 'hari ini ditolak sebagai hari non-operasional',
           ER_CHECK_CONSTRAINT_VIOLATED: 'constraint database belum mendukung status izin',
+          permission_in_without_permission_out: 'masuk kembali ditolak karena belum ada izin keluar',
+          permission_already_returned: 'masuk kembali sudah tercatat untuk izin keluar ini',
         };
         throw new Error(
           `Sebanyak ${syncResult.rejected_ids.length} record izin ditolak server.${

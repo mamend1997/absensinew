@@ -1973,6 +1973,34 @@ const syncPermissionBatch = asyncRoute(async (req, res) => {
           [schoolId, id],
         );
         if (existing.length) return;
+        if (eventType === 'permission_in') {
+          const [[openPermissionOut]] = await connection.execute(
+            `SELECT id, client_timestamp_utc
+               FROM attendance_logs
+              WHERE sekolah_id = ? AND participant_id = ?
+                AND attendance_date = ? AND event_type = 'permission_out'
+              ORDER BY client_timestamp_utc DESC, id DESC
+              LIMIT 1 FOR UPDATE`,
+            [schoolId, participant.id, calculation.date],
+          );
+          if (!openPermissionOut) {
+            throw new Error('permission_in_without_permission_out');
+          }
+          const [[laterPermissionIn]] = await connection.execute(
+            `SELECT id
+               FROM attendance_logs
+              WHERE sekolah_id = ? AND participant_id = ?
+                AND attendance_date = ? AND event_type = 'permission_in'
+                AND client_timestamp_utc > ?
+              ORDER BY client_timestamp_utc ASC, id ASC
+              LIMIT 1 FOR UPDATE`,
+            [schoolId, participant.id, calculation.date,
+              openPermissionOut.client_timestamp_utc],
+          );
+          if (laterPermissionIn) {
+            throw new Error('permission_already_returned');
+          }
+        }
         await connection.execute(
           `INSERT INTO attendance_logs
             (sekolah_id, id_unik, participant_id, device_id, recorded_by,
@@ -2014,10 +2042,16 @@ const syncPermissionBatch = asyncRoute(async (req, res) => {
         reason: error?.code ?? error?.message ?? 'invalid_record',
       });
       rejectedIds.push(id);
+      const knownReasons = [
+        'participant_not_found',
+        'non_working_day',
+        'daily_duplicate',
+        'permission_in_without_permission_out',
+        'permission_already_returned',
+      ];
       rejected.push({
         id_unik: id,
-        reason: ['participant_not_found', 'non_working_day', 'daily_duplicate']
-          .includes(error.message) ? error.message : 'invalid_record',
+        reason: knownReasons.includes(error.message) ? error.message : 'invalid_record',
       });
     }
   }
