@@ -3794,8 +3794,14 @@ export default function App() {
       }
       const syncResult = await syncManager().syncPending();
       if (syncResult.rejected_ids.length) {
+        const reasons = syncResult.rejected_details
+          ?.map((detail: { id_unik: string; reason: string }) => detail.reason)
+          .filter((reason: string, index: number, values: string[]) =>
+            values.indexOf(reason) === index);
         throw new Error(
-          `Sebanyak ${syncResult.rejected_ids.length} record izin ditolak server. Periksa record peserta dan URL Google Sheets.`,
+          `Sebanyak ${syncResult.rejected_ids.length} record izin ditolak server.${
+            reasons?.length ? ` Alasan: ${reasons.join(', ')}` : ''
+          } Periksa record peserta dan URL Google Sheets.`,
         );
       }
       const sentCount = pendingPermissions.filter((record) =>

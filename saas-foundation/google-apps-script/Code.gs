@@ -228,7 +228,9 @@ function doPost(event) {
           !/^\d{4}-\d{2}-\d{2}$/.test(String(record.attendance_date || '')) ||
           !['check_in', 'check_out', 'permission_out', 'permission_in'].includes(record.event_type) ||
           !parseTimestamp(record.client_timestamp) ||
-          (record.participant_id != null && !/^[1-9]\d*$/.test(String(record.participant_id)))) {
+          ((record.event_type === 'check_in' || record.event_type === 'check_out') &&
+            record.participant_id != null &&
+            !/^[1-9]\d*$/.test(String(record.participant_id)))) {
         return jsonResponse({ ok: false, error: 'invalid_record', accepted_ids: acceptedIds });
       }
       if (!shouldIncludeAfterClear(record, clearCutoff)) {
@@ -453,19 +455,39 @@ function buildPermissionSummary(records, timeZone) {
 
   const participantEvents = new Map();
   permissionRecords.forEach((item) => {
-    const participantId = String(item.record.participant_id || '').trim();
+    const participantId = String(
+      item.record.participant_id ||
+      item.record.participant_code ||
+      item.record.participant_name ||
+      '',
+    ).trim();
     if (!participantId) return;
-    if (!participantEvents.has(participantId)) {
-      participantEvents.set(participantId, {
+    const attendanceDate = attendanceDateKey(
+      item.record.attendance_date ||
+      attendanceDateKey(item.timestamp, timeZone),
+      timeZone,
+    );
+    const eventKey = `${participantId}:${attendanceDate}`;
+    if (!participantEvents.has(eventKey)) {
+      participantEvents.set(eventKey, {
         participantId,
-        name: String(item.record.participant_name || '').trim() || 'Nama tidak tersedia',
+        attendanceDate,
+        name: String(
+          item.record.participant_name ||
+          item.record.participant_name_snapshot ||
+          'Nama tidak tersedia',
+        ).trim() || 'Nama tidak tersedia',
         outs: [],
         ins: [],
       });
     }
-    const participant = participantEvents.get(participantId);
+    const participant = participantEvents.get(eventKey);
     if (!participant.name || participant.name === 'Nama tidak tersedia') {
-      participant.name = String(item.record.participant_name || '').trim() || participant.name;
+      participant.name = String(
+        item.record.participant_name ||
+        item.record.participant_name_snapshot ||
+        '',
+      ).trim() || participant.name;
     }
     if (item.record.event_type === 'permission_out') participant.outs.push(item.timestamp);
     else participant.ins.push(item.timestamp);
@@ -482,7 +504,8 @@ function buildPermissionSummary(records, timeZone) {
       let totalMinutes = 0;
       const pairs = participant.outs.map((outTimestamp) => {
         const returnTimestamp = participant.ins.find((inTimestamp) =>
-          inTimestamp.getTime() >= outTimestamp.getTime());
+          inTimestamp.getTime() >= outTimestamp.getTime() &&
+          attendanceDateKey(inTimestamp, timeZone) === participant.attendanceDate);
         if (returnTimestamp) {
           participant.ins = participant.ins.filter((inTimestamp) =>
             inTimestamp !== returnTimestamp);

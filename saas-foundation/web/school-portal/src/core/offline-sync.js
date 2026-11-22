@@ -49,6 +49,7 @@ export function createOfflineSyncManager({ schoolId, storage, sendBatch, batchSi
     const ignoredIds = [];
     const ignoredDetails = [];
     const rejectedIds = [];
+    const rejectedDetails = [];
     let batches = 0;
     while (true) {
       const pending = await storage.listPending({ sekolah_id: String(schoolId), limit: batchSize });
@@ -71,6 +72,10 @@ export function createOfflineSyncManager({ schoolId, storage, sendBatch, batchSi
       const detailsList = response.ignored ?? [];
       if (!Array.isArray(detailsList)) {
         throw new TypeError('Respons sync berisi ignored yang tidak valid.');
+      }
+      const rejectedList = response.rejected ?? [];
+      if (!Array.isArray(rejectedList)) {
+        throw new TypeError('Respons sync berisi rejected yang tidak valid.');
       }
       const ignored = new Set(ignoredList);
       if (accepted.size !== response.accepted_ids.length) {
@@ -112,6 +117,10 @@ export function createOfflineSyncManager({ schoolId, storage, sendBatch, batchSi
         ignoredDetails.push(...detailsList);
       }
       rejectedIds.push(...rejected);
+      rejectedDetails.push(...rejectedList.filter((detail) =>
+        detail && typeof detail.id_unik === 'string' &&
+        submittedIds.has(detail.id_unik) &&
+        typeof detail.reason === 'string'));
       batches += 1;
       if (newlyAccepted.length + newlyIgnored.length < pending.length) break;
     }
@@ -121,6 +130,7 @@ export function createOfflineSyncManager({ schoolId, storage, sendBatch, batchSi
       ignored_ids: ignoredIds,
       ignored_details: ignoredDetails,
       rejected_ids: rejectedIds,
+      rejected_details: rejectedDetails,
       batches,
     };
   }

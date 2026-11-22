@@ -73,6 +73,46 @@ test('Apps Script builds monthly permission exit and return sheet', () => {
   assert.equal(summary.rows[0][7], 1);
 });
 
+test('Apps Script permission pairing stays within the same attendance date', () => {
+  const summary = sandbox.buildPermissionSummary([
+    {
+      participant_id: 'P1',
+      participant_name: 'Agung',
+      attendance_date: '2026-11-01',
+      event_type: 'permission_out',
+      client_timestamp: '2026-11-01 01:00:00.000',
+    },
+    {
+      participant_id: 'P1',
+      participant_name: 'Agung',
+      attendance_date: '2026-11-02',
+      event_type: 'permission_in',
+      client_timestamp: '2026-11-02 01:25:00.000',
+    },
+  ], 'Asia/Jakarta');
+
+  assert.equal(summary.rows.length, 1);
+  assert.equal(summary.rows[0][2], '2026-11-01');
+  assert.equal(summary.rows[0][4], '');
+  assert.equal(summary.rows[0][5], '');
+});
+
+test('Apps Script permission sheet accepts stable participant code when numeric ID is missing', () => {
+  const summary = sandbox.buildPermissionSummary([
+    {
+      participant_code: 'P-CLASS-01',
+      participant_name: 'Siti',
+      attendance_date: '2026-11-02',
+      event_type: 'permission_out',
+      client_timestamp: '2026-11-02 02:00:00.000',
+    },
+  ], 'Asia/Jakarta');
+
+  assert.equal(summary.rows.length, 1);
+  assert.equal(summary.rows[0][1], 'Siti');
+  assert.equal(summary.rows[0][2], '2026-11-02');
+});
+
 test('Apps Script groups attendance by participant across dynamic date columns', () => {
   const { dates, rows } = sandbox.buildMonthlySummary([
     {
