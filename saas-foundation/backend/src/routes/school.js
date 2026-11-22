@@ -1956,6 +1956,17 @@ const syncPermissionBatch = asyncRoute(async (req, res) => {
       });
       acceptedIds.push(id);
     } catch (error) {
+      if (error?.code === 'ER_DUP_ENTRY') {
+        const [existing] = await pool.execute(
+          `SELECT id FROM attendance_logs
+            WHERE sekolah_id = ? AND id_unik = ?`,
+          [schoolId, id],
+        );
+        if (existing.length) {
+          acceptedIds.push(id);
+          continue;
+        }
+      }
       rejectedIds.push(id);
       rejected.push({
         id_unik: id,
