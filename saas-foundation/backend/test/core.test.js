@@ -400,6 +400,42 @@ test('batch sync marks only server-accepted ids and keeps rejected records pendi
   assert.deepEqual([...pending.keys()], [rejectedId]);
 });
 
+test('browser sync preserves permission rejection details', async () => {
+  const pending = new Map();
+  const id = '5a2c6ec7-33cb-4a2d-b205-7a2be89146e2';
+  const permissionScan = {
+    ...scan(id),
+    jenis_absen: 'permission_out',
+  };
+  const manager = createBrowserOfflineSyncManager({
+    schoolId: '10',
+    storage: {
+      async putPendingIfAbsent({ scan: item }) {
+        pending.set(item.id_unik, item);
+        return true;
+      },
+      async listPending() {
+        return [...pending.values()];
+      },
+      async markSynced() {},
+    },
+    async sendBatch() {
+      return {
+        accepted_ids: [],
+        rejected_ids: [id],
+        rejected: [{ id_unik: id, reason: 'participant_not_found' }],
+      };
+    },
+  });
+  await manager.enqueue(permissionScan);
+  const result = await manager.syncPending();
+  assert.deepEqual(result.rejected_ids, [id]);
+  assert.deepEqual(result.rejected_details, [
+    { id_unik: id, reason: 'participant_not_found' },
+  ]);
+  assert.equal(pending.size, 1);
+});
+
 test('offline queue rejects scans from another tenant', async () => {
   const manager = createOfflineSyncManager({
     schoolId: '10',

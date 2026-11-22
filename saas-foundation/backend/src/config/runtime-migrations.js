@@ -35,6 +35,41 @@ export async function ensureRuntimeMigrations(pool) {
         'ALTER TABLE attendance_logs DROP INDEX uq_attendance_daily_event',
       );
     }
+
+    const [checkConstraints] = await pool.execute(
+      `SELECT tc.CONSTRAINT_NAME, cc.CHECK_CLAUSE
+         FROM information_schema.TABLE_CONSTRAINTS tc
+         LEFT JOIN information_schema.CHECK_CONSTRAINTS cc
+           ON cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA
+          AND cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
+        WHERE tc.TABLE_SCHEMA = DATABASE()
+          AND tc.TABLE_NAME = 'attendance_logs'
+          AND tc.CONSTRAINT_TYPE = 'CHECK'`,
+    );
+    const statusConstraint = checkConstraints.find((constraint) =>
+      constraint.CONSTRAINT_NAME === 'chk_attendance_status_event');
+    const alreadyAllowsPermissions = statusConstraint &&
+      String(statusConstraint.CHECK_CLAUSE).includes('permission_out');
+    if (statusConstraint && !alreadyAllowsPermissions) {
+      await pool.execute(
+        'ALTER TABLE attendance_logs DROP CHECK chk_attendance_status_event',
+      );
+    }
+    if (!alreadyAllowsPermissions) {
+      await pool.execute(
+        `ALTER TABLE attendance_logs ADD CONSTRAINT chk_attendance_status_event CHECK (
+          (event_type = 'check_out' AND attendance_status = 'pulang' AND late_minutes = 0)
+          OR
+          (event_type = 'check_in' AND attendance_status IN ('hadir','terlambat')
+           AND ((attendance_status = 'hadir' AND late_minutes = 0)
+                OR (attendance_status = 'terlambat' AND late_minutes > 0)))
+          OR
+          (event_type = 'permission_out' AND attendance_status = 'izin_keluar' AND late_minutes = 0)
+          OR
+          (event_type = 'permission_in' AND attendance_status = 'izin_masuk' AND late_minutes = 0)
+        )`,
+      );
+    }
   }
 
   const [schoolColumns] = await pool.execute(

@@ -2174,27 +2174,30 @@ export default function App() {
             ignored_ids?: string[];
             ignored?: Array<{ id_unik: string; reason: string }>;
             rejected_ids?: string[];
+            rejected?: Array<{ id_unik: string; reason: string }>;
           }>('/school/attendance/permissions/sync-batch/session', session.token, {
             method: 'POST',
             body: { records: permissions },
           })
-          : { accepted_ids: [], ignored_ids: [], ignored: [], rejected_ids: [] };
+          : { accepted_ids: [], ignored_ids: [], ignored: [], rejected_ids: [], rejected: [] };
         const normalResult = normal.length
           ? await request<{
             accepted_ids: string[];
             ignored_ids?: string[];
             ignored?: Array<{ id_unik: string; reason: string }>;
             rejected_ids?: string[];
+            rejected?: Array<{ id_unik: string; reason: string }>;
           }>('/school/attendance/sync-batch/session', session.token, {
             method: 'POST',
             body: { records: normal },
           })
-          : { accepted_ids: [], ignored_ids: [], ignored: [], rejected_ids: [] };
+          : { accepted_ids: [], ignored_ids: [], ignored: [], rejected_ids: [], rejected: [] };
         return {
           accepted_ids: [...permissionResult.accepted_ids, ...normalResult.accepted_ids],
           ignored_ids: [...(permissionResult.ignored_ids ?? []), ...(normalResult.ignored_ids ?? [])],
           ignored: [...(permissionResult.ignored ?? []), ...(normalResult.ignored ?? [])],
           rejected_ids: [...(permissionResult.rejected_ids ?? []), ...(normalResult.rejected_ids ?? [])],
+          rejected: [...(permissionResult.rejected ?? []), ...(normalResult.rejected ?? [])],
         };
       },
     });
@@ -3798,9 +3801,20 @@ export default function App() {
           ?.map((detail: { id_unik: string; reason: string }) => detail.reason)
           .filter((reason: string, index: number, values: string[]) =>
             values.indexOf(reason) === index);
+        const reasonLabels: Record<string, string> = {
+          participant_not_found: 'peserta tidak ditemukan',
+          invalid_record: 'format record izin tidak valid',
+          invalid_id: 'ID izin tidak valid',
+          invalid_name: 'nama peserta tidak cocok',
+          database_status_constraint: 'status izin ditolak constraint database',
+          non_working_day: 'hari ini ditolak sebagai hari non-operasional',
+          ER_CHECK_CONSTRAINT_VIOLATED: 'constraint database belum mendukung status izin',
+        };
         throw new Error(
           `Sebanyak ${syncResult.rejected_ids.length} record izin ditolak server.${
-            reasons?.length ? ` Alasan: ${reasons.join(', ')}` : ''
+            reasons?.length
+              ? ` Alasan: ${reasons.map((reason: string) => reasonLabels[reason] ?? reason).join(', ')}`
+              : ''
           } Periksa record peserta dan URL Google Sheets.`,
         );
       }

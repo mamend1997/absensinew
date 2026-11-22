@@ -1948,7 +1948,7 @@ const syncPermissionBatch = asyncRoute(async (req, res) => {
                FROM participants p
                JOIN classrooms c ON c.id = p.classroom_id AND c.sekolah_id = p.sekolah_id
               WHERE p.sekolah_id = ? AND p.is_active = TRUE
-                AND p.full_name = ?
+                AND UPPER(TRIM(p.full_name)) = UPPER(TRIM(?))
               LIMIT 2`,
             [schoolId, participantName],
           );
@@ -1998,6 +1998,21 @@ const syncPermissionBatch = asyncRoute(async (req, res) => {
           continue;
         }
       }
+      if (error?.code === 'ER_CHECK_CONSTRAINT_VIOLATED') {
+        rejectedIds.push(id);
+        rejected.push({
+          id_unik: id,
+          reason: 'database_status_constraint',
+        });
+        continue;
+      }
+      console.warn('Permission attendance rejected', {
+        schoolId,
+        id,
+        eventType,
+        participantId,
+        reason: error?.code ?? error?.message ?? 'invalid_record',
+      });
       rejectedIds.push(id);
       rejected.push({
         id_unik: id,
