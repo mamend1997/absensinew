@@ -32,7 +32,7 @@ const sandbox = {
   },
 };
 runInNewContext(
-  `${script}\nthis.buildMonthlySummary = buildMonthlySummary;\nthis.readAttendanceCorrections = readAttendanceCorrections;\nthis.readMonthlySummaryState = readMonthlySummaryState;\nthis.buildSummaryEditCorrections = buildSummaryEditCorrections;\nthis.saveMonthlySummaryCorrections = saveMonthlySummaryCorrections;\nthis.monthSheetName = monthSheetName;\nthis.monthKeyFromSheetName = monthKeyFromSheetName;\nthis.getSummarySheet = getSummarySheet;\nthis.groupAttendanceRecordsByMonth = groupAttendanceRecordsByMonth;\nthis.formatDateLabel = formatDateLabel;\nthis.shouldIncludeAfterClear = shouldIncludeAfterClear;\nthis.unmergeSummaryHeaders = unmergeSummaryHeaders;\nthis.isValidResetPin = isValidResetPin;`,
+  `${script}\nthis.buildMonthlySummary = buildMonthlySummary;\nthis.readAttendanceCorrections = readAttendanceCorrections;\nthis.readMonthlySummaryState = readMonthlySummaryState;\nthis.buildSummaryEditCorrections = buildSummaryEditCorrections;\nthis.saveMonthlySummaryCorrections = saveMonthlySummaryCorrections;\nthis.monthSheetName = monthSheetName;\nthis.monthKeyFromSheetName = monthKeyFromSheetName;\nthis.getSummarySheet = getSummarySheet;\nthis.groupAttendanceRecordsByMonth = groupAttendanceRecordsByMonth;\nthis.formatDateLabel = formatDateLabel;\nthis.shouldIncludeAfterClear = shouldIncludeAfterClear;\nthis.clearSupersededAttendanceClearCorrections = clearSupersededAttendanceClearCorrections;\nthis.unmergeSummaryHeaders = unmergeSummaryHeaders;\nthis.isValidResetPin = isValidResetPin;`,
   sandbox,
 );
 
@@ -597,6 +597,29 @@ test('Apps Script clear cutoff ignores old backfill but accepts new attendance',
     client_timestamp: '2026-11-21 12:59:59.000',
     server_received_at_ms: cutoff + 1000,
   }, cutoff), true);
+});
+
+test('Apps Script clears old manual deletions when a new matching scan is inserted', () => {
+  const corrections = new Map([
+    ['18\u00002026-11-22\u0000check_in', { action: 'clear' }],
+    ['18\u00002026-11-22\u0000late_minutes', { action: 'clear' }],
+    ['18\u00002026-11-22\u0000check_out', { action: 'clear' }],
+    ['19\u00002026-11-22\u0000check_in', { action: 'clear' }],
+    ['18\u00002026-11-21\u0000check_in', { action: 'clear' }],
+    ['20\u00002026-11-22\u0000late_minutes', { action: 'set', value: '5' }],
+  ]);
+  sandbox.clearSupersededAttendanceClearCorrections(corrections, [{
+    participantId: '18',
+    date: '2026-11-22',
+    eventType: 'check_in',
+  }]);
+
+  assert.equal(corrections.has('18\u00002026-11-22\u0000check_in'), false);
+  assert.equal(corrections.has('18\u00002026-11-22\u0000late_minutes'), false);
+  assert.equal(corrections.get('18\u00002026-11-22\u0000check_out').action, 'clear');
+  assert.equal(corrections.get('19\u00002026-11-22\u0000check_in').action, 'clear');
+  assert.equal(corrections.get('18\u00002026-11-21\u0000check_in').action, 'clear');
+  assert.equal(corrections.get('20\u00002026-11-22\u0000late_minutes').value, '5');
 });
 
 test('Apps Script unmerges every complete summary header range before rebuilding', () => {

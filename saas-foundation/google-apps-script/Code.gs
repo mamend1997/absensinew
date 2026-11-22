@@ -217,6 +217,7 @@ function doPost(event) {
     ) || 0;
     const acceptedIds = [];
     const newRows = [];
+    const newAttendanceEvents = [];
     const timeZone = spreadsheet.getSpreadsheetTimeZone() || 'Asia/Jakarta';
     const monthKeys = new Set([currentMonthKey(timeZone)]);
     for (const record of request.records) {
@@ -235,6 +236,14 @@ function doPost(event) {
       const existingRecord = existing.get(record.id_unik);
       if (!existingRecord) {
         newRows.push(DATA_HEADERS.map((header) => safeCell(record[header])));
+        const participantId = String(record.participant_id || '').trim();
+        if (/^[1-9]\d*$/.test(participantId)) {
+          newAttendanceEvents.push({
+            participantId,
+            date: String(record.attendance_date),
+            eventType: record.event_type,
+          });
+        }
         existing.set(record.id_unik, {
           rowNumber: lastRow + newRows.length,
           participantId: String(record.participant_id || ''),
@@ -263,6 +272,7 @@ function doPost(event) {
         summarySheet,
         monthKey,
         recordsByMonth.get(monthKey) || [],
+        newAttendanceEvents,
       );
     });
     dataSheet.hideSheet();
@@ -712,7 +722,14 @@ function saveMonthlySummaryCorrections(sheet, corrections) {
   });
 }
 
-function renderMonthlySummary(spreadsheet, dataSheet, summarySheet, monthKey, allRecords) {
+function renderMonthlySummary(
+  spreadsheet,
+  dataSheet,
+  summarySheet,
+  monthKey,
+  allRecords,
+  newAttendanceEvents = [],
+) {
   const timeZone = spreadsheet.getSpreadsheetTimeZone() || 'Asia/Jakarta';
   const records = allRecords || readAttendanceRecords(dataSheet);
   const previousState = readMonthlySummaryState(summarySheet, timeZone);
@@ -725,6 +742,7 @@ function renderMonthlySummary(spreadsheet, dataSheet, summarySheet, monthKey, al
   }
   const corrections = readLegacyAttendanceCorrections(spreadsheet, timeZone);
   previousState.corrections.forEach((value, key) => corrections.set(key, value));
+  clearSupersededAttendanceClearCorrections(corrections, newAttendanceEvents);
   const summary = buildMonthlySummary(records, timeZone, monthKey, participantOrder, corrections);
   const firstTotalColumn = 3 + summary.dates.length * DATE_HEADERS.length;
   const lastColumn = firstTotalColumn + TOTAL_HEADERS.length - 1;
@@ -925,6 +943,20 @@ function buildSummaryEditCorrections(
 
 function attendanceCorrectionKey(participantId, date, eventType) {
   return `${participantId}\u0000${date}\u0000${eventType}`;
+}
+
+function clearSupersededAttendanceClearCorrections(corrections, newAttendanceEvents) {
+  for (const record of newAttendanceEvents) {
+    const eventTypes = record.eventType === 'check_in'
+      ? ['check_in', 'late_minutes']
+      : record.eventType === 'check_out'
+        ? ['check_out']
+        : [];
+    for (const eventType of eventTypes) {
+      const key = attendanceCorrectionKey(record.participantId, record.date, eventType);
+      if (corrections.get(key)?.action === 'clear') corrections.delete(key);
+    }
+  }
 }
 
 function normalizeCorrectionTime(value, timeZone, rowNumber) {
