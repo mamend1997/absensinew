@@ -5,6 +5,8 @@ import { aggregateAttendanceReport } from '../src/core/attendance-report.js';
 import {
   calculateAttendance as calculateBrowserAttendance,
   createQueuedScan as createBrowserQueuedScan,
+  mergeDailyAttendanceState,
+  remainingScanCooldownMs,
 } from '../../web/school-portal/src/core/attendance.js';
 import {
   assertValidSchoolCode,
@@ -17,6 +19,7 @@ import {
 } from '../src/core/permissions.js';
 import { createOfflineSyncManager } from '../src/core/offline-sync.js';
 import {
+  createOfflineSyncManager as createBrowserOfflineSyncManager,
   isNetworkUnavailableError,
   NetworkUnavailableError,
 } from '../../web/school-portal/src/core/offline-sync.js';
@@ -147,7 +150,7 @@ test('attendance calculation uses a participant-specific entry deadline for its 
   assert.deepEqual(offlineParticipantResult, participantLate);
 });
 
-test('attendance calculation respects non-working days and checkout start', () => {
+test('attendance calculation respects non-working days and records checkout after the scan cooldown', () => {
   const holiday = calculateAttendance({
     eventType: 'check_in',
     clientTimestamp: '2026-11-22T01:00:00.000Z',
@@ -162,7 +165,50 @@ test('attendance calculation respects non-working days and checkout start', () =
     participantId: 'p1',
     settings,
   });
-  assert.equal(earlyCheckout.reason, 'checkout_too_early');
+  assert.deepEqual(earlyCheckout, {
+    date: '2026-11-23',
+    status: 'pulang',
+    lateMinutes: 0,
+  });
+  assert.deepEqual(calculateBrowserAttendance({
+    eventType: 'check_out',
+    clientTimestamp: '2026-11-23T07:59:00.000Z',
+    participantId: 'p1',
+    settings,
+  }), earlyCheckout);
+});
+
+test('scan cooldown blocks scans until the configured interval has elapsed', () => {
+  const lastScanAt = '2026-11-23T01:00:00.000Z';
+  assert.equal(remainingScanCooldownMs(lastScanAt, Date.parse('2026-11-23T01:04:59.000Z'), 5), 1000);
+  assert.equal(remainingScanCooldownMs(lastScanAt, Date.parse('2026-11-23T01:05:00.000Z'), 5), 0);
+  assert.equal(remainingScanCooldownMs(null, Date.parse('2026-11-23T01:00:00.000Z'), 5), 0);
+  assert.throws(() => remainingScanCooldownMs(lastScanAt, Date.now(), 0), /1 dan 60 menit/);
+});
+
+test('local attendance state advances cooldown and retains check-in after repeated check-outs', () => {
+  const checkIn = {
+    id_peserta: 'p1',
+    attendance_date: '2026-11-23',
+    jenis_absen: 'check_in',
+    client_timestamp: '2026-11-23T01:00:00.000Z',
+  };
+  const checkout = {
+    ...checkIn,
+    jenis_absen: 'check_out',
+    client_timestamp: '2026-11-23T01:05:00.000Z',
+  };
+  const repeatedCheckout = {
+    ...checkout,
+    client_timestamp: '2026-11-23T01:10:00.000Z',
+  };
+  const stateAfterCheckIn = mergeDailyAttendanceState(null, checkIn);
+  const stateAfterCheckout = mergeDailyAttendanceState(stateAfterCheckIn, checkout);
+  const stateAfterRepeatedCheckout = mergeDailyAttendanceState(stateAfterCheckout, repeatedCheckout);
+  assert.equal(stateAfterRepeatedCheckout.check_in, true);
+  assert.equal(stateAfterRepeatedCheckout.check_out, true);
+  assert.equal(stateAfterRepeatedCheckout.last_scan_at, repeatedCheckout.client_timestamp);
+  assert.equal(stateAfterRepeatedCheckout.last_scan_type, 'check_out');
 });
 
 test('attendance report groups check-in and check-out into a participant day', () => {
@@ -184,6 +230,17 @@ test('attendance report groups check-in and check-out into a participant day', (
       participant_code: 'P1',
       participant_name: 'Peserta Satu',
       classroom_name: 'Kelas 1',
+      event_type: 'check_out',
+      client_timestamp_utc: '2026-11-23 08:05:00',
+      attendance_status: 'pulang',
+      late_minutes: 0,
+    },
+    {
+      attendance_date: '2026-11-23',
+      participant_id: 'p1',
+      participant_code: 'P1',
+      participant_name: 'Peserta Satu',
+      classroom_name: 'Kelas 1',
       event_type: 'check_in',
       client_timestamp_utc: '2026-11-23 01:10:00',
       attendance_status: 'terlambat',
@@ -193,7 +250,7 @@ test('attendance report groups check-in and check-out into a participant day', (
 
   assert.equal(rows.length, 1);
   assert.equal(rows[0].check_in_at, '2026-11-23 01:10:00');
-  assert.equal(rows[0].check_out_at, '2026-11-23 08:00:00');
+  assert.equal(rows[0].check_out_at, '2026-11-23 08:05:00');
   assert.equal(rows[0].attendance_status, 'terlambat');
   assert.equal(rows[0].late_minutes, 10);
 });
@@ -317,6 +374,38 @@ test('offline queue rejects scans from another tenant', async () => {
     manager.enqueue(scan('5a2c6ec7-33cb-4a2d-b205-7a2be89146e2', '11')),
     /tidak termasuk sekolah/,
   );
+});
+
+test('browser sync removes scans rejected by the server cooldown', async () => {
+  const pending = new Map();
+  const ignored = [];
+  const id = '5a2c6ec7-33cb-4a2d-b205-7a2be89146e2';
+  const manager = createBrowserOfflineSyncManager({
+    schoolId: '10',
+    storage: {
+      async putPendingIfAbsent({ scan: item }) {
+        pending.set(item.id_unik, item);
+        return true;
+      },
+      async listPending() {
+        return [...pending.values()];
+      },
+      async markSynced() {},
+      async markIgnored({ ids }) {
+        ignored.push(...ids);
+        for (const scanId of ids) pending.delete(scanId);
+      },
+    },
+    async sendBatch() {
+      return { accepted_ids: [], ignored_ids: [id] };
+    },
+  });
+  await manager.enqueue(scan(id));
+  const result = await manager.syncPending();
+  assert.deepEqual(result.ignored_ids, [id]);
+  assert.deepEqual(result.rejected_ids, []);
+  assert.deepEqual(ignored, [id]);
+  assert.equal(pending.size, 0);
 });
 
 test('offline scanner recognizes browser fetch failures without hiding API errors', () => {

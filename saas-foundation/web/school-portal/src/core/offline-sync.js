@@ -46,6 +46,7 @@ export function createOfflineSyncManager({ schoolId, storage, sendBatch, batchSi
 
   async function runSync() {
     const acceptedIds = [];
+    const ignoredIds = [];
     const rejectedIds = [];
     let batches = 0;
     while (true) {
@@ -62,23 +63,48 @@ export function createOfflineSyncManager({ schoolId, storage, sendBatch, batchSi
         throw new TypeError('Respons sync harus berisi accepted_ids.');
       }
       const accepted = new Set(response.accepted_ids);
+      const ignoredList = response.ignored_ids ?? [];
+      if (!Array.isArray(ignoredList)) {
+        throw new TypeError('Respons sync berisi ignored_ids yang tidak valid.');
+      }
+      const ignored = new Set(ignoredList);
       if (accepted.size !== response.accepted_ids.length) {
         throw new TypeError('Respons sync berisi id_unik duplikat.');
+      }
+      if (ignored.size !== ignoredList.length || [...accepted].some((id) => ignored.has(id))) {
+        throw new TypeError('Respons sync berisi id_unik ignored yang duplikat atau diterima.');
       }
       for (const id of accepted) {
         if (!submittedIds.has(id)) throw new Error('Server menerima id_unik yang tidak dikirim pada batch ini.');
       }
+      for (const id of ignored) {
+        if (!submittedIds.has(id)) throw new Error('Server mengabaikan id_unik yang tidak dikirim pada batch ini.');
+      }
       const newlyAccepted = [...accepted];
-      const rejected = [...submittedIds].filter((id) => !accepted.has(id));
+      const newlyIgnored = [...ignored];
+      const rejected = [...submittedIds].filter((id) => !accepted.has(id) && !ignored.has(id));
+      if (newlyIgnored.length && typeof storage.markIgnored !== 'function') {
+        throw new TypeError('Adapter storage harus mendukung penghapusan scan yang diabaikan server.');
+      }
       if (newlyAccepted.length) {
         await storage.markSynced({ sekolah_id: String(schoolId), ids: newlyAccepted });
         acceptedIds.push(...newlyAccepted);
       }
+      if (newlyIgnored.length) {
+        await storage.markIgnored({ sekolah_id: String(schoolId), ids: newlyIgnored });
+        ignoredIds.push(...newlyIgnored);
+      }
       rejectedIds.push(...rejected);
       batches += 1;
-      if (newlyAccepted.length < pending.length) break;
+      if (newlyAccepted.length + newlyIgnored.length < pending.length) break;
     }
-    return { accepted_ids: acceptedIds, rejected_ids: rejectedIds, batches };
+
+    return {
+      accepted_ids: acceptedIds,
+      ignored_ids: ignoredIds,
+      rejected_ids: rejectedIds,
+      batches,
+    };
   }
 
   function syncPending() {

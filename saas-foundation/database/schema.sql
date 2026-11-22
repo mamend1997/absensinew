@@ -402,6 +402,7 @@ CREATE TABLE IF NOT EXISTS operational_settings (
     check_in_deadline TIME NOT NULL DEFAULT '08:00:00',
     lateness_tolerance_minutes SMALLINT UNSIGNED NOT NULL DEFAULT 0,
     check_out_start TIME NOT NULL DEFAULT '15:00:00',
+    scan_cooldown_minutes SMALLINT UNSIGNED NOT NULL DEFAULT 5,
     scan_welcome_message VARCHAR(255) NOT NULL DEFAULT 'Pindai kartu atau barcode peserta saat melaksanakan absensi',
     scan_success_message VARCHAR(255) NOT NULL DEFAULT 'Terima kasih, {name}. Absensi {status} sudah dicatat.',
     scan_failure_message VARCHAR(255) NOT NULL DEFAULT 'Maaf, absensi {name} gagal. {reason}.',

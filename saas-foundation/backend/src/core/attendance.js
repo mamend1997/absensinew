@@ -68,13 +68,6 @@ export function calculateAttendance({
   }
 
   if (eventType === 'check_out') {
-    const deadline = parseTime(
-      schedule?.check_out_start ?? settings.check_out_start,
-      'check_out_start',
-    );
-    if (seconds < deadline) {
-      return { date, status: null, lateMinutes: 0, reason: 'checkout_too_early' };
-    }
     return { date, status: 'pulang', lateMinutes: 0 };
   }
 

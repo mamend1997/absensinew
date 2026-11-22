@@ -53,14 +53,7 @@ export function calculateAttendance({ eventType, clientTimestamp, participantId,
   const holiday = settings.holidays?.some((item) => item.date === date);
 
   if (!working || holiday) return { date, status: null, lateMinutes: 0, reason: 'non_working_day' };
-  if (eventType === 'check_out') {
-    const deadline = parseTime(
-      schedule?.check_out_start ?? settings.check_out_start,
-      'check_out_start',
-    );
-    if (seconds < deadline) return { date, status: null, lateMinutes: 0, reason: 'checkout_too_early' };
-    return { date, status: 'pulang', lateMinutes: 0 };
-  }
+  if (eventType === 'check_out') return { date, status: 'pulang', lateMinutes: 0 };
 
   const override = settings.participant_overrides?.find((item) =>
     String(item.participant_id) === String(participantId) &&
@@ -81,6 +74,36 @@ export function calculateAttendance({ eventType, clientTimestamp, participantId,
     date,
     status: 'terlambat',
     lateMinutes: Math.ceil((seconds - threshold) / 60),
+  };
+}
+
+export function remainingScanCooldownMs(lastScanAt, now, cooldownMinutes) {
+  if (!Number.isInteger(cooldownMinutes) || cooldownMinutes < 1 || cooldownMinutes > 60) {
+    throw new RangeError('Jeda scan harus antara 1 dan 60 menit.');
+  }
+  if (!Number.isFinite(now)) throw new TypeError('Waktu scan saat ini tidak valid.');
+  if (lastScanAt == null) return 0;
+  const lastScanTime = Date.parse(lastScanAt);
+  if (!Number.isFinite(lastScanTime)) throw new TypeError('Waktu scan terakhir tidak valid.');
+  return Math.max(0, lastScanTime + cooldownMinutes * 60_000 - now);
+}
+
+export function mergeDailyAttendanceState(current, scan) {
+  const scanTime = Date.parse(scan.client_timestamp);
+  if (!Number.isFinite(scanTime)) throw new TypeError('Waktu scan tidak valid.');
+  const previousTime = current?.last_scan_at == null ? null : Date.parse(current.last_scan_at);
+  if (previousTime !== null && !Number.isFinite(previousTime)) {
+    throw new TypeError('Waktu scan tersimpan tidak valid.');
+  }
+  const isLatest = previousTime === null || scanTime >= previousTime;
+  return {
+    key: `${scan.id_peserta}:${scan.attendance_date}`,
+    participant_id: String(scan.id_peserta),
+    attendance_date: scan.attendance_date,
+    check_in: Boolean(current?.check_in || scan.jenis_absen === 'check_in'),
+    check_out: Boolean(current?.check_out || scan.jenis_absen === 'check_out'),
+    last_scan_at: isLatest ? new Date(scanTime).toISOString() : current.last_scan_at,
+    last_scan_type: isLatest ? scan.jenis_absen : current.last_scan_type,
   };
 }
 

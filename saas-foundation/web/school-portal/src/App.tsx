@@ -7,6 +7,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import {
   calculateAttendance,
   createQueuedScan,
+  mergeDailyAttendanceState,
+  remainingScanCooldownMs,
 } from './core/attendance.js';
 import { extractSchoolAccessToken } from './core/auth-session.js';
 import {
@@ -240,6 +242,7 @@ interface OperationalSettings {
   check_in_deadline: string;
   lateness_tolerance_minutes: number;
   check_out_start: string;
+  scan_cooldown_minutes: number;
   scan_welcome_message: string;
   scan_success_message: string;
   scan_failure_message: string;
@@ -324,6 +327,7 @@ interface QueuedScan {
   status_kehadiran: string;
   menit_terlambat: number;
   status_sync: 'pending' | 'synced';
+  local_previous_state?: DailyAttendanceState | null;
 }
 interface DailyAttendanceState {
   key: string;
@@ -331,12 +335,15 @@ interface DailyAttendanceState {
   attendance_date: string;
   check_in: boolean;
   check_out: boolean;
+  last_scan_at?: string;
+  last_scan_type?: QueuedScan['jenis_absen'];
 }
 interface ScannerPreferences {
   cameraFacing: 'user' | 'environment';
   cameraRotationMode: 'auto' | 'manual';
   cameraManualRotation: number;
   cameraMirror: boolean;
+  cameraOrientationPresetVersion: number;
   scanSpeed: 'fast' | 'balanced';
   usbScannerEnabled: boolean;
   screenSleepMinutes: number;
@@ -380,6 +387,7 @@ const initialSettings: OperationalSettings = {
   check_in_deadline: '08:00:00',
   lateness_tolerance_minutes: 0,
   check_out_start: '15:00:00',
+  scan_cooldown_minutes: 5,
   scan_welcome_message: 'Pindai kartu atau barcode peserta saat melaksanakan absensi',
   scan_success_message: 'Terima kasih, {name}. Absensi {status} sudah dicatat.',
   scan_failure_message: 'Maaf, absensi {name} gagal. {reason}.',
@@ -389,9 +397,10 @@ const initialSettings: OperationalSettings = {
 };
 const initialScannerPreferences: ScannerPreferences = {
   cameraFacing: 'environment',
-  cameraRotationMode: 'auto',
-  cameraManualRotation: 0,
+  cameraRotationMode: 'manual',
+  cameraManualRotation: 90,
   cameraMirror: true,
+  cameraOrientationPresetVersion: 2,
   scanSpeed: 'fast',
   usbScannerEnabled: true,
   screenSleepMinutes: 1,
@@ -627,11 +636,18 @@ function operationalSettingsFromResponse(result: unknown): OperationalSettings {
   const payload = result && typeof result === 'object'
     ? (result as Record<string, unknown>).settings ?? result
     : {};
-  return {
+  const parsed = {
     ...initialSettings,
     ...(payload as Partial<OperationalSettings>),
     participant_overrides: unwrapArray<ParticipantSchedule>(payload, 'participant_overrides')
       .map((item) => ({ ...item, participant_id: String(item.participant_id) })),
+  };
+  const cooldownMinutes = Number(parsed.scan_cooldown_minutes);
+  return {
+    ...parsed,
+    scan_cooldown_minutes: Number.isInteger(cooldownMinutes) && cooldownMinutes >= 1 && cooldownMinutes <= 60
+      ? cooldownMinutes
+      : initialSettings.scan_cooldown_minutes,
   };
 }
 
@@ -863,7 +879,8 @@ export default function App() {
   const [scannerUnlockBusy, setScannerUnlockBusy] = useState(false);
   const [holidayForm, setHolidayForm] = useState({ date: '', name: '' });
   const [cameraActive, setCameraActive] = useState(false);
-  const [cameraRotation, setCameraRotation] = useState(0);
+  const [cameraRotation, setCameraRotation] = useState(initialScannerPreferences.cameraManualRotation);
+  const [cameraControlsExpanded, setCameraControlsExpanded] = useState(false);
   const [cameraFrameSize, setCameraFrameSize] = useState({ width: 0, height: 0 });
   const [scannerIdle, setScannerIdle] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -875,7 +892,7 @@ export default function App() {
   const cameraFrameRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<{ stop: () => void } | null>(null);
   const cameraStartGenerationRef = useRef(0);
-  const cameraRotationRef = useRef(0);
+  const cameraRotationRef = useRef(initialScannerPreferences.cameraManualRotation);
   const autoCameraRotationRef = useRef(0);
   const cameraScreenAngleRef = useRef(0);
   const deviceOrientationRef = useRef<{ beta: number | null; gamma: number | null }>({
@@ -892,6 +909,7 @@ export default function App() {
   const scanFeedbackTimerRef = useRef<number | undefined>(undefined);
   const scanPopupTimerRef = useRef<number | undefined>(undefined);
   const lastScanAtRef = useRef(new Map<string, number>());
+  const scanInFlightParticipantRef = useRef(new Set<string>());
   const confirmationResolverRef = useRef<((accepted: boolean) => void) | null>(null);
   const reportAbortRef = useRef<AbortController | null>(null);
   useEffect(() => () => {
@@ -1260,19 +1278,29 @@ export default function App() {
     setScannerPreferencesReady(false);
     setScannerPreferences(initialScannerPreferences);
     scannerPreferencesRef.current = initialScannerPreferences;
-    cameraRotationRef.current = 0;
+    cameraRotationRef.current = initialScannerPreferences.cameraManualRotation;
     autoCameraRotationRef.current = 0;
     cameraScreenAngleRef.current = window.screen.orientation?.angle ?? 0;
     deviceOrientationRef.current = { beta: null, gamma: null };
-    setCameraRotation(0);
+    setCameraRotation(initialScannerPreferences.cameraManualRotation);
     void database(session.school.id)
       .then(async (db) => {
         const preferences = await db.get('scannerPreferences', 'default');
         if (!active || !preferences) return;
         const restored = { ...initialScannerPreferences, ...preferences };
-        restored.cameraRotationMode = preferences.cameraRotationMode === 'manual' ? 'manual' : 'auto';
-        restored.cameraManualRotation = normalizeCameraRotation(Number(preferences.cameraManualRotation));
-        restored.cameraMirror = typeof preferences.cameraMirror === 'boolean'
+        const migrateCameraPreset =
+          Number(preferences.cameraOrientationPresetVersion ?? 0) <
+          initialScannerPreferences.cameraOrientationPresetVersion;
+        restored.cameraOrientationPresetVersion = initialScannerPreferences.cameraOrientationPresetVersion;
+        restored.cameraRotationMode = migrateCameraPreset
+          ? initialScannerPreferences.cameraRotationMode
+          : preferences.cameraRotationMode === 'manual' ? 'manual' : 'auto';
+        restored.cameraManualRotation = migrateCameraPreset
+          ? initialScannerPreferences.cameraManualRotation
+          : normalizeCameraRotation(Number(preferences.cameraManualRotation));
+        restored.cameraMirror = migrateCameraPreset
+          ? initialScannerPreferences.cameraMirror
+          : typeof preferences.cameraMirror === 'boolean'
           ? preferences.cameraMirror
           : initialScannerPreferences.cameraMirror;
         restored.screenSleepMinutes = Number.isFinite(Number(restored.screenSleepMinutes))
@@ -1434,7 +1462,7 @@ export default function App() {
     setClassrooms([]);
     const cachedSettings = canReadSettings ? await db.get('settings', 'operational') : undefined;
     if (cachedSettings && canReadSettings) {
-      const normalizedCachedSettings = { ...initialSettings, ...cachedSettings };
+      const normalizedCachedSettings = operationalSettingsFromResponse(cachedSettings);
       setSettings(normalizedCachedSettings);
       setOperationalForm(normalizedCachedSettings);
     }
@@ -1524,13 +1552,7 @@ export default function App() {
         if (scan.status_sync !== 'synced') continue;
         const key = dailyAttendanceKey(scan.id_peserta, scan.attendance_date);
         const previous = await attendanceState.get(key);
-        await attendanceState.put({
-          key,
-          participant_id: scan.id_peserta,
-          attendance_date: scan.attendance_date,
-          check_in: Boolean(previous?.check_in || scan.jenis_absen === 'check_in'),
-          check_out: Boolean(previous?.check_out || scan.jenis_absen === 'check_out'),
-        });
+        await attendanceState.put(mergeDailyAttendanceState(previous, scan));
         await queue.delete(scan.id_unik);
       }
       await transaction.done;
@@ -1737,7 +1759,9 @@ export default function App() {
         },
         async listPending({ limit }: { sekolah_id: string; limit: number }) {
           const db = await database(session.school.id);
-          return (await db.getAllFromIndex('queue', 'by-status', 'pending')).slice(0, limit);
+          return (await db.getAllFromIndex('queue', 'by-status', 'pending'))
+            .sort((left, right) => left.client_timestamp.localeCompare(right.client_timestamp))
+            .slice(0, limit);
         },
         async markSynced({ ids }: { sekolah_id: string; ids: string[] }) {
           const db = await database(session.school.id);
@@ -1750,22 +1774,41 @@ export default function App() {
             await queue.put({ ...record, status_sync: 'synced' });
             const key = dailyAttendanceKey(record.id_peserta, record.attendance_date);
             const previous = await attendanceState.get(key);
-            await attendanceState.put({
-              key,
-              participant_id: record.id_peserta,
-              attendance_date: record.attendance_date,
-              check_in: Boolean(previous?.check_in || record.jenis_absen === 'check_in'),
-              check_out: Boolean(previous?.check_out || record.jenis_absen === 'check_out'),
-            });
+            await attendanceState.put(mergeDailyAttendanceState(previous, record));
+          }
+          await tx.done;
+        },
+        async markIgnored({ ids }: { sekolah_id: string; ids: string[] }) {
+          const db = await database(session.school.id);
+          const tx = db.transaction(['queue', 'attendanceState'], 'readwrite');
+          const queue = tx.objectStore('queue');
+          const attendanceState = tx.objectStore('attendanceState');
+          const ignoredRecords: QueuedScan[] = [];
+          for (const id of ids) {
+            const record = await queue.get(id);
+            if (record) ignoredRecords.push(record);
+          }
+          ignoredRecords.sort((left, right) =>
+            right.client_timestamp.localeCompare(left.client_timestamp),
+          );
+          for (const record of ignoredRecords) {
+            await queue.delete(record.id_unik);
+            const key = dailyAttendanceKey(record.id_peserta, record.attendance_date);
+            const current = await attendanceState.get(key);
+            if (current?.last_scan_at !== record.client_timestamp) continue;
+            if (record.local_previous_state) {
+              await attendanceState.put(record.local_previous_state);
+            }
           }
           await tx.done;
         },
       },
       async sendBatch({ records }: { sekolah_id: string; records: QueuedScan[] }) {
-        return request<{ accepted_ids: string[]; rejected_ids?: string[] }>(
+        const serverRecords = records.map(({ local_previous_state: _localState, ...record }) => record);
+        return request<{ accepted_ids: string[]; ignored_ids?: string[]; rejected_ids?: string[] }>(
           '/school/attendance/sync-batch/session',
           session.token,
-          { method: 'POST', body: { records } },
+          { method: 'POST', body: { records: serverRecords } },
         );
       },
     });
@@ -1774,8 +1817,11 @@ export default function App() {
   async function syncPending() {
     const result = await syncManager().syncPending();
     await refreshPendingCount();
-    if (result.accepted_ids.length) {
+    if (result.accepted_ids.length || result.ignored_ids.length) {
       setQueueRefreshVersion((current) => current + 1);
+    }
+    if (result.ignored_ids.length) {
+      setMessage('Scan tidak dicatat karena peserta baru saja melakukan scan di perangkat lain; jeda scan tetap berlaku.');
     }
     if (result.batches > 0) setOfflineMode(false);
     return result;
@@ -1902,7 +1948,9 @@ export default function App() {
     const previous = lastScanAtRef.current.get(value) ?? 0;
     if (now - previous < 3000) return false;
     lastScanAtRef.current.set(value, now);
+    const scanTimestamp = new Date(now).toISOString();
     let participant: Participant | undefined;
+    let lockedParticipantId: string | null = null;
     try {
       const db = await database(session.school.id);
       participant = findParticipantByScanCode(participants, value);
@@ -1932,10 +1980,16 @@ export default function App() {
         throw new Error('QR/barcode tidak ditemukan di master peserta lokal. Hubungkan internet dan sinkronkan master peserta terlebih dahulu.');
       }
       const matchedParticipant = participant;
+      const participantKey = String(matchedParticipant.id);
+      if (scanInFlightParticipantRef.current.has(participantKey)) {
+        throw new Error('Scan peserta ini sedang diproses.');
+      }
+      scanInFlightParticipantRef.current.add(participantKey);
+      lockedParticipantId = participantKey;
       const allScans = await db.getAll('queue');
       let initialCalculation = calculateAttendance({
         eventType: 'check_in',
-        clientTimestamp: new Date().toISOString(),
+        clientTimestamp: scanTimestamp,
         participantId: matchedParticipant.id,
         settings: scanSettings,
       }) as ScanResult;
@@ -1948,7 +2002,7 @@ export default function App() {
           await db.put('settings', scanSettings, 'operational');
           initialCalculation = calculateAttendance({
             eventType: 'check_in',
-            clientTimestamp: new Date().toISOString(),
+            clientTimestamp: scanTimestamp,
             participantId: matchedParticipant.id,
             settings: scanSettings,
           }) as ScanResult;
@@ -1962,31 +2016,45 @@ export default function App() {
         'attendanceState',
         dailyAttendanceKey(matchedParticipant.id, initialCalculation.date),
       );
-      const hasCheckIn = allScans.some((record) =>
-        record.id_peserta === matchedParticipant.id &&
-        record.attendance_date === initialCalculation.date &&
+      const participantScans = allScans.filter((record) =>
+        String(record.id_peserta) === participantKey &&
+        record.attendance_date === initialCalculation.date,
+      );
+      const stateBeforeScan = participantScans.reduce(
+        (current, record) => mergeDailyAttendanceState(current, record),
+        dailyState ?? null,
+      );
+      let lastScanAt = dailyState?.last_scan_at ?? '';
+      for (const record of participantScans) {
+        if (record.client_timestamp > lastScanAt) lastScanAt = record.client_timestamp;
+      }
+      const cooldownMinutes = Number(scanSettings.scan_cooldown_minutes ?? 5);
+      const remainingCooldown = remainingScanCooldownMs(lastScanAt || null, now, cooldownMinutes);
+      if (remainingCooldown > 0) {
+        const totalSeconds = Math.ceil(remainingCooldown / 1000);
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = totalSeconds % 60;
+        const wait = [
+          ...(minutes ? [`${minutes} menit`] : []),
+          ...(seconds ? [`${seconds} detik`] : []),
+        ].join(' ');
+        throw new Error(`Tunggu ${wait} sebelum scan peserta ini kembali.`);
+      }
+      const hasCheckIn = participantScans.some((record) =>
         record.jenis_absen === 'check_in',
       ) || Boolean(dailyState?.check_in);
       const eventType = hasCheckIn ? 'check_out' : 'check_in';
-      const duplicate = allScans.some((record) =>
-        record.id_peserta === matchedParticipant.id &&
-        record.attendance_date === initialCalculation.date &&
-        record.jenis_absen === eventType,
-      ) || Boolean(eventType === 'check_in' ? dailyState?.check_in : dailyState?.check_out);
-      if (duplicate) throw new Error('Scan jenis ini sudah tercatat di perangkat untuk hari ini.');
 
       const calculation = eventType === 'check_in'
         ? initialCalculation
         : calculateAttendance({
           eventType,
-          clientTimestamp: new Date().toISOString(),
+          clientTimestamp: scanTimestamp,
           participantId: matchedParticipant.id,
           settings: scanSettings,
         }) as ScanResult;
       if (calculation.reason) {
-        throw new Error(calculation.reason === 'checkout_too_early'
-          ? 'Waktu pulang belum dimulai.'
-          : 'Hari ini bukan hari operasional sekolah.');
+        throw new Error('Hari ini bukan hari operasional sekolah.');
       }
       const scan = createQueuedScan({
         sekolah_id: String(session.school.id),
@@ -1994,10 +2062,19 @@ export default function App() {
         id_perangkat: null,
         jenis_absen: eventType,
         scan_method: scanMethod,
+        client_timestamp: scanTimestamp,
         calculation,
       }) as QueuedScan;
       scan.participant_name = matchedParticipant.full_name;
+      scan.local_previous_state = stateBeforeScan;
       await syncManager().enqueue(scan);
+      const stateTransaction = db.transaction('attendanceState', 'readwrite');
+      const attendanceStateStore = stateTransaction.objectStore('attendanceState');
+      const latestState = await attendanceStateStore.get(
+        dailyAttendanceKey(matchedParticipant.id, scan.attendance_date),
+      );
+      await attendanceStateStore.put(mergeDailyAttendanceState(latestState, scan));
+      await stateTransaction.done;
       const attendanceStatus = calculation.status === 'check_out' || calculation.status === 'pulang'
         ? 'pulang'
         : calculation.status === 'terlambat'
@@ -2009,11 +2086,21 @@ export default function App() {
         reason: '',
       });
       showScanFeedback(successMessage, true);
-      void announceAttendance(successMessage, true);
       await refreshPendingCount();
       if (online) {
         try {
-          await syncPending();
+          const syncResult = await syncPending();
+          if (syncResult.ignored_ids.includes(scan.id_unik)) {
+            const reason = 'Scan tidak dicatat karena peserta baru saja melakukan scan di perangkat lain.';
+            const failureMessage = attendanceMessage(scanSettings.scan_failure_message, {
+              name: matchedParticipant.full_name,
+              status: '',
+              reason,
+            });
+            showScanFeedback(failureMessage, false);
+            void announceAttendance(failureMessage, false);
+            return false;
+          }
         } catch (reason) {
           if (reason instanceof ApiError && reason.code === 'SUBSCRIPTION_EXPIRED') {
             markSubscriptionExpired();
@@ -2028,6 +2115,7 @@ export default function App() {
           console.warn('Scan tetap tersimpan lokal; sinkronisasi akan dicoba ulang.', reason);
         }
       }
+      void announceAttendance(successMessage, true);
       return true;
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : 'Scan gagal diproses.';
@@ -2039,6 +2127,8 @@ export default function App() {
       showScanFeedback(failureMessage, false);
       void announceAttendance(failureMessage, false);
       return false;
+    } finally {
+      if (lockedParticipantId) scanInFlightParticipantRef.current.delete(lockedParticipantId);
     }
   }
 
@@ -3863,14 +3953,15 @@ export default function App() {
                   <label>Zona waktu<input value={operationalForm.timezone} onChange={(event) => setOperationalForm((current) => ({ ...current, timezone: event.target.value }))} /></label>
                   <label>Batas masuk default<input type="time" required value={operationalForm.check_in_deadline.slice(0, 5)} onChange={(event) => setOperationalForm((current) => ({ ...current, check_in_deadline: `${event.target.value}:00` }))} /></label>
                   <label>Toleransi telat default (menit)<input type="number" min={0} max={180} value={operationalForm.lateness_tolerance_minutes} onChange={(event) => setOperationalForm((current) => ({ ...current, lateness_tolerance_minutes: Number(event.target.value) }))} /></label>
-                  <label>Mulai pulang default<input type="time" required value={operationalForm.check_out_start.slice(0, 5)} onChange={(event) => setOperationalForm((current) => ({ ...current, check_out_start: `${event.target.value}:00` }))} /></label>
+                  <label>Jeda scan per peserta (menit)<input type="number" min={1} max={60} required value={operationalForm.scan_cooldown_minutes} onChange={(event) => setOperationalForm((current) => ({ ...current, scan_cooldown_minutes: Number(event.target.value) }))} /></label>
+                  <label>Mulai pulang default (referensi)<input type="time" required value={operationalForm.check_out_start.slice(0, 5)} onChange={(event) => setOperationalForm((current) => ({ ...current, check_out_start: `${event.target.value}:00` }))} /></label>
                   <label>PIN scanner (4–6 angka)
                     <input type="password" inputMode="numeric" pattern="\d{4,6}" minLength={4} maxLength={6} value={scannerPinForm} onChange={(event) => setScannerPinForm(event.target.value.replace(/\D/g, '').slice(0, 6))} placeholder={operationalForm.scanner_pin_configured ? 'PIN tersimpan — kosongkan untuk tidak mengubah' : 'Belum ada PIN khusus; awal 1234'} />
                   </label>
                 </div>
                 <div>
                   <h2>Jadwal mingguan</h2>
-                  <p className="muted">Centang hari kerja lalu atur batas masuk, toleransi, dan mulai pulang masing-masing hari.</p>
+                  <p className="muted">Scan pertama dicatat masuk; scan berikutnya setelah jeda dicatat pulang dan memperbarui jam pulang sebelumnya. Jeda berlaku per peserta pada hari yang sama dan dapat diatur 1–60 menit. Jam mulai pulang tidak membatasi scan.</p>
                 </div>
                 <div className="schedule-list">{weekDays.map((name, weekday) => {
                   const schedule = operationalForm.weekly_schedules.find(
@@ -3919,7 +4010,7 @@ export default function App() {
                         })}
                       />
                     </label>
-                    <label>Mulai pulang
+                    <label>Mulai pulang (referensi)
                       <input
                         type="time"
                         required={workingDay}

@@ -122,7 +122,8 @@ function requireSchoolAdmin(req) {
 
 async function loadAttendanceSettings(schoolId) {
   const [[base]] = await pool.execute(
-    `SELECT timezone, check_in_deadline, lateness_tolerance_minutes, check_out_start
+    `SELECT timezone, check_in_deadline, lateness_tolerance_minutes, check_out_start,
+            scan_cooldown_minutes
        FROM operational_settings WHERE sekolah_id = ?`,
     [schoolId],
   );
@@ -1078,7 +1079,7 @@ router.get('/settings', requireSchoolUser,
   requireAnyPermission('settings.operational.view', 'participants.view', 'participants.read', 'participants.manage', 'scanner.use'), asyncRoute(async (req, res) => {
   const [[settings]] = await pool.execute(
     `SELECT timezone, check_in_deadline, lateness_tolerance_minutes, check_out_start,
-            scan_welcome_message, scan_success_message, scan_failure_message,
+            scan_cooldown_minutes, scan_welcome_message, scan_success_message, scan_failure_message,
             scanner_pin_hash IS NOT NULL AS scanner_pin_configured
        FROM operational_settings WHERE sekolah_id = ?`,
     [req.schoolUser.sekolah_id],
@@ -1120,6 +1121,11 @@ router.put('/settings', requireSchoolUser, requirePermission('settings.operation
   try { new Intl.DateTimeFormat('en', { timeZone: timezone }); } catch { throw fail(400, 'Timezone tidak valid.'); }
   const tolerance = body.lateness_tolerance_minutes ?? 0;
   if (!Number.isInteger(tolerance) || tolerance < 0 || tolerance > 180) throw fail(400, 'Toleransi harus 0–180 menit.');
+  const scanCooldownMinutes = body.scan_cooldown_minutes;
+  if (scanCooldownMinutes !== undefined &&
+      (!Number.isInteger(scanCooldownMinutes) || scanCooldownMinutes < 1 || scanCooldownMinutes > 60)) {
+    throw fail(400, 'Jeda scan harus antara 1 dan 60 menit.', 'VALIDATION_ERROR');
+  }
   const checkIn = body.check_in_deadline ?? '08:00:00';
   const checkOut = body.check_out_start ?? '15:00:00';
   const timePattern = /^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/;
@@ -1159,6 +1165,7 @@ router.put('/settings', requireSchoolUser, requirePermission('settings.operation
     await connection.execute(
       `UPDATE operational_settings SET timezone = ?, check_in_deadline = ?,
         lateness_tolerance_minutes = ?, check_out_start = ?,
+        scan_cooldown_minutes = COALESCE(?, scan_cooldown_minutes),
         scan_welcome_message = COALESCE(?, scan_welcome_message),
         scan_success_message = COALESCE(?, scan_success_message),
         scan_failure_message = COALESCE(?, scan_failure_message),
@@ -1169,6 +1176,7 @@ router.put('/settings', requireSchoolUser, requirePermission('settings.operation
         checkIn,
         tolerance,
         checkOut,
+        scanCooldownMinutes ?? null,
         ...scanMessages,
         req.schoolUser.id,
         req.schoolUser.sekolah_id,
@@ -1729,8 +1737,13 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
   }
   const acceptedIds = [];
   const rejectedIds = [];
+  const ignoredIds = [];
   const rejected = [];
   const settings = await loadAttendanceSettings(schoolId);
+  const cooldownMinutes = Number(settings.scan_cooldown_minutes ?? 5);
+  if (!Number.isInteger(cooldownMinutes) || cooldownMinutes < 1 || cooldownMinutes > 60) {
+    throw fail(500, 'Jeda scan pada pengaturan sekolah tidak valid.', 'CONFIGURATION_ERROR');
+  }
   const seen = new Set();
   for (const record of records) {
     const id = record?.id_unik;
@@ -1779,8 +1792,45 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
       const recipientPhone = normalizeLateAttendanceRecipientPhone(participant.participant_phone);
       const timestamp = new Date(record.client_timestamp).toISOString()
         .slice(0, 23).replace('T', ' ');
+      const cooldownThreshold = new Date(
+        Date.parse(record.client_timestamp) - cooldownMinutes * 60_000,
+      ).toISOString().slice(0, 23).replace('T', ' ');
       try {
-        await inTransaction(async (connection) => {
+        const syncResult = await inTransaction(async (connection) => {
+          const [existingId] = await connection.execute(
+            `SELECT participant_id, event_type, attendance_date
+               FROM attendance_logs
+              WHERE sekolah_id = ? AND id_unik = ?
+              FOR UPDATE`,
+            [schoolId, id],
+          );
+          if (existingId.length) {
+            if (String(existingId[0].participant_id) === String(participant.id) &&
+                existingId[0].event_type === eventType &&
+                existingId[0].attendance_date === calculation.date) {
+              return 'already-saved';
+            }
+            throw new Error('daily_duplicate');
+          }
+          if (eventType === 'check_out') {
+            const [checkInRows] = await connection.execute(
+              `SELECT id FROM attendance_logs
+                WHERE sekolah_id = ? AND participant_id = ?
+                  AND attendance_date = ? AND event_type = 'check_in'
+                LIMIT 1 FOR UPDATE`,
+              [schoolId, participant.id, calculation.date],
+            );
+            if (!checkInRows.length) return 'ignored';
+            const [recentScans] = await connection.execute(
+              `SELECT id FROM attendance_logs
+                WHERE sekolah_id = ? AND participant_id = ? AND attendance_date = ?
+                  AND client_timestamp_utc > ?
+                ORDER BY client_timestamp_utc DESC, id DESC
+                FOR UPDATE`,
+              [schoolId, participant.id, calculation.date, cooldownThreshold],
+            );
+            if (recentScans.length) return 'ignored';
+          }
           const [result] = await connection.execute(
             `INSERT INTO attendance_logs
               (sekolah_id, id_unik, participant_id, device_id, recorded_by, participant_code_snapshot,
@@ -1810,7 +1860,12 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
               message,
             });
           }
+          return 'saved';
         });
+        if (syncResult === 'ignored') {
+          ignoredIds.push(id);
+          continue;
+        }
       } catch (error) {
         if (error.code !== 'ER_DUP_ENTRY') throw error;
         const [existing] = await pool.execute(
@@ -1834,6 +1889,35 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
           [schoolId, participant.id, calculation.date, eventType],
         );
         if (sameDayEvent.length) {
+          if (eventType === 'check_out') {
+            await pool.execute(
+              `UPDATE attendance_logs
+                  SET id_unik = ?, device_id = ?, recorded_by = ?,
+                      participant_code_snapshot = ?, participant_name_snapshot = ?,
+                      classroom_name_snapshot = ?, client_timestamp_utc = ?,
+                      server_received_at = CURRENT_TIMESTAMP(3), attendance_status = ?,
+                      late_minutes = ?, scan_method = ?
+                WHERE sekolah_id = ? AND participant_id = ?
+                  AND attendance_date = ? AND event_type = 'check_out'
+                  AND client_timestamp_utc < ?`,
+              [
+                id,
+                deviceId,
+                req.schoolUser?.id ?? null,
+                participant.participant_code,
+                participant.full_name,
+                participant.classroom_name,
+                timestamp,
+                calculation.status,
+                calculation.lateMinutes,
+                scanMethod,
+                schoolId,
+                participant.id,
+                calculation.date,
+                timestamp,
+              ],
+            );
+          }
           acceptedIds.push(id);
           continue;
         }
@@ -1844,7 +1928,7 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
       rejectedIds.push(id);
       rejected.push({
         id_unik: id,
-        reason: ['participant_not_found', 'non_working_day', 'checkout_too_early', 'daily_duplicate']
+        reason: ['participant_not_found', 'non_working_day', 'daily_duplicate']
           .includes(error.message) ? error.message : 'invalid_record',
       });
     }
@@ -1852,7 +1936,7 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
   if (deviceId) {
     await pool.execute('UPDATE scanner_devices SET last_synced_at = CURRENT_TIMESTAMP WHERE id = ?', [deviceId]);
   }
-  res.json({ accepted_ids: acceptedIds, rejected_ids: rejectedIds, rejected });
+  res.json({ accepted_ids: acceptedIds, ignored_ids: ignoredIds, rejected_ids: rejectedIds, rejected });
 });
 
 router.post('/attendance/sync-batch', requireDevice, syncAttendanceBatch);
