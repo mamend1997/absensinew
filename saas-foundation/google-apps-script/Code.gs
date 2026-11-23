@@ -1485,12 +1485,13 @@ function attendanceCorrectionKey(participantId, date, eventType) {
 function clearSupersededAttendanceClearCorrections(corrections, newAttendanceEvents) {
   for (const record of newAttendanceEvents) {
     const eventTypes = record.eventType === 'check_in'
-      ? ['check_in', 'late_minutes']
+      ? ['check_in', 'late_minutes', 'total_late_minutes', 'total_attendance']
       : ['check_out', 'permission_check_out'].includes(record.eventType)
-        ? ['check_out', 'check_out_diff']
+        ? ['check_out', 'check_out_diff', 'total_checkout_diff']
         : [];
     for (const eventType of eventTypes) {
-      const key = attendanceCorrectionKey(record.participantId, record.date, eventType);
+      const correctionDate = eventType.startsWith('total_') ? '' : record.date;
+      const key = attendanceCorrectionKey(record.participantId, correctionDate, eventType);
       if (corrections.get(key)?.action === 'clear') corrections.delete(key);
     }
   }

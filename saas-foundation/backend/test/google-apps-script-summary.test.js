@@ -1047,6 +1047,34 @@ test('Apps Script clears old manual deletions when a new matching scan is insert
   assert.equal(corrections.get('20\u00002026-11-22\u0000late_minutes').value, '5');
 });
 
+test('Apps Script recalculates cleared monthly totals after a new matching scan', () => {
+  const corrections = new Map([
+    ['18\u0000\u0000total_late_minutes', { action: 'clear' }],
+    ['18\u0000\u0000total_attendance', { action: 'clear' }],
+    ['18\u0000\u0000total_checkout_diff', { action: 'clear' }],
+    ['19\u0000\u0000total_attendance', { action: 'set', value: '4' }],
+  ]);
+
+  sandbox.clearSupersededAttendanceClearCorrections(corrections, [{
+    participantId: '18',
+    date: '2026-11-22',
+    eventType: 'check_in',
+  }]);
+
+  assert.equal(corrections.has('18\u0000\u0000total_late_minutes'), false);
+  assert.equal(corrections.has('18\u0000\u0000total_attendance'), false);
+  assert.equal(corrections.get('18\u0000\u0000total_checkout_diff').action, 'clear');
+
+  sandbox.clearSupersededAttendanceClearCorrections(corrections, [{
+    participantId: '18',
+    date: '2026-11-22',
+    eventType: 'check_out',
+  }]);
+
+  assert.equal(corrections.has('18\u0000\u0000total_checkout_diff'), false);
+  assert.equal(corrections.get('19\u0000\u0000total_attendance').value, '4');
+});
+
 test('Apps Script unmerges every complete summary header range before rebuilding', () => {
   const requestedRange = [];
   let unmergedRanges = 0;
