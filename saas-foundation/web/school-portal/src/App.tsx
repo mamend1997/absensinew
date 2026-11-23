@@ -30,7 +30,7 @@ import {
   NetworkUnavailableError,
 } from './core/offline-sync.js';
 
-const DEFAULT_NATIVE_API_BASE = 'https://saas-backend-production-82a0b10c.up.railway.app/api';
+const DEFAULT_API_BASE = 'https://saas-backend-production-82a0b10c.up.railway.app/api';
 const DocumentSaver = registerPlugin<{
   saveFile(options: {
     filename: string;
@@ -40,7 +40,7 @@ const DocumentSaver = registerPlugin<{
 }>('DocumentSaver');
 const API_BASE = (
   import.meta.env.VITE_API_BASE_URL ||
-  (Capacitor.isNativePlatform() ? DEFAULT_NATIVE_API_BASE : '/api')
+  (Capacitor.isNativePlatform() || import.meta.env.PROD ? DEFAULT_API_BASE : '/api')
 ).replace(/\/$/, '');
 const DEFAULT_WHATSAPP_GATEWAY_URL = 'https://gateway-production-a1168195.up.railway.app/api/send-message';
 const SESSION_KEY = 'saas_school_session';
