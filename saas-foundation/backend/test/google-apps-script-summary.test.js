@@ -91,6 +91,75 @@ test('Apps Script summary includes signed checkout differences for regular and p
 
   assert.equal(summary.rows[0][5], -5);
   assert.equal(summary.rows[0][9], 5);
+  assert.equal(summary.rows[0][12], 0);
+});
+
+test('Apps Script allows daily and monthly checkout differences to be cleared', () => {
+  const rows = [
+    [
+      'No', 'Nama', '23-11-2026', '', '', '', 'Total Terlambat',
+      'Total Hadir', 'Total Selisih Menit Keluar', 'participant_id',
+      '__attendance_override__2026-11-23__check_out_diff',
+      '__attendance_override__total_checkout_diff',
+      '__attendance_baseline__2026-11-23__check_out_diff',
+      '__attendance_baseline__total_checkout_diff',
+    ],
+    [
+      'No', 'Nama', 'Masuk', 'Terlambat', 'Keluar', 'Selisih Menit Keluar',
+      'Total Terlambat', 'Total Hadir', 'Total Selisih Menit Keluar',
+      '', '', '', '', '',
+    ],
+    [1, 'Agung', '', '', '15:05:00', 5, 0, 0, 5, '17', '', '', 5, 5],
+  ];
+  const sheet = {
+    getLastRow: () => rows.length,
+    getLastColumn: () => rows[0].length,
+    getRange(row, column, rowCount = 1, columnCount = 1) {
+      return {
+        getDisplayValues: () => rows.slice(row - 1, row - 1 + rowCount)
+          .map((values) => values.slice(column - 1, column - 1 + columnCount)
+            .map((value) => String(value ?? ''))),
+        setValue(value) {
+          rows[row - 1][column - 1] = value;
+        },
+      };
+    },
+  };
+  const corrections = [
+    {
+      participantId: '17',
+      date: '2026-11-23',
+      eventType: 'check_out_diff',
+      action: 'clear',
+      value: '',
+    },
+    {
+      participantId: '17',
+      date: '',
+      eventType: 'total_checkout_diff',
+      action: 'clear',
+      value: '',
+    },
+  ];
+
+  sandbox.saveMonthlySummaryCorrections(sheet, corrections);
+  const state = sandbox.readMonthlySummaryState(sheet, 'Asia/Jakarta');
+  const summary = sandbox.buildMonthlySummary([{
+    participant_id: '17',
+    participant_code: 'P17',
+    participant_name: 'Agung',
+    attendance_date: '2026-11-23',
+    event_type: 'check_out',
+    client_timestamp: '2026-11-23 08:05:00.000',
+    scheduled_check_out: '15:00:00',
+  }], 'Asia/Jakarta', '2026-11', state.order, state.corrections);
+
+  assert.equal(rows[2][5], '');
+  assert.equal(rows[2][8], '');
+  assert.equal(rows[2][10], 'clear');
+  assert.equal(rows[2][11], 'clear');
+  assert.equal(summary.rows[0][5], '');
+  assert.equal(summary.rows[0][8], '');
 });
 
 test('Apps Script permission pairing stays within the same attendance date', () => {
@@ -274,8 +343,8 @@ test('Apps Script groups attendance by participant across dynamic date columns',
   assert.deepEqual(Array.from(dates), ['2026-11-01', '2026-11-02']);
   assert.equal(sandbox.formatDateLabel(dates[0]), '01-11-2026');
   assert.deepEqual(Array.from(rows, (row) => Array.from(row)), [
-    [1, 'Agung', '07:54:09', 5, '15:15:00', '', '07:49:58', 0, '', '', 5, 2],
-    [2, 'Budi', '', '', '', '', '07:50:00', 2, '', '', 2, 1],
+    [1, 'Agung', '07:54:09', 5, '15:15:00', '', '07:49:58', 0, '', '', 5, 2, ''],
+    [2, 'Budi', '', '', '', '', '07:50:00', 2, '', '', 2, 1, ''],
   ]);
 });
 
@@ -315,8 +384,8 @@ test('Apps Script merges code changes by stable participant ID', () => {
 
   assert.equal(rows.length, 2);
   assert.deepEqual(Array.from(rows, (row) => Array.from(row)), [
-    [1, 'Siti', '07:54:09', 5, '15:11:17', '', 5, 1],
-    [2, 'Siti', '08:00:00', 0, '', '', 0, 1],
+    [1, 'Siti', '07:54:09', 5, '15:11:17', '', 5, 1, ''],
+    [2, 'Siti', '08:00:00', 0, '', '', 0, 1, ''],
   ]);
 });
 
@@ -399,8 +468,8 @@ test('Apps Script follows manual participant order and keeps time corrections', 
   ]));
 
   assert.deepEqual(Array.from(rows, (row) => Array.from(row)), [
-    [1, 'Zahra', '', 5, '', '', 5, 1],
-    [2, 'Ayu', '08:15:00', 0, '', '', 0, 1],
+    [1, 'Zahra', '', 5, '', '', 5, 1, ''],
+    [2, 'Ayu', '08:15:00', 0, '', '', 0, 1, ''],
   ]);
 });
 
@@ -443,12 +512,12 @@ test('Apps Script supports daily lateness and total lateness corrections', () =>
   ]));
 
   assert.deepEqual(Array.from(summary.rows[0]), [
-    1, 'Zahra',  '07:40:00', 12, '', '', '07:45:00', 3, '', '', 25, 2,
+    1, 'Zahra',  '07:40:00', 12, '', '', '07:45:00', 3, '', '', 25, 2, '',
   ]);
   assert.deepEqual(Array.from(summary.baselineRows[0]), [
-    '07:40:00', 5, '', '07:45:00', 3, '',
+    '07:40:00', 5, '', '', '07:45:00', 3, '', '',
   ]);
-  assert.deepEqual(Array.from(summary.baselineTotalRows[0]), [15, 2]);
+  assert.deepEqual(Array.from(summary.baselineTotalRows[0]), [15, 2, '']);
 
   const dateColumns = new Map([[3, date]]);
   const editedLateMinutes = sandbox.buildSummaryEditCorrections(
@@ -900,12 +969,12 @@ test('Apps Script keeps direct time deletions and row order in monthly sheet met
   assert.equal(rows[3][2], '');
   assert.equal(rows[3][8], 'clear');
   assert.deepEqual(Array.from(summary.rows, (row) => Array.from(row)), [
-    [1, 'Ayu', '20:48:54', 0, '', '', 0, 1],
-    [2, 'Zahra', '', 0, '', '', 0, 1],
+    [1, 'Ayu', '20:48:54', 0, '', '', 0, 1, ''],
+    [2, 'Zahra', '', 0, '', '', 0, 1, ''],
   ]);
   assert.deepEqual(Array.from(summary.baselineRows, (row) => Array.from(row)), [
-    ['20:48:54', 0, ''],
-    ['20:40:00', 0, ''],
+    ['20:48:54', 0, '', ''],
+    ['20:40:00', 0, '', ''],
   ]);
 });
 

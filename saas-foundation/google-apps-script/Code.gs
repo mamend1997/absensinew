@@ -38,9 +38,9 @@ const DATA_HEADERS = [
   'scheduled_check_out',
 ];
 const LEGACY_DATA_HEADERS = DATA_HEADERS.slice(0, -2);
-const SUMMARY_EVENT_HEADERS = ['check_in', 'late_minutes', 'check_out'];
+const SUMMARY_EVENT_HEADERS = ['check_in', 'late_minutes', 'check_out', 'check_out_diff'];
 const DATE_HEADERS = ['Masuk', 'Terlambat', 'Keluar', 'Selisih Menit Keluar'];
-const TOTAL_HEADERS = ['Total Terlambat', 'Total Hadir'];
+const TOTAL_HEADERS = ['Total Terlambat', 'Total Hadir', 'Total Selisih Menit Keluar'];
 const ORDER_HEADERS = ['participant_id', 'Nama Peserta', 'Kode Peserta'];
 const CORRECTION_HEADERS = [
   'participant_id',
@@ -938,10 +938,10 @@ function findSummaryMetadata(sheet) {
   headers.forEach((header, index) => {
     const text = String(header || '');
     const match = new RegExp(
-      `^${SUMMARY_OVERRIDE_PREFIX}(\\d{4}-\\d{2}-\\d{2})__(check_in|late_minutes|check_out)$`,
+      `^${SUMMARY_OVERRIDE_PREFIX}(\\d{4}-\\d{2}-\\d{2})__(check_in|late_minutes|check_out|check_out_diff)$`,
     ).exec(text);
     const totalMatch = new RegExp(
-      `^${SUMMARY_OVERRIDE_PREFIX}(total_late_minutes|total_attendance)$`,
+      `^${SUMMARY_OVERRIDE_PREFIX}(total_late_minutes|total_attendance|total_checkout_diff)$`,
     ).exec(text);
     if (match) {
       correctionColumns.set(attendanceCorrectionKey('', match[1], match[2]), index + 1);
@@ -956,10 +956,10 @@ function findSummaryMetadata(sheet) {
   headers.forEach((header, index) => {
     const text = String(header || '');
     const match = new RegExp(
-      `^${SUMMARY_BASELINE_PREFIX}(\\d{4}-\\d{2}-\\d{2})__(check_in|late_minutes|check_out)$`,
+      `^${SUMMARY_BASELINE_PREFIX}(\\d{4}-\\d{2}-\\d{2})__(check_in|late_minutes|check_out|check_out_diff)$`,
     ).exec(text);
     const totalMatch = new RegExp(
-      `^${SUMMARY_BASELINE_PREFIX}(total_late_minutes|total_attendance)$`,
+      `^${SUMMARY_BASELINE_PREFIX}(total_late_minutes|total_attendance|total_checkout_diff)$`,
     ).exec(text);
     if (match) {
       baselineColumns.set(attendanceCorrectionKey('', match[1], match[2]), index + 1);
@@ -1166,6 +1166,8 @@ function saveMonthlySummaryCorrections(sheet, corrections) {
       ? firstTotalColumn
       : correction.eventType === 'total_attendance'
         ? firstTotalColumn + 1
+        : correction.eventType === 'total_checkout_diff'
+          ? firstTotalColumn + 2
         : firstColumnByDate.get(correction.date);
     if (!row || !metadataColumn || !firstColumn) {
       throw new Error(`Could not locate ${correction.eventType} correction cell for ${correction.date || 'total'}.`);
@@ -1176,17 +1178,25 @@ function saveMonthlySummaryCorrections(sheet, corrections) {
         : correction.action === 'clear'
           ? 'clear'
           : correction.value);
-    const visibleColumn = ['total_late_minutes', 'total_attendance'].includes(correction.eventType)
+    const visibleColumn = ['total_late_minutes', 'total_attendance', 'total_checkout_diff']
+      .includes(correction.eventType)
       ? firstColumn
       : firstColumn + (
         correction.eventType === 'check_in' ? 0
           : correction.eventType === 'late_minutes' ? 1
-            : 2
+            : correction.eventType === 'check_out' ? 2
+              : 3
       );
     sheet.getRange(row, visibleColumn)
       .setValue(correction.action === 'clear'
         ? ''
-        : ['late_minutes', 'total_late_minutes', 'total_attendance'].includes(correction.eventType)
+        : [
+          'late_minutes',
+          'total_late_minutes',
+          'total_attendance',
+          'check_out_diff',
+          'total_checkout_diff',
+        ].includes(correction.eventType)
           ? Number(correction.value)
           : correction.value);
   });
@@ -1223,10 +1233,12 @@ function renderMonthlySummary(
       .map((eventType) => `${SUMMARY_OVERRIDE_PREFIX}${date}__${eventType}`)),
     `${SUMMARY_OVERRIDE_PREFIX}total_late_minutes`,
     `${SUMMARY_OVERRIDE_PREFIX}total_attendance`,
+    `${SUMMARY_OVERRIDE_PREFIX}total_checkout_diff`,
     ...summary.dates.flatMap((date) => SUMMARY_EVENT_HEADERS
       .map((eventType) => `${SUMMARY_BASELINE_PREFIX}${date}__${eventType}`)),
     `${SUMMARY_BASELINE_PREFIX}total_late_minutes`,
     `${SUMMARY_BASELINE_PREFIX}total_attendance`,
+    `${SUMMARY_BASELINE_PREFIX}total_checkout_diff`,
   ];
 
   const filter = summarySheet.getFilter();
@@ -1254,6 +1266,7 @@ function renderMonthlySummary(
   });
   summarySheet.getRange(1, firstTotalColumn, 2, 1).merge().setValue(TOTAL_HEADERS[0]);
   summarySheet.getRange(1, firstTotalColumn + 1, 2, 1).merge().setValue(TOTAL_HEADERS[1]);
+  summarySheet.getRange(1, firstTotalColumn + 2, 2, 1).merge().setValue(TOTAL_HEADERS[2]);
   if (summary.rows.length) {
     summarySheet.getRange(3, 1, summary.rows.length, lastColumn).setValues(summary.rows);
     summarySheet.getRange(3, 1, summary.rows.length, lastColumn)
@@ -1271,6 +1284,9 @@ function renderMonthlySummary(
       const attendanceCorrection = corrections.get(
         attendanceCorrectionKey(participantId, '', 'total_attendance'),
       );
+      const checkoutDiffCorrection = corrections.get(
+        attendanceCorrectionKey(participantId, '', 'total_checkout_diff'),
+      );
       return [
         participantId,
         ...summary.dates.flatMap((date) => SUMMARY_EVENT_HEADERS.map((eventType) => {
@@ -1285,6 +1301,9 @@ function renderMonthlySummary(
           : '',
         attendanceCorrection
           ? attendanceCorrection.action === 'clear' ? 'clear' : attendanceCorrection.value
+          : '',
+        checkoutDiffCorrection
+          ? checkoutDiffCorrection.action === 'clear' ? 'clear' : checkoutDiffCorrection.value
           : '',
         ...summary.baselineRows[index],
         ...summary.baselineTotalRows[index],
@@ -1314,6 +1333,8 @@ function renderMonthlySummary(
       .setNumberFormat('+0.#;-0.#;0');
   });
   summarySheet.getRange(3, firstTotalColumn, dataRowCount, 1).setNumberFormat('0.0');
+  summarySheet.getRange(3, firstTotalColumn + 2, dataRowCount, 1)
+    .setNumberFormat('+0.#;-0.#;0');
   summarySheet.setColumnWidth(1, 42);
   summarySheet.setColumnWidth(2, 250);
   summary.dates.forEach((date, index) => {
@@ -1324,6 +1345,7 @@ function renderMonthlySummary(
   });
   summarySheet.setColumnWidth(firstTotalColumn, 120);
   summarySheet.setColumnWidth(firstTotalColumn + 1, 100);
+  summarySheet.setColumnWidth(firstTotalColumn + 2, 150);
   summarySheet.setRowHeight(1, 28);
   summarySheet.setRowHeight(2, 26);
   summarySheet.setFrozenRows(2);
@@ -1390,6 +1412,8 @@ function buildSummaryEditCorrections(
         eventType = 'total_late_minutes';
       } else if (absoluteColumn === firstTotalColumn + 1) {
         eventType = 'total_attendance';
+      } else if (absoluteColumn === firstTotalColumn + 2) {
+        eventType = 'total_checkout_diff';
       } else {
         const firstDateColumn = Array.from(dateByFirstColumn.keys())
           .filter((column) => column <= absoluteColumn)
@@ -1442,7 +1466,7 @@ function clearSupersededAttendanceClearCorrections(corrections, newAttendanceEve
     const eventTypes = record.eventType === 'check_in'
       ? ['check_in', 'late_minutes']
       : ['check_out', 'permission_check_out'].includes(record.eventType)
-        ? ['check_out']
+        ? ['check_out', 'check_out_diff']
         : [];
     for (const eventType of eventTypes) {
       const key = attendanceCorrectionKey(record.participantId, record.date, eventType);
@@ -1474,6 +1498,13 @@ function normalizeSummaryCorrectionValue(value, eventType, timeZone, rowNumber) 
   }
   const text = String(value).trim();
   const minutes = Number(text);
+  if (eventType === 'check_out_diff' || eventType === 'total_checkout_diff') {
+    if (!text || !Number.isFinite(minutes) || Math.abs(minutes) > 65535 ||
+        Math.abs(minutes * 10 - Math.round(minutes * 10)) > 1e-8) {
+      throw new Error(`Selisih menit keluar pada baris ${rowNumber} harus berupa angka antara -65535 dan 65535 dengan maksimal satu angka desimal.`);
+    }
+    return String(Math.round(minutes * 10) / 10);
+  }
   if (eventType === 'total_attendance') {
     if (!text || !Number.isInteger(minutes) || minutes < 0 || minutes > 31) {
       throw new Error(`Total hadir pada baris ${rowNumber} harus berupa bilangan bulat dari 0 sampai 31.`);
@@ -1549,6 +1580,7 @@ function buildMonthlySummary(records, timeZone, monthKey, participantOrder = new
         checkOut: '',
         baselineCheckOut: '',
         checkOutDiff: null,
+        baselineCheckOutDiff: null,
         scheduledCheckOut: '',
         checkOutTimestamp: null,
         lateMinutes: 0,
@@ -1575,21 +1607,25 @@ function buildMonthlySummary(records, timeZone, monthKey, participantOrder = new
       day.baselineCheckOut = day.checkOut;
       day.scheduledCheckOut = String(record.scheduled_check_out || '');
       day.checkOutDiff = checkoutDifferenceMinutes(day.checkOut, day.scheduledCheckOut);
+      day.baselineCheckOutDiff = day.checkOutDiff;
     }
     dates.add(date);
   }
 
   for (const correction of corrections.values()) {
-    if (!['total_late_minutes', 'total_attendance'].includes(correction.eventType) &&
+    if (!['total_late_minutes', 'total_attendance', 'total_checkout_diff'].includes(correction.eventType) &&
         correction.date.slice(0, 7) !== monthKey) continue;
     const participant = participants.get(`id:${correction.participantId}`);
     if (!participant) continue;
-    if (['total_late_minutes', 'total_attendance'].includes(correction.eventType)) continue;
+    if (['total_late_minutes', 'total_attendance', 'total_checkout_diff'].includes(correction.eventType)) continue;
     const day = participant?.days.get(correction.date);
     if (!day) continue;
     const value = correction.action === 'clear' ? '' : correction.value;
     if (correction.eventType === 'check_in') day.checkIn = value;
     else if (correction.eventType === 'check_out') day.checkOut = value;
+    else if (correction.eventType === 'check_out_diff') {
+      day.checkOutDiff = correction.action === 'clear' ? null : Number(correction.value);
+    }
     else if (correction.eventType === 'late_minutes') {
       day.lateMinutes = correction.action === 'clear' ? 0 : Number(correction.value);
       day.lateMinutesPresent = correction.action !== 'clear';
@@ -1597,8 +1633,15 @@ function buildMonthlySummary(records, timeZone, monthKey, participantOrder = new
   }
 
   participants.forEach((participant) => {
-    participant.days.forEach((day) => {
-      day.checkOutDiff = checkoutDifferenceMinutes(day.checkOut, day.scheduledCheckOut);
+    participant.days.forEach((day, date) => {
+      const correctionKey = attendanceCorrectionKey(
+        String(participant.id || ''),
+        date,
+        'check_out_diff',
+      );
+      if (!corrections.has(correctionKey)) {
+        day.checkOutDiff = checkoutDifferenceMinutes(day.checkOut, day.scheduledCheckOut);
+      }
     });
   });
 
@@ -1623,6 +1666,7 @@ function buildMonthlySummary(records, timeZone, monthKey, participantOrder = new
         day?.baselineCheckIn || '',
         day?.checkedIn ? day.baselineLateMinutes : '',
         day?.baselineCheckOut || '',
+        day?.baselineCheckOutDiff ?? '',
       );
     }
     return row;
@@ -1631,12 +1675,24 @@ function buildMonthlySummary(records, timeZone, monthKey, participantOrder = new
   const rows = sortedParticipants.map((participant, index) => {
     let totalLateMinutes = 0;
     let totalAttendance = 0;
+    let totalCheckoutDiff = 0;
+    let baselineTotalCheckoutDiff = 0;
+    let checkoutDiffCount = 0;
+    let baselineCheckoutDiffCount = 0;
     const row = [index + 1, participant.name];
     for (const date of sortedDates) {
       const day = participant.days.get(date);
       if (day && day.checkedIn) {
         totalAttendance += 1;
         totalLateMinutes += day.lateMinutes;
+      }
+      if (day?.checkOutDiff != null) {
+        totalCheckoutDiff += day.checkOutDiff;
+        checkoutDiffCount += 1;
+      }
+      if (day?.baselineCheckOutDiff != null) {
+        baselineTotalCheckoutDiff += day.baselineCheckOutDiff;
+        baselineCheckoutDiffCount += 1;
       }
       row.push(
         day?.checkIn || '',
@@ -1645,12 +1701,21 @@ function buildMonthlySummary(records, timeZone, monthKey, participantOrder = new
         day?.checkOutDiff ?? '',
       );
     }
-    baselineTotalRows[index] = [roundMinutesToTenth(totalLateMinutes), totalAttendance];
+    baselineTotalRows[index] = [
+      roundMinutesToTenth(totalLateMinutes),
+      totalAttendance,
+      baselineCheckoutDiffCount
+        ? Math.round(baselineTotalCheckoutDiff * 10) / 10
+        : '',
+    ];
     const totalCorrection = corrections.get(
       attendanceCorrectionKey(String(participant.id || ''), '', 'total_late_minutes'),
     );
     const attendanceCorrection = corrections.get(
       attendanceCorrectionKey(String(participant.id || ''), '', 'total_attendance'),
+    );
+    const checkoutDiffCorrection = corrections.get(
+      attendanceCorrectionKey(String(participant.id || ''), '', 'total_checkout_diff'),
     );
     row.push(
       totalCorrection
@@ -1659,6 +1724,11 @@ function buildMonthlySummary(records, timeZone, monthKey, participantOrder = new
       attendanceCorrection
         ? attendanceCorrection.action === 'clear' ? '' : Number(attendanceCorrection.value)
         : totalAttendance,
+      checkoutDiffCorrection
+        ? checkoutDiffCorrection.action === 'clear' ? '' : Number(checkoutDiffCorrection.value)
+        : checkoutDiffCount
+          ? Math.round(totalCheckoutDiff * 10) / 10
+          : '',
     );
     return row;
   });

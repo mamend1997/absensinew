@@ -345,6 +345,7 @@ interface ReportRow {
 interface MonthlyReportRow extends ReportRow {
   monthly_attendance_count: number;
   monthly_late_minutes: number;
+  monthly_checkout_diff_minutes: number;
 }
 interface PermissionReportRow {
   id: string;
@@ -791,19 +792,35 @@ function rupiah(value: number) {
 }
 
 function aggregateMonthlyReport(rows: ReportRow[]): MonthlyReportRow[] {
-  const totals = new Map<string, { attendanceCount: number; lateMinutes: number }>();
+  const totals = new Map<string, {
+    attendanceCount: number;
+    lateMinutes: number;
+    checkoutDiffMinutes: number;
+  }>();
   for (const row of rows) {
-    const total = totals.get(row.participant_id) ?? { attendanceCount: 0, lateMinutes: 0 };
+    const total = totals.get(row.participant_id) ?? {
+      attendanceCount: 0,
+      lateMinutes: 0,
+      checkoutDiffMinutes: 0,
+    };
     if (row.check_in_at) total.attendanceCount += 1;
     total.lateMinutes += Number(row.late_minutes ?? row.menit_terlambat ?? 0);
+    total.checkoutDiffMinutes = Math.round(
+      (total.checkoutDiffMinutes + Number(row.checkout_diff_minutes ?? 0)) * 10,
+    ) / 10;
     totals.set(row.participant_id, total);
   }
   return rows.map((row) => {
-    const total = totals.get(row.participant_id) ?? { attendanceCount: 0, lateMinutes: 0 };
+    const total = totals.get(row.participant_id) ?? {
+      attendanceCount: 0,
+      lateMinutes: 0,
+      checkoutDiffMinutes: 0,
+    };
     return {
       ...row,
       monthly_attendance_count: total.attendanceCount,
       monthly_late_minutes: total.lateMinutes,
+      monthly_checkout_diff_minutes: total.checkoutDiffMinutes,
     };
   });
 }
@@ -846,7 +863,7 @@ function downloadReport(
 ) {
   const headers = period === 'daily'
     ? ['No', 'Nama', 'Kelas', 'Tanggal', 'Masuk', 'Menit telat', 'Keluar', 'Selisih menit keluar']
-    : ['No', 'Nama', 'Kelas', 'Tanggal', 'Masuk', 'Menit telat', 'Keluar', 'Selisih menit keluar', 'Total kehadiran bulanan', 'Total menit telat bulanan'];
+    : ['No', 'Nama', 'Kelas', 'Tanggal', 'Masuk', 'Menit telat', 'Keluar', 'Selisih menit keluar', 'Total kehadiran bulanan', 'Total menit telat bulanan', 'Total selisih menit keluar bulanan'];
   const table = [
     headers,
     ...rows.map((row, index) => {
@@ -862,7 +879,12 @@ function downloadReport(
       ];
       return period === 'daily'
         ? dailyColumns
-        : [...dailyColumns, row.monthly_attendance_count, row.monthly_late_minutes];
+        : [
+          ...dailyColumns,
+          row.monthly_attendance_count,
+          row.monthly_late_minutes,
+          formatCheckoutDifference(row.monthly_checkout_diff_minutes),
+        ];
     }),
   ];
   const blob = new Blob(
@@ -4586,9 +4608,9 @@ export default function App() {
               <div className="panel report-print-area">
                 <div className="print-heading"><h2>{session.school.name} · {reportView === 'permissions' ? 'Rekap Izin Keluar' : 'Rekap Absensi'}</h2><p>{reportPeriod === 'daily' ? reportDate : reportMonth}</p></div>
                 {reportView === 'attendance' ? (
-                  <div className="table-scroll"><table className="report-table"><thead><tr>{can('attendance.edit') && <th className="no-print"><input type="checkbox" aria-label="Pilih semua riwayat rekap" checked={reportRows.length > 0 && reportRows.every((row) => selectedReportEntries.has(`${row.attendance_date}:${row.participant_id}`))} onChange={(event) => setSelectedReportEntries(event.target.checked ? new Set(reportRows.map((row) => `${row.attendance_date}:${row.participant_id}`)) : new Set())} /></th>}<th>No</th><th>Nama</th><th>Kelas</th><th>Tanggal</th><th>Masuk</th><th>Menit telat</th><th>Keluar</th><th>Selisih menit keluar</th>{reportPeriod === 'monthly' && <><th>Total kehadiran bulanan</th><th>Total menit telat bulanan</th></>}{can('attendance.edit') && <th className="no-print">Aksi</th>}</tr></thead><tbody>
-                    {monthlyReportRows.map((row, index) => <tr key={`${row.attendance_date}-${row.participant_id}-${index}`}>{can('attendance.edit') && <td className="no-print"><input type="checkbox" aria-label={`Pilih rekap ${row.participant_name} tanggal ${row.attendance_date}`} checked={selectedReportEntries.has(`${row.attendance_date}:${row.participant_id}`)} onChange={(event) => setSelectedReportEntries((current) => { const next = new Set(current); const key = `${row.attendance_date}:${row.participant_id}`; if (event.target.checked) next.add(key); else next.delete(key); return next; })} /></td>}<td>{index + 1}</td><td>{row.participant_name}</td><td>{row.classroom_name}</td><td>{row.attendance_date}</td><td>{toLocalTime(row.check_in_at)}</td><td>{row.late_minutes ?? row.menit_terlambat ?? 0}</td><td>{toLocalTime(row.check_out_at)}</td><td>{formatCheckoutDifference(row.checkout_diff_minutes)}</td>{reportPeriod === 'monthly' && <><td>{row.monthly_attendance_count}</td><td>{row.monthly_late_minutes}</td></>}{can('attendance.edit') && <td className="no-print"><button type="button" className="button danger small" disabled={busy} onClick={() => void deleteReportEntries([{ participant_id: row.participant_id, attendance_date: row.attendance_date }])}>Hapus</button></td>}</tr>)}
-                    {!monthlyReportRows.length && <tr><td colSpan={(reportPeriod === 'daily' ? 8 : 10) + (can('attendance.edit') ? 2 : 0)} className="empty">Belum ada data untuk {reportPeriod === 'daily' ? 'tanggal' : 'bulan'} dan filter ini.</td></tr>}
+                  <div className="table-scroll"><table className="report-table"><thead><tr>{can('attendance.edit') && <th className="no-print"><input type="checkbox" aria-label="Pilih semua riwayat rekap" checked={reportRows.length > 0 && reportRows.every((row) => selectedReportEntries.has(`${row.attendance_date}:${row.participant_id}`))} onChange={(event) => setSelectedReportEntries(event.target.checked ? new Set(reportRows.map((row) => `${row.attendance_date}:${row.participant_id}`)) : new Set())} /></th>}<th>No</th><th>Nama</th><th>Kelas</th><th>Tanggal</th><th>Masuk</th><th>Menit telat</th><th>Keluar</th><th>Selisih menit keluar</th>{reportPeriod === 'monthly' && <><th>Total kehadiran bulanan</th><th>Total menit telat bulanan</th><th>Total selisih menit keluar bulanan</th></>}{can('attendance.edit') && <th className="no-print">Aksi</th>}</tr></thead><tbody>
+                    {monthlyReportRows.map((row, index) => <tr key={`${row.attendance_date}-${row.participant_id}-${index}`}>{can('attendance.edit') && <td className="no-print"><input type="checkbox" aria-label={`Pilih rekap ${row.participant_name} tanggal ${row.attendance_date}`} checked={selectedReportEntries.has(`${row.attendance_date}:${row.participant_id}`)} onChange={(event) => setSelectedReportEntries((current) => { const next = new Set(current); const key = `${row.attendance_date}:${row.participant_id}`; if (event.target.checked) next.add(key); else next.delete(key); return next; })} /></td>}<td>{index + 1}</td><td>{row.participant_name}</td><td>{row.classroom_name}</td><td>{row.attendance_date}</td><td>{toLocalTime(row.check_in_at)}</td><td>{row.late_minutes ?? row.menit_terlambat ?? 0}</td><td>{toLocalTime(row.check_out_at)}</td><td>{formatCheckoutDifference(row.checkout_diff_minutes)}</td>{reportPeriod === 'monthly' && <><td>{row.monthly_attendance_count}</td><td>{row.monthly_late_minutes}</td><td>{formatCheckoutDifference(row.monthly_checkout_diff_minutes)}</td></>}{can('attendance.edit') && <td className="no-print"><button type="button" className="button danger small" disabled={busy} onClick={() => void deleteReportEntries([{ participant_id: row.participant_id, attendance_date: row.attendance_date }])}>Hapus</button></td>}</tr>)}
+                    {!monthlyReportRows.length && <tr><td colSpan={(reportPeriod === 'daily' ? 8 : 11) + (can('attendance.edit') ? 2 : 0)} className="empty">Belum ada data untuk {reportPeriod === 'daily' ? 'tanggal' : 'bulan'} dan filter ini.</td></tr>}
                   </tbody></table></div>
                 ) : (
                   <div className="table-scroll"><table className="report-table"><thead><tr>{can('attendance.edit') && <th className="no-print"><input type="checkbox" aria-label="Pilih semua riwayat izin keluar" checked={permissionReportRows.length > 0 && permissionReportRows.every((row) => selectedPermissionEntries.has(row.id))} onChange={(event) => setSelectedPermissionEntries(event.target.checked ? new Set(permissionReportRows.map((row) => row.id)) : new Set())} /></th>}<th>No</th><th>Nama</th><th>Kelas</th><th>Tanggal</th><th>Izin keluar</th><th>Masuk kembali</th><th>Durasi keluar</th>{reportPeriod === 'monthly' && <><th>Total durasi keluar bulanan</th><th>Total keluar bulanan</th></>}{can('attendance.edit') && <th className="no-print">Aksi</th>}</tr></thead><tbody>
