@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { calculateAttendance, createQueuedScan } from '../src/core/attendance.js';
-import { aggregateAttendanceReport } from '../src/core/attendance-report.js';
+import {
+  aggregateAttendanceReport,
+  aggregatePermissionAttendanceReport,
+} from '../src/core/attendance-report.js';
 import {
   calculateAttendance as calculateBrowserAttendance,
   attendanceEventTypeForMode,
@@ -345,6 +348,59 @@ test('attendance report groups check-in and check-out into a participant day', (
   assert.equal(rows[0].check_out_at, '2026-11-23 08:05:00');
   assert.equal(rows[0].attendance_status, 'terlambat');
   assert.equal(rows[0].late_minutes, 10);
+});
+
+test('permission report pairs each return with one prior outing and leaves open outings undurated', () => {
+  const rows = aggregatePermissionAttendanceReport([
+    {
+      id_unik: 'out-1',
+      attendance_date: '2026-11-23',
+      participant_id: 'p1',
+      participant_code: 'P1',
+      participant_name: 'Peserta Satu',
+      classroom_name: 'Kelas 1',
+      event_type: 'permission_out',
+      client_timestamp_utc: '2026-11-23 01:00:00',
+    },
+    {
+      id_unik: 'in-1',
+      attendance_date: '2026-11-23',
+      participant_id: 'p1',
+      participant_code: 'P1',
+      participant_name: 'Peserta Satu',
+      classroom_name: 'Kelas 1',
+      event_type: 'permission_in',
+      client_timestamp_utc: '2026-11-23 01:25:00',
+    },
+    {
+      id_unik: 'out-2',
+      attendance_date: '2026-11-23',
+      participant_id: 'p1',
+      participant_code: 'P1',
+      participant_name: 'Peserta Satu',
+      classroom_name: 'Kelas 1',
+      event_type: 'permission_out',
+      client_timestamp_utc: '2026-11-23 02:00:00',
+    },
+    {
+      id_unik: 'in-next-day',
+      attendance_date: '2026-11-24',
+      participant_id: 'p1',
+      participant_code: 'P1',
+      participant_name: 'Peserta Satu',
+      classroom_name: 'Kelas 1',
+      event_type: 'permission_in',
+      client_timestamp_utc: '2026-11-24 02:10:00',
+    },
+  ]);
+
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].id, 'out-1');
+  assert.equal(rows[0].return_id, 'in-1');
+  assert.equal(rows[0].duration_minutes, 25);
+  assert.equal(rows[1].id, 'out-2');
+  assert.equal(rows[1].return_id, null);
+  assert.equal(rows[1].duration_minutes, null);
 });
 
 const scan = (id, sekolah_id = '10') => ({

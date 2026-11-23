@@ -39,7 +39,10 @@ import {
   sendAttendanceToGoogleSheets,
   validateAppsScriptWebAppUrl,
 } from '../core/google-sheets-sync.js';
-import { aggregateAttendanceReport } from '../core/attendance-report.js';
+import {
+  aggregateAttendanceReport,
+  aggregatePermissionAttendanceReport,
+} from '../core/attendance-report.js';
 import { config } from '../config.js';
 import { createDeviceApiKey, hashPassword, signToken, verifyPassword } from '../security.js';
 import { getPlatformPaymentSettings } from '../core/platform-payment-settings.js';
@@ -2307,6 +2310,48 @@ router.get('/attendance/report', requireSchoolUser, requirePermission('attendanc
   res.json({ from, to, attendance: aggregateAttendanceReport(rows) });
 }));
 
+router.get('/attendance/permissions/report', requireSchoolUser,
+  requirePermission('attendance.view'), asyncRoute(async (req, res) => {
+    const from = req.query.from;
+    const to = req.query.to;
+    if (!validDate(from) || !validDate(to) || from > to ||
+        (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000 > 366) {
+      throw fail(400, 'Gunakan from/to YYYY-MM-DD dengan rentang maksimal 367 hari.', 'VALIDATION_ERROR');
+    }
+    const classroomId = req.query.classroom_id == null || req.query.classroom_id === ''
+      ? null
+      : String(req.query.classroom_id);
+    if (classroomId && !/^[1-9]\d*$/.test(classroomId)) {
+      throw fail(400, 'Filter kelas tidak valid.', 'VALIDATION_ERROR');
+    }
+    const scope = classroomScope(req.schoolUser, 'p');
+    const classroomFilter = classroomId ? ' AND p.classroom_id = ?' : '';
+    const [rows] = await pool.execute(
+      `SELECT a.id_unik, a.participant_id,
+              a.participant_code_snapshot AS participant_code,
+              a.participant_name_snapshot AS participant_name,
+              a.classroom_name_snapshot AS classroom_name, a.attendance_date,
+              a.event_type, a.client_timestamp_utc
+         FROM attendance_logs a JOIN participants p
+           ON p.id = a.participant_id AND p.sekolah_id = a.sekolah_id
+        WHERE a.sekolah_id = ? AND a.attendance_date BETWEEN ? AND ?
+          AND a.event_type IN ('permission_out', 'permission_in')${scope.sql}${classroomFilter}
+        ORDER BY a.attendance_date, a.participant_id, a.client_timestamp_utc, a.id`,
+      [
+        req.schoolUser.sekolah_id,
+        from,
+        to,
+        ...scope.params,
+        ...(classroomId ? [classroomId] : []),
+      ],
+    );
+    res.json({
+      from,
+      to,
+      permissions: aggregatePermissionAttendanceReport(rows),
+    });
+  }));
+
 router.delete('/attendance/report', requireSchoolUser, requirePermission('attendance.edit'), asyncRoute(async (req, res) => {
   const rawEntries = req.body?.entries;
   if (!Array.isArray(rawEntries) || rawEntries.length === 0 || rawEntries.length > 500) {
@@ -2343,5 +2388,77 @@ router.delete('/attendance/report', requireSchoolUser, requirePermission('attend
   );
   res.json({ deleted_count: result.affectedRows });
 }));
+
+router.delete('/attendance/permissions/report', requireSchoolUser,
+  requirePermission('attendance.edit'), asyncRoute(async (req, res) => {
+    const rawIds = req.body?.out_ids;
+    if (!Array.isArray(rawIds) || rawIds.length === 0 || rawIds.length > 500 ||
+        rawIds.some((id) => typeof id !== 'string' || !UUID.test(id))) {
+      throw fail(400, 'Pilih 1 sampai 500 riwayat izin keluar yang valid.', 'VALIDATION_ERROR');
+    }
+    const outIds = [...new Set(rawIds)];
+    const scope = classroomScope(req.schoolUser, 'p');
+    const deletedCount = await inTransaction(async (connection) => {
+      const placeholders = outIds.map(() => '?').join(', ');
+      const [selectedOuts] = await connection.execute(
+        `SELECT a.id_unik, a.participant_id, a.attendance_date
+           FROM attendance_logs a JOIN participants p
+             ON p.id = a.participant_id AND p.sekolah_id = a.sekolah_id
+          WHERE a.sekolah_id = ? AND a.event_type = 'permission_out'
+            AND a.id_unik IN (${placeholders})${scope.sql}
+          FOR UPDATE`,
+        [req.schoolUser.sekolah_id, ...outIds, ...scope.params],
+      );
+      if (!selectedOuts.length) return 0;
+
+      const participantDays = new Map();
+      for (const row of selectedOuts) {
+        participantDays.set(`${row.participant_id}:${row.attendance_date}`, {
+          participant_id: row.participant_id,
+          attendance_date: row.attendance_date,
+        });
+      }
+      const pairs = [...participantDays.values()];
+      const dayClauses = pairs
+        .map(() => '(a.participant_id = ? AND a.attendance_date = ?)')
+        .join(' OR ');
+      const [records] = await connection.execute(
+        `SELECT a.id_unik, a.participant_id,
+                a.participant_code_snapshot AS participant_code,
+                a.participant_name_snapshot AS participant_name,
+                a.classroom_name_snapshot AS classroom_name, a.attendance_date,
+                a.event_type, a.client_timestamp_utc
+           FROM attendance_logs a JOIN participants p
+             ON p.id = a.participant_id AND p.sekolah_id = a.sekolah_id
+          WHERE a.sekolah_id = ? AND a.event_type IN ('permission_out', 'permission_in')
+            AND (${dayClauses})${scope.sql}
+          ORDER BY a.attendance_date, a.participant_id, a.client_timestamp_utc, a.id
+          FOR UPDATE`,
+        [
+          req.schoolUser.sekolah_id,
+          ...pairs.flatMap(({ participant_id, attendance_date }) => [participant_id, attendance_date]),
+          ...scope.params,
+        ],
+      );
+      const selectedIds = new Set(outIds);
+      const idsToDelete = new Set();
+      for (const row of aggregatePermissionAttendanceReport(records)) {
+        if (!selectedIds.has(row.id)) continue;
+        idsToDelete.add(row.id);
+        if (row.return_id) idsToDelete.add(row.return_id);
+      }
+      if (!idsToDelete.size) return 0;
+
+      const ids = [...idsToDelete];
+      await connection.execute(
+        `DELETE FROM attendance_logs
+          WHERE sekolah_id = ? AND event_type IN ('permission_out', 'permission_in')
+            AND id_unik IN (${ids.map(() => '?').join(', ')})`,
+        [req.schoolUser.sekolah_id, ...ids],
+      );
+      return selectedOuts.length;
+    });
+    res.json({ deleted_count: deletedCount });
+  }));
 
 export default router;
