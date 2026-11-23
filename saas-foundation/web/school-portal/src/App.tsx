@@ -2618,6 +2618,7 @@ export default function App() {
         }
       }
       void announceAttendance(successMessage, true);
+      setAttendanceSessionMode('auto');
       return true;
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : 'Scan gagal diproses.';
