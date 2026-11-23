@@ -64,7 +64,7 @@ function onOpen() {
     .addToUi();
   SpreadsheetApp.getActiveSpreadsheet().getSheets()
     .filter((sheet) => isMonthlySummarySheetName(sheet.getName()))
-    .forEach(hideCheckoutDifferenceColumns);
+    .forEach(showCheckoutDifferenceColumns);
 }
 
 function onEdit(event) {
@@ -414,7 +414,7 @@ function refreshMonthlySummary() {
     });
     spreadsheet.getSheets()
       .filter((sheet) => isMonthlySummarySheetName(sheet.getName()))
-      .forEach(hideCheckoutDifferenceColumns);
+      .forEach(showCheckoutDifferenceColumns);
     removeLegacySupportSheets(spreadsheet);
     dataSheet.hideSheet();
   } finally {
@@ -1229,14 +1229,14 @@ function saveMonthlySummaryCorrections(sheet, corrections) {
   });
 }
 
-function hideCheckoutDifferenceColumns(sheet) {
+function showCheckoutDifferenceColumns(sheet) {
   const lastColumn = sheet.getLastColumn();
   if (lastColumn < 3 || sheet.getLastRow() < 2) return;
   const headers = sheet.getRange(1, 1, 2, lastColumn).getDisplayValues();
   for (let index = 2; index < lastColumn; index += 1) {
     if (String(headers[1][index] || '').trim() === DATE_HEADERS[3] ||
         String(headers[0][index] || '').trim() === TOTAL_HEADERS[2]) {
-      sheet.hideColumns(index + 1);
+      sheet.showColumns(index + 1);
     }
   }
 }
@@ -1356,7 +1356,7 @@ function renderMonthlySummary(
     ).setValues(metadataRows);
   }
   summarySheet.hideColumns(metadataStartColumn, metadataHeaders.length);
-  hideCheckoutDifferenceColumns(summarySheet);
+  showCheckoutDifferenceColumns(summarySheet);
   summarySheet.getRange(1, 1, 2, lastColumn)
     .setBackground('#ffff00')
     .setFontWeight('bold')

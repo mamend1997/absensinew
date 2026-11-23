@@ -34,7 +34,7 @@ const sandbox = {
 runInNewContext(
   `${script}\nthis.buildMonthlySummary = buildMonthlySummary;\nthis.readAttendanceCorrections = readAttendanceCorrections;\nthis.readMonthlySummaryState = readMonthlySummaryState;\nthis.buildSummaryEditCorrections = buildSummaryEditCorrections;\nthis.saveMonthlySummaryCorrections = saveMonthlySummaryCorrections;\nthis.monthSheetName = monthSheetName;\nthis.monthKeyFromSheetName = monthKeyFromSheetName;\nthis.getSummarySheet = getSummarySheet;\nthis.groupAttendanceRecordsByMonth = groupAttendanceRecordsByMonth;\nthis.formatDateLabel = formatDateLabel;\nthis.shouldIncludeAfterClear = shouldIncludeAfterClear;\nthis.clearSupersededAttendanceClearCorrections = clearSupersededAttendanceClearCorrections;\nthis.unmergeSummaryHeaders = unmergeSummaryHeaders;\n  this.isValidResetPin = isValidResetPin;\n  this.permissionSheetName = permissionSheetName;\n  this.buildPermissionSummary = buildPermissionSummary;\nthis.permissionEventIdsForTimes = permissionEventIdsForTimes;\n  this.normalizeSummaryCorrectionValue = normalizeSummaryCorrectionValue;
   this.fillMissingScheduledCheckOut = fillMissingScheduledCheckOut;
-  this.hideCheckoutDifferenceColumns = hideCheckoutDifferenceColumns;`,
+  this.showCheckoutDifferenceColumns = showCheckoutDifferenceColumns;`,
   sandbox,
 );
 
@@ -99,25 +99,25 @@ test('Apps Script fills a missing checkout schedule on an existing attendance ro
   assert.equal(cells.length, 1);
 });
 
-test('Apps Script hides daily and monthly checkout difference columns', () => {
-  const hiddenColumns = [];
+test('Apps Script restores daily and monthly checkout difference columns', () => {
+  const shownColumns = [];
   const headers = [
     ['No', 'Nama', '23-11-2026', '', '', '', 'Total Terlambat',
       'Total Hadir', 'Total Selisih Menit Keluar'],
     ['', '', 'Masuk', 'Terlambat', 'Keluar', 'Selisih Menit Keluar', '', '', ''],
   ];
-  sandbox.hideCheckoutDifferenceColumns({
+  sandbox.showCheckoutDifferenceColumns({
     getLastColumn: () => headers[0].length,
     getLastRow: () => 3,
     getRange() {
       return { getDisplayValues: () => headers };
     },
-    hideColumns(column) {
-      hiddenColumns.push(column);
+    showColumns(column) {
+      shownColumns.push(column);
     },
   });
 
-  assert.deepEqual(hiddenColumns, [6, 9]);
+  assert.deepEqual(shownColumns, [6, 9]);
 });
 
 test('Apps Script summary includes signed checkout differences for regular and permitted checkout', () => {
@@ -135,14 +135,14 @@ test('Apps Script summary includes signed checkout differences for regular and p
       participant_name: 'Agung',
       event_type: 'permission_check_out',
       attendance_date: '2026-11-02',
-      client_timestamp: '2026-11-02 08:05:00.000',
+      client_timestamp: '2026-11-02 08:15:00.000',
       scheduled_check_out: '15:00:00',
     },
   ], 'Asia/Jakarta', '2026-11');
 
   assert.equal(summary.rows[0][5], -5);
-  assert.equal(summary.rows[0][9], 5);
-  assert.equal(summary.rows[0][12], 0);
+  assert.equal(summary.rows[0][9], 15);
+  assert.equal(summary.rows[0][12], 10);
 });
 
 test('Apps Script allows daily and monthly checkout differences to be cleared', () => {
