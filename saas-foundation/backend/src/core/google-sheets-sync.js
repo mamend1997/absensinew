@@ -7,6 +7,7 @@ export { validateAppsScriptWebAppUrl } from './google-sheets-url.js';
 
 const SYNC_BATCH_SIZE = 100;
 const MAX_BATCHES_PER_RUN = 5;
+const ATTENDANCE_PAYLOAD_VERSION = 2;
 
 export function describeAppsScriptResponse(responseStatus, contentType, text) {
   if (/file yang anda minta tidak ada|file you have requested does not exist/i.test(text)) {
@@ -28,6 +29,23 @@ export async function sendAttendanceToGoogleSheets({ schoolId, ids, connection =
   }
 
   const placeholders = ids.map(() => '?').join(', ');
+  await connection.execute(
+    `UPDATE attendance_logs a
+       LEFT JOIN operational_settings s ON s.sekolah_id = a.sekolah_id
+       LEFT JOIN weekly_operational_schedules w
+         ON w.sekolah_id = a.sekolah_id
+        AND w.weekday = DAYOFWEEK(a.attendance_date) - 1
+       LEFT JOIN participant_operational_overrides o
+         ON o.sekolah_id = a.sekolah_id AND o.participant_id = a.participant_id
+        AND o.weekday = DAYOFWEEK(a.attendance_date) - 1
+        SET a.scheduled_check_out = COALESCE(
+          o.check_out_start, w.check_out_start, s.check_out_start)
+      WHERE a.sekolah_id = ? AND a.id_unik IN (${placeholders})
+        AND a.event_type IN ('check_out', 'permission_check_out')
+        AND a.scheduled_check_out IS NULL
+        AND COALESCE(o.check_out_start, w.check_out_start, s.check_out_start) IS NOT NULL`,
+    [schoolId, ...ids],
+  );
   const [rows] = await connection.execute(
     `SELECT a.id_unik, a.participant_id,
             UNIX_TIMESTAMP(a.server_received_at) * 1000 AS server_received_at_ms,
@@ -35,8 +53,8 @@ export async function sendAttendanceToGoogleSheets({ schoolId, ids, connection =
             a.participant_name_snapshot AS participant_name,
             a.classroom_name_snapshot AS classroom_name,
             a.attendance_date, a.event_type, a.client_timestamp_utc,
-            COALESCE(a.scheduled_check_out, o.check_out_start,
-              w.check_out_start, s.check_out_start) AS scheduled_check_out,
+            TIME_FORMAT(COALESCE(a.scheduled_check_out, o.check_out_start,
+              w.check_out_start, s.check_out_start), '%H:%i:%s') AS scheduled_check_out,
             a.attendance_status, a.late_minutes, a.scan_method
        FROM attendance_logs a
        LEFT JOIN operational_settings s ON s.sekolah_id = a.sekolah_id
@@ -130,13 +148,13 @@ async function syncSchoolHistory(schoolId) {
       );
       if (!state) return;
       let lastSyncedId = state.last_synced_id;
-      if (Number(state.attendance_payload_version) < 1) {
+      if (Number(state.attendance_payload_version) < ATTENDANCE_PAYLOAD_VERSION) {
         await lockConnection.execute(
           `UPDATE school_google_sheets_sync_state
-              SET last_synced_id = 0, attendance_payload_version = 1,
-                  last_attempt_at = NULL, last_error = NULL
-            WHERE sekolah_id = ? AND attendance_payload_version < 1`,
-          [schoolId],
+              SET last_synced_id = 0, attendance_payload_version = ?,
+                  last_attempt_at = NULL, last_success_at = NULL, last_error = NULL
+            WHERE sekolah_id = ? AND attendance_payload_version < ?`,
+          [ATTENDANCE_PAYLOAD_VERSION, schoolId, ATTENDANCE_PAYLOAD_VERSION],
         );
         lastSyncedId = 0;
       }
