@@ -292,9 +292,11 @@ interface OperationalSettings {
 interface ParticipantSchedule {
   participant_id: string | number;
   weekday: number;
-  check_in_deadline: string;
+  check_in_deadline?: string | null;
+  check_out_start?: string | null;
 }
-type ScheduleOverride = Pick<ParticipantSchedule, 'weekday' | 'check_in_deadline'>;
+type ScheduleOverride = Pick<ParticipantSchedule, 'weekday'> &
+  Partial<Pick<ParticipantSchedule, 'check_in_deadline' | 'check_out_start'>>;
 type PendingSettingsOperation =
   | {
     id: 'operational';
@@ -335,6 +337,7 @@ interface ReportRow {
   classroom_name: string;
   check_in_at?: string | null;
   check_out_at?: string | null;
+  checkout_diff_minutes?: number | null;
   attendance_status?: string;
   late_minutes?: number;
   menit_terlambat?: number;
@@ -382,10 +385,11 @@ interface QueuedScan {
   id_peserta: string;
   participant_name?: string;
   id_perangkat: string | null;
-  jenis_absen: 'check_in' | 'check_out' | 'permission_out' | 'permission_in';
+  jenis_absen: 'check_in' | 'check_out' | 'permission_check_out' | 'permission_out' | 'permission_in';
   scan_method?: 'SCAN_QR' | 'MANUAL_INPUT';
   attendance_date: string;
   client_timestamp: string;
+  scheduled_check_out?: string | null;
   status_kehadiran: string;
   menit_terlambat: number;
   status_sync: 'pending' | 'synced';
@@ -423,7 +427,13 @@ interface ScannerCache extends DBSchema {
   };
   attendanceState: { key: string; value: DailyAttendanceState };
 }
-interface ScanResult { date: string; status: string | null; lateMinutes: number; reason?: string }
+interface ScanResult {
+  date: string;
+  status: string | null;
+  lateMinutes: number;
+  reason?: string;
+  scheduledCheckOut?: string;
+}
 type LoginView = 'login' | 'register' | 'verify' | 'forgot-password' | 'reset-password';
 interface ConfirmationDialog {
   title: string;
@@ -823,14 +833,20 @@ function formatDurationMinutes(value?: number | null) {
   return `${new Intl.NumberFormat('id-ID', { maximumFractionDigits: 1 }).format(value)} menit`;
 }
 
+function formatCheckoutDifference(value?: number | null) {
+  if (value == null) return '—';
+  const formatted = new Intl.NumberFormat('id-ID', { maximumFractionDigits: 1 }).format(Math.abs(value));
+  return `${value > 0 ? '+' : value < 0 ? '-' : ''}${formatted} menit`;
+}
+
 function downloadReport(
   rows: MonthlyReportRow[],
   period: 'daily' | 'monthly',
   periodValue: string,
 ) {
   const headers = period === 'daily'
-    ? ['No', 'Nama', 'Kelas', 'Tanggal', 'Masuk', 'Menit telat', 'Keluar']
-    : ['No', 'Nama', 'Kelas', 'Tanggal', 'Masuk', 'Menit telat', 'Keluar', 'Total kehadiran bulanan', 'Total menit telat bulanan'];
+    ? ['No', 'Nama', 'Kelas', 'Tanggal', 'Masuk', 'Menit telat', 'Keluar', 'Selisih menit keluar']
+    : ['No', 'Nama', 'Kelas', 'Tanggal', 'Masuk', 'Menit telat', 'Keluar', 'Selisih menit keluar', 'Total kehadiran bulanan', 'Total menit telat bulanan'];
   const table = [
     headers,
     ...rows.map((row, index) => {
@@ -842,6 +858,7 @@ function downloadReport(
         row.check_in_at ? toLocalTime(row.check_in_at) : '',
         row.late_minutes ?? row.menit_terlambat ?? 0,
         row.check_out_at ? toLocalTime(row.check_out_at) : '',
+        formatCheckoutDifference(row.checkout_diff_minutes),
       ];
       return period === 'daily'
         ? dailyColumns
@@ -904,6 +921,7 @@ export default function App() {
   const [settings, setSettings] = useState<OperationalSettings>(initialSettings);
   const [scheduleParticipantId, setScheduleParticipantId] = useState('');
   const [scheduleOverrides, setScheduleOverrides] = useState<Record<number, string>>({});
+  const [scheduleCheckOutOverrides, setScheduleCheckOutOverrides] = useState<Record<number, string>>({});
   const [participantImportResult, setParticipantImportResult] = useState<ParticipantImportResult | null>(null);
   const [participantImportPreview, setParticipantImportPreview] = useState<ParticipantImportDraft[]>([]);
   const [roles, setRoles] = useState<Record<string, unknown>[]>([]);
@@ -994,7 +1012,7 @@ export default function App() {
   const [cameraRotation, setCameraRotation] = useState(initialScannerPreferences.cameraManualRotation);
   const [cameraControlsExpanded, setCameraControlsExpanded] = useState(false);
   const [attendanceSessionMode, setAttendanceSessionMode] = useState<
-    'auto' | 'check_in' | 'check_out' | 'permission_out' | 'permission_in'
+    'auto' | 'check_in' | 'check_out' | 'permission_check_out' | 'permission_out' | 'permission_in'
   >('auto');
   const [offlineExportBusy, setOfflineExportBusy] = useState(false);
   const [cameraFrameSize, setCameraFrameSize] = useState({ width: 0, height: 0 });
@@ -1847,6 +1865,8 @@ export default function App() {
           ? 'Masuk'
           : scan.jenis_absen === 'check_out'
             ? 'Pulang'
+            : scan.jenis_absen === 'permission_check_out'
+              ? 'Izin Pulang'
             : scan.jenis_absen === 'permission_out'
               ? 'Izin Keluar'
               : 'Masuk Kembali',
@@ -2294,7 +2314,7 @@ export default function App() {
   async function syncPending() {
     const result = await syncManager().syncPending();
     await refreshPendingCount();
-    if (result.accepted_ids.length || result.ignored_ids.length) {
+    if (result.accepted_ids.length || result.ignored_ids.length || result.rejected_ids.length) {
       setQueueRefreshVersion((current) => current + 1);
     }
     if (result.ignored_ids.length) {
@@ -2508,6 +2528,9 @@ export default function App() {
         record.jenis_absen === 'check_in',
       ) || Boolean(dailyState?.check_in);
       const eventType = attendanceEventTypeForMode(attendanceSessionMode, hasCheckIn);
+      if (['check_out', 'permission_check_out'].includes(eventType) && !hasCheckIn) {
+        throw new Error('Absen pulang belum bisa dicatat karena absen masuk belum tersedia.');
+      }
       if (eventType === 'permission_in') {
         const hasOpenPermissionOut = hasPermissionOutBeforeReturn(
           participantScans,
@@ -2541,6 +2564,11 @@ export default function App() {
           settings: scanSettings,
         }) as ScanResult;
       if (calculation.reason) {
+          if (calculation.reason === 'before_check_out_start') {
+            throw new Error(
+              `Belum waktunya pulang. Jadwal pulang peserta pukul ${calculation.scheduledCheckOut?.slice(0, 5) ?? 'sesuai jadwal'}.`,
+            );
+          }
         throw new Error('Hari ini bukan hari operasional sekolah.');
       }
       const scan = createQueuedScan({
@@ -2581,6 +2609,24 @@ export default function App() {
       if (online) {
         try {
           const syncResult = await syncPending();
+          if (syncResult.rejected_ids.includes(scan.id_unik)) {
+            const rejectedDetail = syncResult.rejected_details.find(
+              (item: { id_unik: string; reason: string }) => item.id_unik === scan.id_unik,
+            );
+            const reason = rejectedDetail?.reason === 'before_check_out_start'
+              ? `Belum waktunya pulang. Jadwal pulang peserta pukul ${scan.scheduled_check_out?.slice(0, 5) ?? 'sesuai jadwal'}.`
+              : rejectedDetail?.reason === 'non_working_day'
+                ? 'Hari ini bukan hari operasional sekolah.'
+                : 'Server menolak scan absensi. Periksa kembali status dan jadwal peserta.';
+            const failureMessage = attendanceMessage(scanSettings.scan_failure_message, {
+              name: matchedParticipant.full_name,
+              status: '',
+              reason,
+            });
+            showScanFeedback(failureMessage, false);
+            void announceAttendance(failureMessage, false);
+            return false;
+          }
           if (syncResult.ignored_ids.includes(scan.id_unik)) {
             const ignoredDetail = syncResult.ignored_details.find(
               (item: { id_unik: string; reason: string }) => item.id_unik === scan.id_unik,
@@ -3255,14 +3301,22 @@ export default function App() {
   }
 
   function openParticipantSchedule(participantId: string) {
-    const next: Record<number, string> = {};
+    const nextCheckIn: Record<number, string> = {};
+    const nextCheckOut: Record<number, string> = {};
     for (const override of settings.participant_overrides) {
       if (String(override.participant_id) === participantId) {
-        next[Number(override.weekday)] = override.check_in_deadline.slice(0, 5);
+        const weekday = Number(override.weekday);
+        if (override.check_in_deadline) {
+          nextCheckIn[weekday] = override.check_in_deadline.slice(0, 5);
+        }
+        if (override.check_out_start) {
+          nextCheckOut[weekday] = override.check_out_start.slice(0, 5);
+        }
       }
     }
     setScheduleParticipantId(participantId);
-    setScheduleOverrides(next);
+    setScheduleOverrides(nextCheckIn);
+    setScheduleCheckOutOverrides(nextCheckOut);
   }
 
   async function saveParticipantSchedule() {
@@ -3271,12 +3325,16 @@ export default function App() {
     let savedLocally = false;
     const participantId = scheduleParticipantId;
     try {
-      const overrides = Object.entries(scheduleOverrides)
-        .filter(([, deadline]) => deadline)
-        .map(([weekday, deadline]): ScheduleOverride => ({
-          weekday: Number(weekday),
-          check_in_deadline: `${deadline}:00`,
-        }));
+      const overrides = weekDays.map((_name, weekday): ScheduleOverride | null => {
+        const checkIn = scheduleOverrides[weekday];
+        const checkOut = scheduleCheckOutOverrides[weekday];
+        if (!checkIn && !checkOut) return null;
+        return {
+          weekday,
+          ...(checkIn ? { check_in_deadline: `${checkIn}:00` } : {}),
+          ...(checkOut ? { check_out_start: `${checkOut}:00` } : {}),
+        };
+      }).filter((item): item is ScheduleOverride => item !== null);
       const nextSettings = {
         ...settings,
         participant_overrides: [
@@ -4433,6 +4491,7 @@ export default function App() {
                         setAttendanceSessionMode(
                           value === 'check_in' ||
                           value === 'check_out' ||
+                          value === 'permission_check_out' ||
                           value === 'permission_out' ||
                           value === 'permission_in'
                             ? value
@@ -4443,6 +4502,7 @@ export default function App() {
                       <option value="auto">Otomatis</option>
                       <option value="check_in">Masuk</option>
                       <option value="check_out">Pulang</option>
+                      <option value="permission_check_out">Izin Pulang</option>
                       <option value="permission_out">Izin Keluar</option>
                       <option value="permission_in">Masuk Kembali</option>
                     </select>
@@ -4526,9 +4586,9 @@ export default function App() {
               <div className="panel report-print-area">
                 <div className="print-heading"><h2>{session.school.name} · {reportView === 'permissions' ? 'Rekap Izin Keluar' : 'Rekap Absensi'}</h2><p>{reportPeriod === 'daily' ? reportDate : reportMonth}</p></div>
                 {reportView === 'attendance' ? (
-                  <div className="table-scroll"><table className="report-table"><thead><tr>{can('attendance.edit') && <th className="no-print"><input type="checkbox" aria-label="Pilih semua riwayat rekap" checked={reportRows.length > 0 && reportRows.every((row) => selectedReportEntries.has(`${row.attendance_date}:${row.participant_id}`))} onChange={(event) => setSelectedReportEntries(event.target.checked ? new Set(reportRows.map((row) => `${row.attendance_date}:${row.participant_id}`)) : new Set())} /></th>}<th>No</th><th>Nama</th><th>Kelas</th><th>Tanggal</th><th>Masuk</th><th>Menit telat</th><th>Keluar</th>{reportPeriod === 'monthly' && <><th>Total kehadiran bulanan</th><th>Total menit telat bulanan</th></>}{can('attendance.edit') && <th className="no-print">Aksi</th>}</tr></thead><tbody>
-                    {monthlyReportRows.map((row, index) => <tr key={`${row.attendance_date}-${row.participant_id}-${index}`}>{can('attendance.edit') && <td className="no-print"><input type="checkbox" aria-label={`Pilih rekap ${row.participant_name} tanggal ${row.attendance_date}`} checked={selectedReportEntries.has(`${row.attendance_date}:${row.participant_id}`)} onChange={(event) => setSelectedReportEntries((current) => { const next = new Set(current); const key = `${row.attendance_date}:${row.participant_id}`; if (event.target.checked) next.add(key); else next.delete(key); return next; })} /></td>}<td>{index + 1}</td><td>{row.participant_name}</td><td>{row.classroom_name}</td><td>{row.attendance_date}</td><td>{toLocalTime(row.check_in_at)}</td><td>{row.late_minutes ?? row.menit_terlambat ?? 0}</td><td>{toLocalTime(row.check_out_at)}</td>{reportPeriod === 'monthly' && <><td>{row.monthly_attendance_count}</td><td>{row.monthly_late_minutes}</td></>}{can('attendance.edit') && <td className="no-print"><button type="button" className="button danger small" disabled={busy} onClick={() => void deleteReportEntries([{ participant_id: row.participant_id, attendance_date: row.attendance_date }])}>Hapus</button></td>}</tr>)}
-                    {!monthlyReportRows.length && <tr><td colSpan={(reportPeriod === 'daily' ? 7 : 9) + (can('attendance.edit') ? 2 : 0)} className="empty">Belum ada data untuk {reportPeriod === 'daily' ? 'tanggal' : 'bulan'} dan filter ini.</td></tr>}
+                  <div className="table-scroll"><table className="report-table"><thead><tr>{can('attendance.edit') && <th className="no-print"><input type="checkbox" aria-label="Pilih semua riwayat rekap" checked={reportRows.length > 0 && reportRows.every((row) => selectedReportEntries.has(`${row.attendance_date}:${row.participant_id}`))} onChange={(event) => setSelectedReportEntries(event.target.checked ? new Set(reportRows.map((row) => `${row.attendance_date}:${row.participant_id}`)) : new Set())} /></th>}<th>No</th><th>Nama</th><th>Kelas</th><th>Tanggal</th><th>Masuk</th><th>Menit telat</th><th>Keluar</th><th>Selisih menit keluar</th>{reportPeriod === 'monthly' && <><th>Total kehadiran bulanan</th><th>Total menit telat bulanan</th></>}{can('attendance.edit') && <th className="no-print">Aksi</th>}</tr></thead><tbody>
+                    {monthlyReportRows.map((row, index) => <tr key={`${row.attendance_date}-${row.participant_id}-${index}`}>{can('attendance.edit') && <td className="no-print"><input type="checkbox" aria-label={`Pilih rekap ${row.participant_name} tanggal ${row.attendance_date}`} checked={selectedReportEntries.has(`${row.attendance_date}:${row.participant_id}`)} onChange={(event) => setSelectedReportEntries((current) => { const next = new Set(current); const key = `${row.attendance_date}:${row.participant_id}`; if (event.target.checked) next.add(key); else next.delete(key); return next; })} /></td>}<td>{index + 1}</td><td>{row.participant_name}</td><td>{row.classroom_name}</td><td>{row.attendance_date}</td><td>{toLocalTime(row.check_in_at)}</td><td>{row.late_minutes ?? row.menit_terlambat ?? 0}</td><td>{toLocalTime(row.check_out_at)}</td><td>{formatCheckoutDifference(row.checkout_diff_minutes)}</td>{reportPeriod === 'monthly' && <><td>{row.monthly_attendance_count}</td><td>{row.monthly_late_minutes}</td></>}{can('attendance.edit') && <td className="no-print"><button type="button" className="button danger small" disabled={busy} onClick={() => void deleteReportEntries([{ participant_id: row.participant_id, attendance_date: row.attendance_date }])}>Hapus</button></td>}</tr>)}
+                    {!monthlyReportRows.length && <tr><td colSpan={(reportPeriod === 'daily' ? 8 : 10) + (can('attendance.edit') ? 2 : 0)} className="empty">Belum ada data untuk {reportPeriod === 'daily' ? 'tanggal' : 'bulan'} dan filter ini.</td></tr>}
                   </tbody></table></div>
                 ) : (
                   <div className="table-scroll"><table className="report-table"><thead><tr>{can('attendance.edit') && <th className="no-print"><input type="checkbox" aria-label="Pilih semua riwayat izin keluar" checked={permissionReportRows.length > 0 && permissionReportRows.every((row) => selectedPermissionEntries.has(row.id))} onChange={(event) => setSelectedPermissionEntries(event.target.checked ? new Set(permissionReportRows.map((row) => row.id)) : new Set())} /></th>}<th>No</th><th>Nama</th><th>Kelas</th><th>Tanggal</th><th>Izin keluar</th><th>Masuk kembali</th><th>Durasi keluar</th>{reportPeriod === 'monthly' && <><th>Total durasi keluar bulanan</th><th>Total keluar bulanan</th></>}{can('attendance.edit') && <th className="no-print">Aksi</th>}</tr></thead><tbody>
@@ -4631,10 +4691,15 @@ export default function App() {
                 </div>}
               </div>}
               {scheduleParticipantId && <div className="panel participant-schedule-editor">
-                <div className="section-title"><div><h2>Jam masuk khusus: {participants.find((item) => item.id === scheduleParticipantId)?.full_name ?? 'Peserta'}</h2><p className="muted">Hari yang dibiarkan kosong mengikuti jadwal sekolah. Tersedia untuk scan offline.</p></div><button type="button" className="button secondary" onClick={() => setScheduleParticipantId('')}>Tutup</button></div>
-                <div className="participant-schedule-grid">{weekDays.map((name, weekday) => <label key={weekday}>{name}
-                  <input type="time" value={scheduleOverrides[weekday] ?? ''} onChange={(event) => setScheduleOverrides((current) => ({ ...current, [weekday]: event.target.value }))} />
-                </label>)}</div>
+                <div className="section-title"><div><h2>Jadwal khusus: {participants.find((item) => item.id === scheduleParticipantId)?.full_name ?? 'Peserta'}</h2><p className="muted">Jam kosong mengikuti jadwal sekolah. Jadwal ini tersedia saat scan offline.</p></div><button type="button" className="button secondary" onClick={() => setScheduleParticipantId('')}>Tutup</button></div>
+                <div className="participant-schedule-grid">{weekDays.flatMap((name, weekday) => [
+                  <label key={`${weekday}-check-in`}>{name} · Masuk
+                    <input type="time" value={scheduleOverrides[weekday] ?? ''} onChange={(event) => setScheduleOverrides((current) => ({ ...current, [weekday]: event.target.value }))} />
+                  </label>,
+                  <label key={`${weekday}-check-out`}>{name} · Pulang
+                    <input type="time" value={scheduleCheckOutOverrides[weekday] ?? ''} onChange={(event) => setScheduleCheckOutOverrides((current) => ({ ...current, [weekday]: event.target.value }))} />
+                  </label>,
+                ])}</div>
                 <div className="heading-actions"><button type="button" className="button primary" disabled={busy} onClick={() => void saveParticipantSchedule()}>{busy ? 'Menyimpan…' : 'Simpan jadwal khusus'}</button></div>
               </div>}
               <div className="panel">
@@ -4844,7 +4909,7 @@ export default function App() {
                 <ul className="holiday-list">{operationalForm.holidays.map((holiday) => <li key={`${holiday.date}-${holiday.name}`}><span>{holiday.date} · {holiday.name}</span><button type="button" className="text-button" onClick={() => setOperationalForm((current) => ({ ...current, holidays: current.holidays.filter((item) => item !== holiday) }))}>Hapus</button></li>)}</ul>
               </form>}
               {can('participants.edit') && <section className="panel participant-schedule-settings">
-                <div><h2>Batas masuk khusus peserta</h2><p className="muted">Pilih peserta dan atur batas waktu masuk untuk hari tertentu. Hari kosong memakai jadwal sekolah.</p></div>
+                <div><h2>Jadwal khusus peserta</h2><p className="muted">Pilih peserta untuk mengatur jam masuk dan pulang per hari. Jam kosong memakai jadwal sekolah.</p></div>
                 <label>Pilih peserta
                   <select value={scheduleParticipantId} onChange={(event) => openParticipantSchedule(event.target.value)}>
                     <option value="">Pilih peserta</option>
@@ -4852,10 +4917,15 @@ export default function App() {
                   </select>
                 </label>
                 {scheduleParticipantId && <>
-                  <div className="participant-schedule-grid">{weekDays.map((name, weekday) => <label key={weekday}>{name}
-                    <input type="time" value={scheduleOverrides[weekday] ?? ''} onChange={(event) => setScheduleOverrides((current) => ({ ...current, [weekday]: event.target.value }))} />
-                  </label>)}</div>
-                  <div className="heading-actions"><button type="button" className="button primary" disabled={busy} onClick={() => void saveParticipantSchedule()}>{busy ? 'Menyimpan…' : 'Simpan jadwal peserta'}</button><button type="button" className="button secondary" onClick={() => { setScheduleParticipantId(''); setScheduleOverrides({}); }}>Batal</button></div>
+                  <div className="participant-schedule-grid">{weekDays.flatMap((name, weekday) => [
+                    <label key={`${weekday}-check-in`}>{name} · Masuk
+                      <input type="time" value={scheduleOverrides[weekday] ?? ''} onChange={(event) => setScheduleOverrides((current) => ({ ...current, [weekday]: event.target.value }))} />
+                    </label>,
+                    <label key={`${weekday}-check-out`}>{name} · Pulang
+                      <input type="time" value={scheduleCheckOutOverrides[weekday] ?? ''} onChange={(event) => setScheduleCheckOutOverrides((current) => ({ ...current, [weekday]: event.target.value }))} />
+                    </label>,
+                  ])}</div>
+                  <div className="heading-actions"><button type="button" className="button primary" disabled={busy} onClick={() => void saveParticipantSchedule()}>{busy ? 'Menyimpan…' : 'Simpan jadwal peserta'}</button><button type="button" className="button secondary" onClick={() => { setScheduleParticipantId(''); setScheduleOverrides({}); setScheduleCheckOutOverrides({}); }}>Batal</button></div>
                 </>}
               </section>}
               {can('settings.operational.view') && <section className="panel school-whatsapp-panel">
@@ -5188,6 +5258,8 @@ function LocalQueueList({ schoolId, refreshKey }: { schoolId: string | number; r
         ? 'Masuk'
         : item.jenis_absen === 'check_out'
           ? 'Pulang'
+          : item.jenis_absen === 'permission_check_out'
+            ? 'Izin Pulang'
           : item.jenis_absen === 'permission_out'
             ? 'Izin Keluar'
             : 'Masuk Kembali'}</td>

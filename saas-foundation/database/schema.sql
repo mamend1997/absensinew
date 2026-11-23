@@ -388,12 +388,16 @@ CREATE TABLE IF NOT EXISTS participant_operational_overrides (
     sekolah_id BIGINT UNSIGNED NOT NULL,
     participant_id BIGINT UNSIGNED NOT NULL,
     weekday TINYINT UNSIGNED NOT NULL,
-    check_in_deadline TIME NOT NULL,
+    check_in_deadline TIME NULL,
+    check_out_start TIME NULL,
     PRIMARY KEY (sekolah_id, participant_id, weekday),
     CONSTRAINT fk_participant_override_participant
         FOREIGN KEY (sekolah_id, participant_id)
         REFERENCES participants (sekolah_id, id) ON DELETE CASCADE,
-    CONSTRAINT chk_participant_override_weekday CHECK (weekday BETWEEN 0 AND 6)
+    CONSTRAINT chk_participant_override_weekday CHECK (weekday BETWEEN 0 AND 6),
+    CONSTRAINT chk_participant_override_has_schedule CHECK (
+        check_in_deadline IS NOT NULL OR check_out_start IS NOT NULL
+    )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS operational_settings (
@@ -470,8 +474,9 @@ CREATE TABLE IF NOT EXISTS attendance_logs (
     participant_name_snapshot VARCHAR(150) NOT NULL,
     classroom_name_snapshot VARCHAR(100) NOT NULL,
     attendance_date DATE NOT NULL,
-    event_type ENUM('check_in', 'check_out', 'permission_out', 'permission_in') NOT NULL,
+    event_type ENUM('check_in', 'check_out', 'permission_check_out', 'permission_out', 'permission_in') NOT NULL,
     client_timestamp_utc DATETIME(3) NOT NULL,
+    scheduled_check_out TIME NULL,
     server_received_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     attendance_status ENUM('hadir', 'terlambat', 'pulang', 'izin_keluar', 'izin_masuk') NOT NULL,
     late_minutes DECIMAL(7,1) UNSIGNED NOT NULL DEFAULT 0.0,
@@ -489,11 +494,16 @@ CREATE TABLE IF NOT EXISTS attendance_logs (
     CONSTRAINT fk_attendance_user FOREIGN KEY (sekolah_id, recorded_by)
         REFERENCES users (sekolah_id, id),
     CONSTRAINT chk_attendance_status_event CHECK (
-        (event_type = 'check_out' AND attendance_status = 'pulang' AND late_minutes = 0)
+        (event_type IN ('check_out', 'permission_check_out')
+         AND attendance_status = 'pulang' AND late_minutes = 0)
         OR
         (event_type = 'check_in' AND attendance_status IN ('hadir', 'terlambat')
          AND ((attendance_status = 'hadir' AND late_minutes = 0)
               OR (attendance_status = 'terlambat' AND late_minutes > 0)))
+        OR
+        (event_type = 'permission_out' AND attendance_status = 'izin_keluar' AND late_minutes = 0)
+        OR
+        (event_type = 'permission_in' AND attendance_status = 'izin_masuk' AND late_minutes = 0)
     )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

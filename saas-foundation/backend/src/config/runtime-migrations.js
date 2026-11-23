@@ -5,10 +5,13 @@ export async function ensureRuntimeMigrations(pool) {
   );
   if (attendanceColumns.length) {
     const eventColumn = attendanceColumns.find((column) => column.COLUMN_NAME === 'event_type');
-    if (eventColumn && !String(eventColumn.COLUMN_TYPE).includes('permission_out')) {
+    if (eventColumn &&
+        (!String(eventColumn.COLUMN_TYPE).includes('permission_out') ||
+          !String(eventColumn.COLUMN_TYPE).includes('permission_in') ||
+          !String(eventColumn.COLUMN_TYPE).includes('permission_check_out'))) {
       await pool.execute(
         `ALTER TABLE attendance_logs
-         MODIFY COLUMN event_type ENUM('check_in','check_out','permission_out','permission_in') NOT NULL`,
+         MODIFY COLUMN event_type ENUM('check_in','check_out','permission_check_out','permission_out','permission_in') NOT NULL`,
       );
     }
     const statusColumn = attendanceColumns.find((column) => column.COLUMN_NAME === 'attendance_status');
@@ -24,6 +27,11 @@ export async function ensureRuntimeMigrations(pool) {
       await pool.execute(
         `ALTER TABLE attendance_logs
          MODIFY COLUMN late_minutes DECIMAL(7,1) UNSIGNED NOT NULL DEFAULT 0.0`,
+      );
+    }
+    if (!attendanceColumns.some((column) => column.COLUMN_NAME === 'scheduled_check_out')) {
+      await pool.execute(
+        'ALTER TABLE attendance_logs ADD COLUMN scheduled_check_out TIME NULL AFTER client_timestamp_utc',
       );
     }
 
@@ -56,17 +64,20 @@ export async function ensureRuntimeMigrations(pool) {
     );
     const statusConstraint = checkConstraints.find((constraint) =>
       constraint.CONSTRAINT_NAME === 'chk_attendance_status_event');
-    const alreadyAllowsPermissions = statusConstraint &&
-      String(statusConstraint.CHECK_CLAUSE).includes('permission_out');
-    if (statusConstraint && !alreadyAllowsPermissions) {
+    const alreadyAllowsPermissionEvents = statusConstraint &&
+      String(statusConstraint.CHECK_CLAUSE).includes('permission_out') &&
+      String(statusConstraint.CHECK_CLAUSE).includes('permission_in') &&
+      String(statusConstraint.CHECK_CLAUSE).includes('permission_check_out');
+    if (statusConstraint && !alreadyAllowsPermissionEvents) {
       await pool.execute(
         'ALTER TABLE attendance_logs DROP CHECK chk_attendance_status_event',
       );
     }
-    if (!alreadyAllowsPermissions) {
+    if (!alreadyAllowsPermissionEvents) {
       await pool.execute(
         `ALTER TABLE attendance_logs ADD CONSTRAINT chk_attendance_status_event CHECK (
-          (event_type = 'check_out' AND attendance_status = 'pulang' AND late_minutes = 0)
+          (event_type IN ('check_out','permission_check_out')
+           AND attendance_status = 'pulang' AND late_minutes = 0)
           OR
           (event_type = 'check_in' AND attendance_status IN ('hadir','terlambat')
            AND ((attendance_status = 'hadir' AND late_minutes = 0)
@@ -123,14 +134,39 @@ export async function ensureRuntimeMigrations(pool) {
       sekolah_id BIGINT UNSIGNED NOT NULL,
       participant_id BIGINT UNSIGNED NOT NULL,
       weekday TINYINT UNSIGNED NOT NULL,
-      check_in_deadline TIME NOT NULL,
+      check_in_deadline TIME NULL,
+      check_out_start TIME NULL,
       PRIMARY KEY (sekolah_id, participant_id, weekday),
       CONSTRAINT fk_participant_override_participant
         FOREIGN KEY (sekolah_id, participant_id)
         REFERENCES participants (sekolah_id, id) ON DELETE CASCADE,
-      CONSTRAINT chk_participant_override_weekday CHECK (weekday BETWEEN 0 AND 6)
+      CONSTRAINT chk_participant_override_weekday CHECK (weekday BETWEEN 0 AND 6),
+      CONSTRAINT chk_participant_override_has_schedule CHECK (
+        check_in_deadline IS NOT NULL OR check_out_start IS NOT NULL
+      )
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+  const [participantOverrideColumns] = await pool.execute(
+    `SELECT COLUMN_NAME, IS_NULLABLE FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'participant_operational_overrides'`,
+  );
+  const participantOverrideColumnNames = new Set(
+    participantOverrideColumns.map((column) => column.COLUMN_NAME),
+  );
+  if (participantOverrideColumnNames.size &&
+      !participantOverrideColumnNames.has('check_out_start')) {
+    await pool.execute(
+      'ALTER TABLE participant_operational_overrides ADD COLUMN check_out_start TIME NULL AFTER check_in_deadline',
+    );
+  }
+  const checkInOverrideColumn = participantOverrideColumns.find(
+    (column) => column.COLUMN_NAME === 'check_in_deadline',
+  );
+  if (checkInOverrideColumn?.IS_NULLABLE === 'NO') {
+    await pool.execute(
+      'ALTER TABLE participant_operational_overrides MODIFY COLUMN check_in_deadline TIME NULL',
+    );
+  }
 
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS participant_late_notifications (

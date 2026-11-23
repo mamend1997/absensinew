@@ -34,7 +34,8 @@ export async function sendAttendanceToGoogleSheets({ schoolId, ids, connection =
             participant_code_snapshot AS participant_code,
             participant_name_snapshot AS participant_name,
             classroom_name_snapshot AS classroom_name, attendance_date, event_type,
-            client_timestamp_utc, attendance_status, late_minutes, scan_method
+            client_timestamp_utc, scheduled_check_out, attendance_status,
+            late_minutes, scan_method
        FROM attendance_logs
       WHERE sekolah_id = ? AND id_unik IN (${placeholders})`,
     [schoolId, ...ids],

@@ -69,6 +69,30 @@ test('Apps Script builds monthly permission exit and return sheet', () => {
   assert.equal(summary.rows[0][6], 1);
 });
 
+test('Apps Script summary includes signed checkout differences for regular and permitted checkout', () => {
+  const summary = sandbox.buildMonthlySummary([
+    {
+      participant_id: 'P1',
+      participant_name: 'Agung',
+      event_type: 'check_out',
+      attendance_date: '2026-11-01',
+      client_timestamp: '2026-11-01 07:55:00.000',
+      scheduled_check_out: '15:00:00',
+    },
+    {
+      participant_id: 'P1',
+      participant_name: 'Agung',
+      event_type: 'permission_check_out',
+      attendance_date: '2026-11-02',
+      client_timestamp: '2026-11-02 08:05:00.000',
+      scheduled_check_out: '15:00:00',
+    },
+  ], 'Asia/Jakarta', '2026-11');
+
+  assert.equal(summary.rows[0][5], -5);
+  assert.equal(summary.rows[0][9], 5);
+});
+
 test('Apps Script permission pairing stays within the same attendance date', () => {
   const summary = sandbox.buildPermissionSummary([
     {
@@ -250,8 +274,8 @@ test('Apps Script groups attendance by participant across dynamic date columns',
   assert.deepEqual(Array.from(dates), ['2026-11-01', '2026-11-02']);
   assert.equal(sandbox.formatDateLabel(dates[0]), '01-11-2026');
   assert.deepEqual(Array.from(rows, (row) => Array.from(row)), [
-    [1, 'Agung', '07:54:09', 5, '15:15:00', '07:49:58', 0, '', 5, 2],
-    [2, 'Budi', '', '', '', '07:50:00', 2, '', 2, 1],
+    [1, 'Agung', '07:54:09', 5, '15:15:00', '', '07:49:58', 0, '', '', 5, 2],
+    [2, 'Budi', '', '', '', '', '07:50:00', 2, '', '', 2, 1],
   ]);
 });
 
@@ -291,8 +315,8 @@ test('Apps Script merges code changes by stable participant ID', () => {
 
   assert.equal(rows.length, 2);
   assert.deepEqual(Array.from(rows, (row) => Array.from(row)), [
-    [1, 'Siti', '07:54:09', 5, '15:11:17', 5, 1],
-    [2, 'Siti', '08:00:00', 0, '', 0, 1],
+    [1, 'Siti', '07:54:09', 5, '15:11:17', '', 5, 1],
+    [2, 'Siti', '08:00:00', 0, '', '', 0, 1],
   ]);
 });
 
@@ -319,8 +343,8 @@ test('Apps Script retains fractional lateness in daily and monthly totals', () =
   ], 'Asia/Jakarta', '2026-11');
 
   assert.equal(rows[0][3], 0.5);
-  assert.equal(rows[0][6], 1.7);
-  assert.equal(rows[0][8], 2.2);
+  assert.equal(rows[0][7], 1.7);
+  assert.equal(rows[0][10], 2.2);
 });
 
 test('Apps Script accepts lateness corrections with one decimal place', () => {
@@ -375,8 +399,8 @@ test('Apps Script follows manual participant order and keeps time corrections', 
   ]));
 
   assert.deepEqual(Array.from(rows, (row) => Array.from(row)), [
-    [1, 'Zahra', '', 5, '', 5, 1],
-    [2, 'Ayu', '08:15:00', 0, '', 0, 1],
+    [1, 'Zahra', '', 5, '', '', 5, 1],
+    [2, 'Ayu', '08:15:00', 0, '', '', 0, 1],
   ]);
 });
 
@@ -419,7 +443,7 @@ test('Apps Script supports daily lateness and total lateness corrections', () =>
   ]));
 
   assert.deepEqual(Array.from(summary.rows[0]), [
-    1, 'Zahra',  '07:40:00', 12, '', '07:45:00', 3, '', 25, 2,
+    1, 'Zahra',  '07:40:00', 12, '', '', '07:45:00', 3, '', '', 25, 2,
   ]);
   assert.deepEqual(Array.from(summary.baselineRows[0]), [
     '07:40:00', 5, '', '07:45:00', 3, '',
@@ -449,7 +473,7 @@ test('Apps Script supports daily lateness and total lateness corrections', () =>
   const editedTotal = sandbox.buildSummaryEditCorrections(
     [[20]],
     3,
-    6,
+    7,
     3,
     ['17'],
     dateColumns,
@@ -488,14 +512,14 @@ test('Apps Script supports daily lateness and total lateness corrections', () =>
 test('Apps Script supports correcting and clearing total attendance', () => {
   const rows = [
     [
-      'No', 'Nama', '21-11-2026', '', '', 'Total Terlambat', 'Total Hadir',
+      'No', 'Nama', '21-11-2026', '', '', '', 'Total Terlambat', 'Total Hadir',
       'participant_id',
       '__attendance_override__total_attendance',
       '__attendance_baseline__total_attendance',
     ],
-    ['No', 'Nama', 'Masuk', 'Terlambat', 'Keluar', 'Total Terlambat', 'Total Hadir',
-      '', '', ''],
-    [1, 'Zahra', '07:40:00', 5, '', 5, 1, '17', '', 1],
+    ['No', 'Nama', 'Masuk', 'Terlambat', 'Keluar', 'Selisih Menit Keluar',
+      'Total Terlambat', 'Total Hadir', '', '', ''],
+    [1, 'Zahra', '07:40:00', 5, '', '', 5, 1, '17', '', 1],
   ];
   const sheet = {
     getLastRow: () => rows.length,
@@ -517,7 +541,7 @@ test('Apps Script supports correcting and clearing total attendance', () => {
   const editedTotal = sandbox.buildSummaryEditCorrections(
     [[4]],
     3,
-    7,
+    8,
     3,
     ['17'],
     dateColumns,
@@ -531,7 +555,7 @@ test('Apps Script supports correcting and clearing total attendance', () => {
   assert.throws(() => sandbox.buildSummaryEditCorrections(
     [[1.5]],
     3,
-    7,
+    8,
     3,
     ['17'],
     dateColumns,
@@ -550,13 +574,13 @@ test('Apps Script supports correcting and clearing total attendance', () => {
     client_timestamp: '2026-11-21 00:40:00.000',
     late_minutes: 5,
   }], 'Asia/Jakarta', '2026-11', state.order, state.corrections);
-  assert.equal(rows[2][6], 4);
-  assert.equal(summary.rows[0][6], 4);
+  assert.equal(rows[2][7], 4);
+  assert.equal(summary.rows[0][7], 4);
 
   const clearedTotal = sandbox.buildSummaryEditCorrections(
     [['']],
     3,
-    7,
+    8,
     3,
     ['17'],
     dateColumns,
@@ -576,8 +600,8 @@ test('Apps Script supports correcting and clearing total attendance', () => {
     client_timestamp: '2026-11-21 00:40:00.000',
     late_minutes: 5,
   }], 'Asia/Jakarta', '2026-11', state.order, state.corrections);
-  assert.equal(rows[2][6], '');
-  assert.equal(summary.rows[0][6], '');
+  assert.equal(rows[2][7], '');
+  assert.equal(summary.rows[0][7], '');
 });
 
 test('Apps Script reads saved lateness correction metadata', () => {
@@ -588,6 +612,7 @@ test('Apps Script reads saved lateness correction metadata', () => {
       '21-11-2026',
       '',
       '',
+      '',
       'Total Terlambat',
       'Total Hadir',
       'participant_id',
@@ -596,8 +621,8 @@ test('Apps Script reads saved lateness correction metadata', () => {
       '__attendance_baseline__2026-11-21__late_minutes',
       '__attendance_baseline__total_late_minutes',
     ],
-    ['', '', 'Masuk', 'Terlambat', 'Keluar', '', '', '', '', '', '', ''],
-    [1, 'Zahra', '07:40:00', 12, '', 25, 1, '17', '12', '25', '5', '5'],
+    ['', '', 'Masuk', 'Terlambat', 'Keluar', 'Selisih Menit Keluar', '', '', '', '', '', '', ''],
+    [1, 'Zahra', '07:40:00', 12, '', '', 25, 1, '17', '12', '25', '5', '5'],
   ];
   const sheet = {
     getLastRow: () => rows.length,
@@ -630,7 +655,7 @@ test('Apps Script reads saved lateness correction metadata', () => {
     late_minutes: 5,
   }], 'Asia/Jakarta', '2026-11', state.order, state.corrections);
   assert.equal(summary.rows[0][3], 12);
-  assert.equal(summary.rows[0][5], 25);
+  assert.equal(summary.rows[0][6], 25);
 });
 
 test('Apps Script saves daily and total lateness edits to their metadata cells', () => {
@@ -875,8 +900,8 @@ test('Apps Script keeps direct time deletions and row order in monthly sheet met
   assert.equal(rows[3][2], '');
   assert.equal(rows[3][8], 'clear');
   assert.deepEqual(Array.from(summary.rows, (row) => Array.from(row)), [
-    [1, 'Ayu', '20:48:54', 0, '', 0, 1],
-    [2, 'Zahra', '', 0, '', 0, 1],
+    [1, 'Ayu', '20:48:54', 0, '', '', 0, 1],
+    [2, 'Zahra', '', 0, '', '', 0, 1],
   ]);
   assert.deepEqual(Array.from(summary.baselineRows, (row) => Array.from(row)), [
     ['20:48:54', 0, ''],

@@ -48,7 +48,7 @@ export function calculateAttendance({
   if (!settings || typeof settings !== 'object') {
     throw new TypeError('Pengaturan operasional sekolah wajib tersedia.');
   }
-  if (!['check_in', 'check_out', 'permission_out', 'permission_in'].includes(eventType)) {
+  if (!['check_in', 'check_out', 'permission_check_out', 'permission_out', 'permission_in'].includes(eventType)) {
     throw new TypeError('eventType absensi tidak valid.');
   }
 
@@ -72,15 +72,33 @@ export function calculateAttendance({
   if (!working || holiday) {
     return { date, status: null, lateMinutes: 0, reason: 'non_working_day' };
   }
-  if (eventType === 'check_out') {
-    return { date, status: 'pulang', lateMinutes: 0 };
-  }
-
   const override = settings.participant_overrides?.find(
     (item) =>
       String(item.participant_id) === String(participantId) &&
       Number(item.weekday) === weekday,
   );
+  if (eventType === 'check_out' || eventType === 'permission_check_out') {
+    const scheduledCheckOut = override?.check_out_start ??
+      schedule?.check_out_start ??
+      settings.check_out_start;
+    const scheduledSeconds = parseTime(scheduledCheckOut, 'check_out_start');
+    if (eventType === 'check_out' && seconds < scheduledSeconds) {
+      return {
+        date,
+        status: null,
+        lateMinutes: 0,
+        reason: 'before_check_out_start',
+        scheduledCheckOut,
+      };
+    }
+    return {
+      date,
+      status: 'pulang',
+      lateMinutes: 0,
+      scheduledCheckOut,
+    };
+  }
+
   const deadline = parseTime(
     override?.check_in_deadline ??
       schedule?.check_in_deadline ??
@@ -125,7 +143,7 @@ export function createQueuedScan({
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id_unik)) {
     throw new TypeError('id_unik harus berupa UUID yang valid.');
   }
-  if (!['check_in', 'check_out', 'permission_out', 'permission_in'].includes(jenis_absen)) {
+  if (!['check_in', 'check_out', 'permission_check_out', 'permission_out', 'permission_in'].includes(jenis_absen)) {
     throw new TypeError('jenis_absen absensi tidak valid.');
   }
   if (!['SCAN_QR', 'MANUAL_INPUT'].includes(scan_method)) {
@@ -143,7 +161,8 @@ export function createQueuedScan({
     throw new RangeError('Menit keterlambatan tidak valid.');
   }
   if (
-    (jenis_absen === 'check_out' && (calculation.status !== 'pulang' || lateMinutes !== 0)) ||
+    (['check_out', 'permission_check_out'].includes(jenis_absen) &&
+      (calculation.status !== 'pulang' || lateMinutes !== 0)) ||
     (jenis_absen === 'permission_out' && (calculation.status !== 'izin_keluar' || lateMinutes !== 0)) ||
     (jenis_absen === 'permission_in' && (calculation.status !== 'izin_masuk' || lateMinutes !== 0)) ||
     (jenis_absen === 'check_in' && !['hadir', 'terlambat'].includes(calculation.status)) ||
@@ -162,6 +181,7 @@ export function createQueuedScan({
     scan_method,
     attendance_date: calculation.date,
     client_timestamp: new Date(client_timestamp).toISOString(),
+    scheduled_check_out: calculation.scheduledCheckOut ?? null,
     status_kehadiran: calculation.status,
     menit_terlambat: lateMinutes,
     status_sync: 'pending',

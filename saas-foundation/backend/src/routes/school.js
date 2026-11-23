@@ -143,7 +143,7 @@ async function loadAttendanceSettings(schoolId) {
     [schoolId],
   );
   const [participantOverrides] = await pool.execute(
-    `SELECT participant_id, weekday, check_in_deadline
+    `SELECT participant_id, weekday, check_in_deadline, check_out_start
        FROM participant_operational_overrides WHERE sekolah_id = ?`,
     [schoolId],
   );
@@ -933,8 +933,11 @@ router.put('/participants/:id/schedule', requireSchoolUser, requirePermission('p
   if (!Array.isArray(overrides) || overrides.length > 7 ||
       overrides.some((item) => !Number.isInteger(item.weekday) ||
         item.weekday < 0 || item.weekday > 6 ||
-        typeof item.check_in_deadline !== 'string' ||
-        !timePattern.test(item.check_in_deadline)) ||
+        (item.check_in_deadline != null &&
+          (typeof item.check_in_deadline !== 'string' || !timePattern.test(item.check_in_deadline))) ||
+        (item.check_out_start != null &&
+          (typeof item.check_out_start !== 'string' || !timePattern.test(item.check_out_start))) ||
+        (item.check_in_deadline == null && item.check_out_start == null)) ||
       new Set(overrides.map((item) => item.weekday)).size !== overrides.length) {
     throw fail(400, 'Jadwal khusus peserta tidak valid.', 'VALIDATION_ERROR');
   }
@@ -955,9 +958,15 @@ router.put('/participants/:id/schedule', requireSchoolUser, requirePermission('p
     for (const item of overrides) {
       await connection.execute(
         `INSERT INTO participant_operational_overrides
-          (sekolah_id, participant_id, weekday, check_in_deadline)
-         VALUES (?, ?, ?, ?)`,
-        [req.schoolUser.sekolah_id, participantId, item.weekday, item.check_in_deadline],
+          (sekolah_id, participant_id, weekday, check_in_deadline, check_out_start)
+         VALUES (?, ?, ?, ?, ?)`,
+        [
+          req.schoolUser.sekolah_id,
+          participantId,
+          item.weekday,
+          item.check_in_deadline ?? null,
+          item.check_out_start ?? null,
+        ],
       );
     }
     await connection.commit();
@@ -1146,7 +1155,7 @@ router.get('/settings', requireSchoolUser,
   );
   const overrideScope = classroomScope(req.schoolUser, 'p');
   const [participantOverrides] = await pool.execute(
-    `SELECT o.participant_id, o.weekday, o.check_in_deadline
+    `SELECT o.participant_id, o.weekday, o.check_in_deadline, o.check_out_start
        FROM participant_operational_overrides o
        JOIN participants p
          ON p.id = o.participant_id AND p.sekolah_id = o.sekolah_id
@@ -2095,7 +2104,7 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
     const eventType = record.event_type ?? record.jenis_absen;
     const participantId = record.participant_id ?? record.id_peserta;
     const scanMethod = record.scan_method ?? 'SCAN_QR';
-    if (!['check_in', 'check_out', 'permission_out', 'permission_in'].includes(eventType) ||
+    if (!['check_in', 'check_out', 'permission_check_out', 'permission_out', 'permission_in'].includes(eventType) ||
         !/^[1-9]\d*$/.test(String(participantId ?? '')) ||
         !['SCAN_QR', 'MANUAL_INPUT'].includes(scanMethod) ||
         typeof record.client_timestamp !== 'string' ||
@@ -2146,7 +2155,7 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
             }
             throw new Error('daily_duplicate');
           }
-          if (eventType === 'check_out') {
+          if (eventType === 'check_out' || eventType === 'permission_check_out') {
             const [checkInRows] = await connection.execute(
               `SELECT id FROM attendance_logs
                 WHERE sekolah_id = ? AND participant_id = ?
@@ -2156,11 +2165,11 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
             );
             if (!checkInRows.length) return 'ignored_missing_check_in';
           }
-          if (['check_in', 'check_out'].includes(eventType)) {
+          if (['check_in', 'check_out', 'permission_check_out'].includes(eventType)) {
             const [recentScans] = await connection.execute(
               `SELECT id FROM attendance_logs
                 WHERE sekolah_id = ? AND participant_id = ? AND attendance_date = ?
-                  AND event_type IN ('check_in', 'check_out')
+                  AND event_type IN ('check_in', 'check_out', 'permission_check_out')
                   AND client_timestamp_utc > ?
                 ORDER BY client_timestamp_utc DESC, id DESC
                 FOR UPDATE`,
@@ -2174,11 +2183,12 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
             `INSERT INTO attendance_logs
               (sekolah_id, id_unik, participant_id, device_id, recorded_by, participant_code_snapshot,
                participant_name_snapshot, classroom_name_snapshot, attendance_date,
-               event_type, client_timestamp_utc, attendance_status, late_minutes, scan_method)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               event_type, client_timestamp_utc, scheduled_check_out, attendance_status, late_minutes, scan_method)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [schoolId, id, participant.id, deviceId, req.schoolUser?.id ?? null,
               participant.participant_code, participant.full_name, participant.classroom_name,
-              calculation.date, eventType, timestamp, calculation.status, calculation.lateMinutes, scanMethod],
+              calculation.date, eventType, timestamp, calculation.scheduledCheckOut ?? null,
+              calculation.status, calculation.lateMinutes, scanMethod],
           );
           if (shouldQueueLateAttendanceNotification({
             eventType,
@@ -2232,14 +2242,14 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
           [schoolId, participant.id, calculation.date, eventType],
         );
         if (sameDayEvent.length) {
-          if (eventType === 'check_out') {
+          if (eventType === 'check_out' || eventType === 'permission_check_out') {
             await inTransaction(async (connection) => {
               const [existingCheckout] = await connection.execute(
                 `SELECT id FROM attendance_logs
                   WHERE sekolah_id = ? AND participant_id = ?
-                    AND attendance_date = ? AND event_type = 'check_out'
+                    AND attendance_date = ? AND event_type = ?
                   LIMIT 1 FOR UPDATE`,
-                [schoolId, participant.id, calculation.date],
+                [schoolId, participant.id, calculation.date, eventType],
               );
               if (!existingCheckout.length) return;
               const [deleted] = await connection.execute(
@@ -2252,12 +2262,13 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
                 `INSERT INTO attendance_logs
                   (sekolah_id, id_unik, participant_id, device_id, recorded_by,
                    participant_code_snapshot, participant_name_snapshot,
-                   classroom_name_snapshot, attendance_date, event_type,
-                   client_timestamp_utc, attendance_status, late_minutes, scan_method)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'check_out', ?, ?, ?, ?)`,
+                   classroom_name_snapshot, attendance_date, event_type, client_timestamp_utc,
+                   scheduled_check_out, attendance_status, late_minutes, scan_method)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [schoolId, id, participant.id, deviceId, req.schoolUser?.id ?? null,
                   participant.participant_code, participant.full_name, participant.classroom_name,
-                  calculation.date, timestamp, calculation.status, calculation.lateMinutes, scanMethod],
+                  calculation.date, eventType, timestamp, calculation.scheduledCheckOut ?? null,
+                  calculation.status, calculation.lateMinutes, scanMethod],
               );
             });
           }
@@ -2271,7 +2282,7 @@ const syncAttendanceBatch = asyncRoute(async (req, res) => {
       rejectedIds.push(id);
       rejected.push({
         id_unik: id,
-        reason: ['participant_not_found', 'non_working_day', 'daily_duplicate']
+        reason: ['participant_not_found', 'non_working_day', 'before_check_out_start', 'daily_duplicate']
           .includes(error.message) ? error.message : 'invalid_record',
       });
     }
@@ -2300,9 +2311,19 @@ router.get('/attendance/report', requireSchoolUser, requirePermission('attendanc
     `SELECT a.id, a.id_unik, a.participant_id, a.participant_code_snapshot AS participant_code,
             a.participant_name_snapshot AS participant_name,
             a.classroom_name_snapshot AS classroom_name, a.attendance_date, a.event_type,
-            a.client_timestamp_utc, a.attendance_status, a.late_minutes, a.scan_method
+            a.client_timestamp_utc, a.attendance_status, a.late_minutes, a.scan_method,
+            COALESCE(a.scheduled_check_out, o.check_out_start,
+              w.check_out_start, s.check_out_start) AS scheduled_check_out,
+            s.timezone
        FROM attendance_logs a JOIN participants p
          ON p.id = a.participant_id AND p.sekolah_id = a.sekolah_id
+       JOIN operational_settings s ON s.sekolah_id = a.sekolah_id
+       LEFT JOIN weekly_operational_schedules w
+         ON w.sekolah_id = a.sekolah_id
+        AND w.weekday = DAYOFWEEK(a.attendance_date) - 1
+       LEFT JOIN participant_operational_overrides o
+         ON o.sekolah_id = a.sekolah_id AND o.participant_id = a.participant_id
+        AND o.weekday = DAYOFWEEK(a.attendance_date) - 1
       WHERE a.sekolah_id = ? AND a.attendance_date BETWEEN ? AND ?${scope.sql}
       ORDER BY a.attendance_date, a.server_received_at, a.id`,
     [req.schoolUser.sekolah_id, from, to, ...scope.params],

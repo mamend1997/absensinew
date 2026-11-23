@@ -124,6 +124,61 @@ test('attendance calculation uses tenant timezone and tolerance', () => {
   assert.equal(late.lateMinutes, 10);
 });
 
+test('checkout rejects early normal departure but accepts an authorized early departure', () => {
+  const earlyCheckout = calculateAttendance({
+    eventType: 'check_out',
+    clientTimestamp: '2026-11-23T07:30:00.000Z',
+    participantId: 'p1',
+    settings,
+  });
+  const authorizedCheckout = calculateAttendance({
+    eventType: 'permission_check_out',
+    clientTimestamp: '2026-11-23T07:30:00.000Z',
+    participantId: 'p1',
+    settings,
+  });
+
+  assert.equal(earlyCheckout.reason, 'before_check_out_start');
+  assert.equal(earlyCheckout.scheduledCheckOut, '15:00:00');
+  assert.equal(authorizedCheckout.status, 'pulang');
+  assert.equal(authorizedCheckout.scheduledCheckOut, '15:00:00');
+});
+
+test('checkout uses a participant-specific departure time for its weekday', () => {
+  const participantSettings = {
+    ...settings,
+    participant_overrides: [{
+      participant_id: 'p1',
+      weekday: 1,
+      check_out_start: '14:30:00',
+    }],
+  };
+  const beforeOverride = calculateAttendance({
+    eventType: 'check_out',
+    clientTimestamp: '2026-11-23T07:29:00.000Z',
+    participantId: 'p1',
+    settings: participantSettings,
+  });
+  const afterOverride = calculateAttendance({
+    eventType: 'check_out',
+    clientTimestamp: '2026-11-23T07:30:00.000Z',
+    participantId: 'p1',
+    settings: participantSettings,
+  });
+  const browserResult = calculateBrowserAttendance({
+    eventType: 'check_out',
+    clientTimestamp: '2026-11-23T07:29:00.000Z',
+    participantId: 'p1',
+    settings: participantSettings,
+  });
+
+  assert.equal(beforeOverride.reason, 'before_check_out_start');
+  assert.equal(beforeOverride.scheduledCheckOut, '14:30:00');
+  assert.deepEqual(browserResult, beforeOverride);
+  assert.equal(afterOverride.status, 'pulang');
+  assert.equal(afterOverride.scheduledCheckOut, '14:30:00');
+});
+
 test('attendance calculation retains seconds as tenths of a late minute', () => {
   const halfMinuteLate = calculateAttendance({
     eventType: 'check_in',
@@ -192,7 +247,7 @@ test('attendance calculation respects non-working days and records checkout afte
 
   const earlyCheckout = calculateAttendance({
     eventType: 'check_out',
-    clientTimestamp: '2026-11-23T07:59:00.000Z',
+    clientTimestamp: '2026-11-23T08:00:00.000Z',
     participantId: 'p1',
     settings,
   });
@@ -200,10 +255,11 @@ test('attendance calculation respects non-working days and records checkout afte
     date: '2026-11-23',
     status: 'pulang',
     lateMinutes: 0,
+    scheduledCheckOut: '15:00:00',
   });
   assert.deepEqual(calculateBrowserAttendance({
     eventType: 'check_out',
-    clientTimestamp: '2026-11-23T07:59:00.000Z',
+    clientTimestamp: '2026-11-23T08:00:00.000Z',
     participantId: 'p1',
     settings,
   }), earlyCheckout);
@@ -321,12 +377,24 @@ test('attendance report groups check-in and check-out into a participant day', (
     },
     {
       attendance_date: '2026-11-23',
+      participant_id: 'p2',
+      participant_code: 'P2',
+      participant_name: 'Peserta Dua',
+      classroom_name: 'Kelas 1',
+      event_type: 'permission_out',
+      client_timestamp_utc: '2026-11-23 02:00:00',
+      attendance_status: 'izin_keluar',
+      late_minutes: 0,
+    },
+    {
+      attendance_date: '2026-11-23',
       participant_id: 'p1',
       participant_code: 'P1',
       participant_name: 'Peserta Satu',
       classroom_name: 'Kelas 1',
       event_type: 'check_out',
       client_timestamp_utc: '2026-11-23 08:05:00',
+      scheduled_check_out: '15:00:00',
       attendance_status: 'pulang',
       late_minutes: 0,
     },
@@ -346,6 +414,7 @@ test('attendance report groups check-in and check-out into a participant day', (
   assert.equal(rows.length, 1);
   assert.equal(rows[0].check_in_at, '2026-11-23 01:10:00');
   assert.equal(rows[0].check_out_at, '2026-11-23 08:05:00');
+  assert.equal(rows[0].checkout_diff_minutes, 5);
   assert.equal(rows[0].attendance_status, 'terlambat');
   assert.equal(rows[0].late_minutes, 10);
 });
