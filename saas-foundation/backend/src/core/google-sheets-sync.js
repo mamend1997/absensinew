@@ -29,15 +29,24 @@ export async function sendAttendanceToGoogleSheets({ schoolId, ids, connection =
 
   const placeholders = ids.map(() => '?').join(', ');
   const [rows] = await connection.execute(
-    `SELECT id_unik, participant_id,
-            UNIX_TIMESTAMP(server_received_at) * 1000 AS server_received_at_ms,
-            participant_code_snapshot AS participant_code,
-            participant_name_snapshot AS participant_name,
-            classroom_name_snapshot AS classroom_name, attendance_date, event_type,
-            client_timestamp_utc, scheduled_check_out, attendance_status,
-            late_minutes, scan_method
-       FROM attendance_logs
-      WHERE sekolah_id = ? AND id_unik IN (${placeholders})`,
+    `SELECT a.id_unik, a.participant_id,
+            UNIX_TIMESTAMP(a.server_received_at) * 1000 AS server_received_at_ms,
+            a.participant_code_snapshot AS participant_code,
+            a.participant_name_snapshot AS participant_name,
+            a.classroom_name_snapshot AS classroom_name,
+            a.attendance_date, a.event_type, a.client_timestamp_utc,
+            COALESCE(a.scheduled_check_out, o.check_out_start,
+              w.check_out_start, s.check_out_start) AS scheduled_check_out,
+            a.attendance_status, a.late_minutes, a.scan_method
+       FROM attendance_logs a
+       LEFT JOIN operational_settings s ON s.sekolah_id = a.sekolah_id
+       LEFT JOIN weekly_operational_schedules w
+         ON w.sekolah_id = a.sekolah_id
+        AND w.weekday = DAYOFWEEK(a.attendance_date) - 1
+       LEFT JOIN participant_operational_overrides o
+         ON o.sekolah_id = a.sekolah_id AND o.participant_id = a.participant_id
+        AND o.weekday = DAYOFWEEK(a.attendance_date) - 1
+      WHERE a.sekolah_id = ? AND a.id_unik IN (${placeholders})`,
     [schoolId, ...ids],
   );
   if (rows.length !== ids.length) {
@@ -112,7 +121,7 @@ async function syncSchoolHistory(schoolId) {
 
     for (let batchNumber = 0; batchNumber < MAX_BATCHES_PER_RUN; batchNumber += 1) {
       const [[state]] = await lockConnection.execute(
-        `SELECT last_synced_id
+        `SELECT last_synced_id, attendance_payload_version
            FROM school_google_sheets_sync_state
           WHERE sekolah_id = ?
             AND (last_error IS NULL OR last_attempt_at IS NULL
@@ -120,6 +129,17 @@ async function syncSchoolHistory(schoolId) {
         [schoolId],
       );
       if (!state) return;
+      let lastSyncedId = state.last_synced_id;
+      if (Number(state.attendance_payload_version) < 1) {
+        await lockConnection.execute(
+          `UPDATE school_google_sheets_sync_state
+              SET last_synced_id = 0, attendance_payload_version = 1,
+                  last_attempt_at = NULL, last_error = NULL
+            WHERE sekolah_id = ? AND attendance_payload_version < 1`,
+          [schoolId],
+        );
+        lastSyncedId = 0;
+      }
 
       const [permissionHistory] = await lockConnection.execute(
         `SELECT id_unik FROM attendance_logs
@@ -140,7 +160,7 @@ async function syncSchoolHistory(schoolId) {
         `SELECT id, id_unik FROM attendance_logs
           WHERE sekolah_id = ? AND id > ?
           ORDER BY id ASC LIMIT ${SYNC_BATCH_SIZE}`,
-        [schoolId, state.last_synced_id],
+        [schoolId, lastSyncedId],
       );
       if (!history.length) return;
 

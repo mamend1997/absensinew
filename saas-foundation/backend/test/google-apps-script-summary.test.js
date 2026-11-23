@@ -32,7 +32,8 @@ const sandbox = {
   },
 };
 runInNewContext(
-  `${script}\nthis.buildMonthlySummary = buildMonthlySummary;\nthis.readAttendanceCorrections = readAttendanceCorrections;\nthis.readMonthlySummaryState = readMonthlySummaryState;\nthis.buildSummaryEditCorrections = buildSummaryEditCorrections;\nthis.saveMonthlySummaryCorrections = saveMonthlySummaryCorrections;\nthis.monthSheetName = monthSheetName;\nthis.monthKeyFromSheetName = monthKeyFromSheetName;\nthis.getSummarySheet = getSummarySheet;\nthis.groupAttendanceRecordsByMonth = groupAttendanceRecordsByMonth;\nthis.formatDateLabel = formatDateLabel;\nthis.shouldIncludeAfterClear = shouldIncludeAfterClear;\nthis.clearSupersededAttendanceClearCorrections = clearSupersededAttendanceClearCorrections;\nthis.unmergeSummaryHeaders = unmergeSummaryHeaders;\n  this.isValidResetPin = isValidResetPin;\n  this.permissionSheetName = permissionSheetName;\n  this.buildPermissionSummary = buildPermissionSummary;\nthis.permissionEventIdsForTimes = permissionEventIdsForTimes;\nthis.normalizeSummaryCorrectionValue = normalizeSummaryCorrectionValue;`,
+  `${script}\nthis.buildMonthlySummary = buildMonthlySummary;\nthis.readAttendanceCorrections = readAttendanceCorrections;\nthis.readMonthlySummaryState = readMonthlySummaryState;\nthis.buildSummaryEditCorrections = buildSummaryEditCorrections;\nthis.saveMonthlySummaryCorrections = saveMonthlySummaryCorrections;\nthis.monthSheetName = monthSheetName;\nthis.monthKeyFromSheetName = monthKeyFromSheetName;\nthis.getSummarySheet = getSummarySheet;\nthis.groupAttendanceRecordsByMonth = groupAttendanceRecordsByMonth;\nthis.formatDateLabel = formatDateLabel;\nthis.shouldIncludeAfterClear = shouldIncludeAfterClear;\nthis.clearSupersededAttendanceClearCorrections = clearSupersededAttendanceClearCorrections;\nthis.unmergeSummaryHeaders = unmergeSummaryHeaders;\n  this.isValidResetPin = isValidResetPin;\n  this.permissionSheetName = permissionSheetName;\n  this.buildPermissionSummary = buildPermissionSummary;\nthis.permissionEventIdsForTimes = permissionEventIdsForTimes;\n  this.normalizeSummaryCorrectionValue = normalizeSummaryCorrectionValue;
+  this.fillMissingScheduledCheckOut = fillMissingScheduledCheckOut;`,
   sandbox,
 );
 
@@ -67,6 +68,34 @@ test('Apps Script builds monthly permission exit and return sheet', () => {
   assert.equal(summary.rows[0][4], 25);
   assert.equal(summary.rows[0][5], 25);
   assert.equal(summary.rows[0][6], 1);
+});
+
+test('Apps Script fills a missing checkout schedule on an existing attendance row', () => {
+  const cells = [];
+  const sheet = {
+    getRange(row, column) {
+      return {
+        setValue(value) {
+          cells.push({ row, column, value });
+        },
+      };
+    },
+  };
+
+  assert.equal(
+    sandbox.fillMissingScheduledCheckOut(sheet, 7, '', '15:00:00'),
+    '15:00:00',
+  );
+  assert.deepEqual(cells, [{ row: 7, column: 12, value: '15:00:00' }]);
+  assert.equal(
+    sandbox.fillMissingScheduledCheckOut(sheet, 8, '14:30:00', '15:00:00'),
+    '14:30:00',
+  );
+  assert.equal(
+    sandbox.fillMissingScheduledCheckOut(sheet, 9, '', ''),
+    '',
+  );
+  assert.equal(cells.length, 1);
 });
 
 test('Apps Script summary includes signed checkout differences for regular and permitted checkout', () => {

@@ -373,6 +373,7 @@ export async function ensureRuntimeMigrations(pool) {
     CREATE TABLE IF NOT EXISTS school_google_sheets_sync_state (
       sekolah_id BIGINT UNSIGNED NOT NULL,
       last_synced_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+      attendance_payload_version SMALLINT UNSIGNED NOT NULL DEFAULT 0,
       last_attempt_at DATETIME NULL,
       last_success_at DATETIME NULL,
       last_error VARCHAR(500) NULL,
@@ -381,6 +382,15 @@ export async function ensureRuntimeMigrations(pool) {
         REFERENCES schools (id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+  const [syncStateColumns] = await pool.execute(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'school_google_sheets_sync_state'`,
+  );
+  if (!syncStateColumns.some((column) => column.COLUMN_NAME === 'attendance_payload_version')) {
+    await pool.execute(
+      'ALTER TABLE school_google_sheets_sync_state ADD COLUMN attendance_payload_version SMALLINT UNSIGNED NOT NULL DEFAULT 0 AFTER last_synced_id',
+    );
+  }
   await pool.execute(
     `INSERT IGNORE INTO school_google_sheets_sync_state (sekolah_id)
      SELECT sekolah_id FROM school_google_sheets_config WHERE is_enabled = TRUE`,

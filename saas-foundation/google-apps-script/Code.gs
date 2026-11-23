@@ -234,6 +234,7 @@ function doPost(event) {
       {
         rowNumber: index + 2,
         participantId: String(row[DATA_HEADERS.indexOf('participant_id')] || ''),
+        scheduledCheckOut: String(row[DATA_HEADERS.indexOf('scheduled_check_out')] || ''),
       },
     ]));
     const clearCutoff = Number(
@@ -274,14 +275,23 @@ function doPost(event) {
         existing.set(record.id_unik, {
           rowNumber: lastRow + newRows.length,
           participantId: String(record.participant_id || ''),
+          scheduledCheckOut: String(record.scheduled_check_out || ''),
         });
-      } else if (record.participant_id != null && !existingRecord.participantId) {
-        dataSheet.getRange(
+      } else {
+        if (record.participant_id != null && !existingRecord.participantId) {
+          dataSheet.getRange(
+            existingRecord.rowNumber,
+            DATA_HEADERS.indexOf('participant_id') + 1,
+          )
+            .setValue(safeCell(record.participant_id));
+          existingRecord.participantId = String(record.participant_id);
+        }
+        existingRecord.scheduledCheckOut = fillMissingScheduledCheckOut(
+          dataSheet,
           existingRecord.rowNumber,
-          DATA_HEADERS.indexOf('participant_id') + 1,
-        )
-          .setValue(safeCell(record.participant_id));
-        existingRecord.participantId = String(record.participant_id);
+          existingRecord.scheduledCheckOut,
+          record.scheduled_check_out,
+        );
       }
       acceptedIds.push(record.id_unik);
     }
@@ -327,6 +337,17 @@ function doPost(event) {
   } finally {
     if (lock.hasLock()) lock.releaseLock();
   }
+}
+
+function fillMissingScheduledCheckOut(dataSheet, rowNumber, existingValue, newValue) {
+  const existing = String(existingValue || '').trim();
+  const scheduledCheckOut = String(newValue || '').trim();
+  if (existing || !scheduledCheckOut) return existing;
+  dataSheet.getRange(
+    rowNumber,
+    DATA_HEADERS.indexOf('scheduled_check_out') + 1,
+  ).setValue(safeCell(scheduledCheckOut));
+  return scheduledCheckOut;
 }
 
 function shouldIncludeAfterClear(record, clearCutoffMs) {
