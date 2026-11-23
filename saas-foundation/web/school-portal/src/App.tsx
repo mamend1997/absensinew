@@ -3569,6 +3569,7 @@ export default function App() {
     try {
       const saved = await handleScan(participant.qr_code || participant.participant_code, 'MANUAL_INPUT');
       if (saved) {
+        setAttendanceSessionMode('auto');
         setManualAttendanceOpen(false);
         setManualAttendanceQuery('');
         setManualParticipantId('');
