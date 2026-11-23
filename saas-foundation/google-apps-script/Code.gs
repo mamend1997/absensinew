@@ -62,6 +62,9 @@ function onOpen() {
     .createMenu('Rekap Absensi')
     .addItem('Reset semua riwayat', 'clearAllAttendanceHistory')
     .addToUi();
+  SpreadsheetApp.getActiveSpreadsheet().getSheets()
+    .filter((sheet) => isMonthlySummarySheetName(sheet.getName()))
+    .forEach(hideCheckoutDifferenceColumns);
 }
 
 function onEdit(event) {
@@ -409,6 +412,9 @@ function refreshMonthlySummary() {
         timeZone,
       );
     });
+    spreadsheet.getSheets()
+      .filter((sheet) => isMonthlySummarySheetName(sheet.getName()))
+      .forEach(hideCheckoutDifferenceColumns);
     removeLegacySupportSheets(spreadsheet);
     dataSheet.hideSheet();
   } finally {
@@ -1223,6 +1229,18 @@ function saveMonthlySummaryCorrections(sheet, corrections) {
   });
 }
 
+function hideCheckoutDifferenceColumns(sheet) {
+  const lastColumn = sheet.getLastColumn();
+  if (lastColumn < 3 || sheet.getLastRow() < 2) return;
+  const headers = sheet.getRange(1, 1, 2, lastColumn).getDisplayValues();
+  for (let index = 2; index < lastColumn; index += 1) {
+    if (String(headers[1][index] || '').trim() === DATE_HEADERS[3] ||
+        String(headers[0][index] || '').trim() === TOTAL_HEADERS[2]) {
+      sheet.hideColumns(index + 1);
+    }
+  }
+}
+
 function renderMonthlySummary(
   spreadsheet,
   dataSheet,
@@ -1338,6 +1356,7 @@ function renderMonthlySummary(
     ).setValues(metadataRows);
   }
   summarySheet.hideColumns(metadataStartColumn, metadataHeaders.length);
+  hideCheckoutDifferenceColumns(summarySheet);
   summarySheet.getRange(1, 1, 2, lastColumn)
     .setBackground('#ffff00')
     .setFontWeight('bold')
