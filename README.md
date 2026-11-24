@@ -133,12 +133,12 @@ mengalihkan aplikasi.
 
 Backend `saas-foundation/backend` kini dapat memakai SQLite melalui
 `DB_DRIVER=sqlite`; skema SaaS tanpa data ada di
-`saas-foundation/database/schema.sqlite.sql`. Untuk pengembangan lokal, gunakan
+`saas-foundation/backend/database/schema.sqlite.sql`. Untuk pengembangan lokal, gunakan
 `SQLITE_PATH=./data/absensi_saas.sqlite`. Backend SaaS membutuhkan Node.js
 22.13 atau lebih baru. File SQLite hasil konversi memuat data produksi dan
 tidak boleh dimasukkan ke GitHub.
 Perubahan skema SaaS berikutnya juga harus dicatat pada
-`saas-foundation/database/schema.sqlite.sql`; startup akan gagal jelas jika
+`saas-foundation/backend/database/schema.sqlite.sql`; startup akan gagal jelas jika
 kolom wajib belum tersedia.
 
 Untuk Railway, siapkan persistent volume (misalnya mount `/data`), lalu atur

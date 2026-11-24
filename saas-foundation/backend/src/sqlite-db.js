@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
@@ -358,11 +358,7 @@ export function createSqlitePool(sqlitePath) {
       }
     },
     async initializeSchema() {
-      const schemaPath = [
-        resolve(sourceDirectory, '..', 'database', 'schema.sqlite.sql'),
-        resolve(sourceDirectory, '..', '..', 'database', 'schema.sqlite.sql'),
-      ].find(existsSync);
-      if (!schemaPath) throw new Error('Skema SQLite tidak ditemukan.');
+      const schemaPath = resolve(sourceDirectory, '..', 'database', 'schema.sqlite.sql');
       const schema = readFileSync(schemaPath, 'utf8');
       database.exec(schema);
 
