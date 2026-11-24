@@ -78,6 +78,21 @@ test('SQLite adapter supports nested transactions, rollback, and MySQL upserts',
   );
 });
 
+test('SQLite adapter treats MySQL advisory locks as parameterless no-ops', async (t) => {
+  const pool = createTestPool(t);
+  const [acquired] = await pool.execute(
+    'SELECT GET_LOCK(?, 0) AS acquired',
+    ['google-sheets-4'],
+  );
+  const [released] = await pool.execute(
+    'SELECT RELEASE_LOCK(?)',
+    ['google-sheets-4'],
+  );
+
+  assert.equal(acquired[0].acquired, 1);
+  assert.equal(released.length, 1);
+});
+
 test('SQLite adapter reports MySQL-compatible check and delete constraint errors', async (t) => {
   const pool = createTestPool(t);
   await pool.execute('CREATE TABLE parents (id INTEGER PRIMARY KEY)');

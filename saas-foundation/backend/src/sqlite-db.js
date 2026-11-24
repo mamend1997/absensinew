@@ -271,13 +271,17 @@ function createConnection(database, release = () => {}) {
 
 function executeSql(database, sql, params) {
   const translated = translateMysqlSql(sql);
+  const isAdvisoryLockQuery =
+    /^\s*SELECT\s+(?:GET_LOCK\(\?,\s*0\)\s+AS\s+acquired|RELEASE_LOCK\(\?\))\s*;?\s*$/i.test(sql);
   try {
     if (/^\s*PRAGMA\s+foreign_keys\s*=/i.test(translated)) {
       database.exec(translated);
       return [{ affectedRows: 0, insertId: 0 }, undefined];
     }
     const statement = database.prepare(translated);
-    const values = params.map((value) => value === undefined ? null : value);
+    const values = isAdvisoryLockQuery
+      ? []
+      : params.map((value) => value === undefined ? null : value);
     if (statement.columns().length) return [statement.all(...values), undefined];
     const result = statement.run(...values);
     return [{
