@@ -60,6 +60,7 @@ function canonicalJson(value) {
 
 function encodeBinary(value) {
   if (Buffer.isBuffer(value)) return { [BINARY_MARKER]: value.toString('base64') };
+  if (value instanceof Uint8Array) return { [BINARY_MARKER]: Buffer.from(value).toString('base64') };
   if (value && value.type === 'Buffer' && Array.isArray(value.data)) {
     return { [BINARY_MARKER]: Buffer.from(value.data).toString('base64') };
   }
@@ -98,6 +99,21 @@ function verifySignature(payload) {
 }
 
 async function getSchema(connection, scope) {
+  if (connection.dialect === 'sqlite') {
+    const columns = [];
+    for (const { table_name: tableName } of await connection.listTables()) {
+      if (scope === 'platform' && EXCLUDED_PLATFORM_TABLES.has(tableName)) continue;
+      if (scope === 'school' && !SCHOOL_BACKUP_TABLES.has(tableName)) continue;
+      columns.push(...await connection.getTableColumns(tableName));
+    }
+    return new Map(
+      [...new Set(columns.map((column) => column.table_name))].map((tableName) => [
+        tableName,
+        columns.filter((column) => column.table_name === tableName),
+      ]),
+    );
+  }
+
   const [columns] = await connection.execute(
     `SELECT c.TABLE_NAME AS table_name, c.COLUMN_NAME AS column_name, c.DATA_TYPE AS data_type,
             c.ORDINAL_POSITION AS ordinal_position

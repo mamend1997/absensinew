@@ -1,4 +1,11 @@
 export async function ensureRuntimeMigrations(pool) {
+  if (pool.dialect === 'sqlite') {
+    await pool.initializeSchema();
+    const tables = await pool.listTables();
+    if (!tables.length) throw new Error('Skema SQLite tidak berhasil diinisialisasi.');
+    return;
+  }
+
   const [attendanceColumns] = await pool.execute(
     `SELECT COLUMN_NAME, COLUMN_TYPE FROM information_schema.COLUMNS
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'attendance_logs'`,

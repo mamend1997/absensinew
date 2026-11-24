@@ -29,23 +29,45 @@ export async function sendAttendanceToGoogleSheets({ schoolId, ids, connection =
   }
 
   const placeholders = ids.map(() => '?').join(', ');
-  await connection.execute(
-    `UPDATE attendance_logs a
-       LEFT JOIN operational_settings s ON s.sekolah_id = a.sekolah_id
-       LEFT JOIN weekly_operational_schedules w
-         ON w.sekolah_id = a.sekolah_id
-        AND w.weekday = DAYOFWEEK(a.attendance_date) - 1
-       LEFT JOIN participant_operational_overrides o
-         ON o.sekolah_id = a.sekolah_id AND o.participant_id = a.participant_id
-        AND o.weekday = DAYOFWEEK(a.attendance_date) - 1
-        SET a.scheduled_check_out = COALESCE(
-          o.check_out_start, w.check_out_start, s.check_out_start)
-      WHERE a.sekolah_id = ? AND a.id_unik IN (${placeholders})
-        AND a.event_type IN ('check_out', 'permission_check_out')
-        AND a.scheduled_check_out IS NULL
-        AND COALESCE(o.check_out_start, w.check_out_start, s.check_out_start) IS NOT NULL`,
-    [schoolId, ...ids],
-  );
+  const scheduleUpdate = connection.dialect === 'sqlite'
+    ? `UPDATE attendance_logs AS a
+         SET scheduled_check_out = (
+           SELECT COALESCE(o.check_out_start, w.check_out_start, s.check_out_start)
+             FROM operational_settings s
+             LEFT JOIN weekly_operational_schedules w
+               ON w.sekolah_id = a.sekolah_id
+              AND w.weekday = DAYOFWEEK(a.attendance_date) - 1
+             LEFT JOIN participant_operational_overrides o
+               ON o.sekolah_id = a.sekolah_id AND o.participant_id = a.participant_id
+              AND o.weekday = DAYOFWEEK(a.attendance_date) - 1
+            WHERE s.sekolah_id = a.sekolah_id)
+       WHERE a.sekolah_id = ? AND a.id_unik IN (${placeholders})
+         AND a.event_type IN ('check_out', 'permission_check_out')
+         AND a.scheduled_check_out IS NULL
+         AND (SELECT COALESCE(o.check_out_start, w.check_out_start, s.check_out_start)
+                FROM operational_settings s
+                LEFT JOIN weekly_operational_schedules w
+                  ON w.sekolah_id = a.sekolah_id
+                 AND w.weekday = DAYOFWEEK(a.attendance_date) - 1
+                LEFT JOIN participant_operational_overrides o
+                  ON o.sekolah_id = a.sekolah_id AND o.participant_id = a.participant_id
+                 AND o.weekday = DAYOFWEEK(a.attendance_date) - 1
+               WHERE s.sekolah_id = a.sekolah_id) IS NOT NULL`
+    : `UPDATE attendance_logs a
+         LEFT JOIN operational_settings s ON s.sekolah_id = a.sekolah_id
+         LEFT JOIN weekly_operational_schedules w
+           ON w.sekolah_id = a.sekolah_id
+          AND w.weekday = DAYOFWEEK(a.attendance_date) - 1
+         LEFT JOIN participant_operational_overrides o
+           ON o.sekolah_id = a.sekolah_id AND o.participant_id = a.participant_id
+          AND o.weekday = DAYOFWEEK(a.attendance_date) - 1
+          SET a.scheduled_check_out = COALESCE(
+            o.check_out_start, w.check_out_start, s.check_out_start)
+        WHERE a.sekolah_id = ? AND a.id_unik IN (${placeholders})
+          AND a.event_type IN ('check_out', 'permission_check_out')
+          AND a.scheduled_check_out IS NULL
+          AND COALESCE(o.check_out_start, w.check_out_start, s.check_out_start) IS NOT NULL`;
+  await connection.execute(scheduleUpdate, [schoolId, ...ids]);
   const [rows] = await connection.execute(
     `SELECT a.id_unik, a.participant_id,
             UNIX_TIMESTAMP(a.server_received_at) * 1000 AS server_received_at_ms,

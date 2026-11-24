@@ -13,6 +13,11 @@ try {
   throw new Error('BACKUP_TIMEZONE harus berupa zona waktu IANA yang valid.');
 }
 
+const dbDriver = process.env.DB_DRIVER ?? 'mysql';
+if (!['mysql', 'sqlite'].includes(dbDriver)) {
+  throw new Error('DB_DRIVER harus bernilai "mysql" atau "sqlite".');
+}
+
 export const config = Object.freeze({
   host: process.env.HOST ?? '0.0.0.0',
   port: Number(process.env.PORT ?? 4100),
@@ -23,6 +28,8 @@ export const config = Object.freeze({
   publicApiUrl: process.env.PUBLIC_API_URL?.trim() ?? '',
   backupDirectory: process.env.BACKUP_DIRECTORY?.trim() ?? '',
   backupTimezone,
+  dbDriver,
+  sqlitePath: process.env.SQLITE_PATH?.trim() || './data/absensi_saas.sqlite',
   xenditSecretKey: process.env.XENDIT_SECRET_KEY?.trim() ?? '',
   xenditCallbackToken: process.env.XENDIT_CALLBACK_TOKEN?.trim() ?? '',
   duitkuMerchantCode: process.env.DUITKU_MERCHANT_CODE?.trim() ?? '',

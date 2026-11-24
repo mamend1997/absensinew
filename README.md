@@ -115,6 +115,41 @@ Perintah pembuatan akun meminta password secara interaktif; buat akun operator
 dengan `--role=operator --classroom-id=<ID kelas>`. Tidak ada password default
 atau akun admin seed. `npm.cmd test` menjalankan tes API dengan SQLite sementara.
 
+### Konversi dump MySQL ke SQLite
+
+Untuk membuat file SQLite staging baru dari dump SQL MySQL tanpa menimpa file
+database yang sudah ada, jalankan dari folder `backend`:
+
+```powershell
+node scripts/import-mysql-dump-sqlite.js --input <dump.sql> --output <file-baru.sqlite>
+```
+
+Importer menolak file output yang sudah ada, memvalidasi integritas SQLite dan
+foreign key, serta hanya menerima pernyataan dump yang didukung. File hasil
+adalah salinan staging; proses ini tidak mengubah database sumber atau
+mengalihkan aplikasi.
+
+### Backend SaaS dengan SQLite
+
+Backend `saas-foundation/backend` kini dapat memakai SQLite melalui
+`DB_DRIVER=sqlite`; skema SaaS tanpa data ada di
+`saas-foundation/database/schema.sqlite.sql`. Untuk pengembangan lokal, gunakan
+`SQLITE_PATH=./data/absensi_saas.sqlite`. Backend SaaS membutuhkan Node.js
+22.13 atau lebih baru. File SQLite hasil konversi memuat data produksi dan
+tidak boleh dimasukkan ke GitHub.
+Perubahan skema SaaS berikutnya juga harus dicatat pada
+`saas-foundation/database/schema.sqlite.sql`; startup akan gagal jelas jika
+kolom wajib belum tersedia.
+
+Untuk Railway, siapkan persistent volume (misalnya mount `/data`), lalu atur
+`DB_DRIVER=sqlite` dan `SQLITE_PATH=/data/absensi_saas.sqlite` pada service SaaS.
+Gunakan satu replica saja karena SQLite tidak cocok untuk beberapa instance
+yang menulis ke file yang sama. Sebelum cutover, ekspor ulang MySQL terbaru,
+buat dan validasi file SQLite baru, salin ke volume, lalu alihkan service dalam
+jendela pemeliharaan. Pertahankan MySQL dan backup untuk rollback sampai
+verifikasi data serta alur aplikasi selesai. Jangan mengubah konfigurasi
+Railway atau menghapus MySQL sebelum cutover direncanakan dan diuji.
+
 ### Endpoint Tahap 2
 
 - `POST /api/auth/login`, `GET /api/auth/me`
@@ -250,11 +285,16 @@ Buat dua service dari repo yang sama:
 
 1. **API**: root directory `backend`, build command `npm ci`, start command
    `npm start`, dan health check `/api/health`.
-2. Tambahkan MySQL Railway, lalu isi variabel API `DB_DRIVER=mysql`,
-   `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`,
-   `MYSQL_PASSWORD`, `JWT_SECRET` (acak, minimal 32 karakter), dan
-   `WEB_ORIGIN` (domain dashboard HTTPS). Setelah database tersedia, jalankan
-   `npm run db:init` pada service API.
+2. Untuk MySQL, isi `DB_DRIVER=mysql`, `MYSQL_HOST`, `MYSQL_PORT`,
+   `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`, `JWT_SECRET` (acak,
+   minimal 32 karakter), dan `WEB_ORIGIN` (domain dashboard HTTPS). Setelah
+   database tersedia, jalankan `npm run db:init` pada service API.
+   Jika API akan dipindahkan ke SQLite, pasang persistent volume pada `/data`,
+   atur `DB_DRIVER=sqlite` dan `SQLITE_PATH=/data/absensi.sqlite`, serta
+   gunakan satu replica. Konversi dump MySQL terbaru menjadi file SQLite baru
+   dan salin file itu ke volume sebelum mengalihkan service; jangan mulai dari
+   database kosong untuk migrasi data. Pertahankan MySQL sampai verifikasi dan
+   rollback selesai.
 3. **Web**: root directory `web`, build command `npm ci && npm run build`,
    start command `npm run preview -- --host 0.0.0.0 --port $PORT`, dan
    `VITE_API_BASE_URL=https://<domain-api>/api`.

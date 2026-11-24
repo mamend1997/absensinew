@@ -83,12 +83,14 @@ function localClock(date = new Date()) {
 
 async function snapshotDatabase() {
   return inTransaction(async (connection) => {
-    const [tables] = await connection.execute(
-      `SELECT TABLE_NAME AS table_name FROM information_schema.tables
-        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'
-          AND TABLE_NAME <> 'platform_backup_settings'
-        ORDER BY TABLE_NAME`,
-    );
+    const tables = connection.dialect === 'sqlite'
+      ? (await connection.listTables()).filter(({ table_name: name }) => name !== 'platform_backup_settings')
+      : (await connection.execute(
+        `SELECT TABLE_NAME AS table_name FROM information_schema.tables
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'
+            AND TABLE_NAME <> 'platform_backup_settings'
+          ORDER BY TABLE_NAME`,
+      ))[0];
     const snapshot = {};
     for (const { table_name: tableName } of tables) {
       const [rows] = await connection.query(`SELECT * FROM \`${tableName}\``);
