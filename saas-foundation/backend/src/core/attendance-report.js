@@ -50,7 +50,10 @@ export function aggregateAttendanceReport(records, timeZone = records[0]?.timezo
       if (!row.check_in_at || timestamp < row.check_in_at) {
         row.check_in_at = timestamp;
         row.attendance_status = record.attendance_status;
-        row.late_minutes = Number(record.late_minutes) || 0;
+        row.late_minutes = record.attendance_status &&
+            record.attendance_status !== 'terlambat'
+          ? 0
+          : Number(record.late_minutes) || 0;
       }
     } else if (['check_out', 'permission_check_out'].includes(record.event_type) &&
         (!row.check_out_at || timestamp > row.check_out_at)) {

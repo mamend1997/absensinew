@@ -772,6 +772,12 @@ function toLocalTime(value?: string | null) {
     : date.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
 }
 
+function reportLateMinutes(row: ReportRow) {
+  if (row.attendance_status && row.attendance_status !== 'terlambat') return 0;
+  const value = Number(row.late_minutes ?? row.menit_terlambat ?? 0);
+  return Number.isFinite(value) ? Math.round(value * 10) / 10 : 0;
+}
+
 function csvCell(value: unknown) {
   const text = String(value ?? '');
   return `"${text.replace(/"/g, '""')}"`;
@@ -804,7 +810,8 @@ function aggregateMonthlyReport(rows: ReportRow[]): MonthlyReportRow[] {
       checkoutDiffMinutes: 0,
     };
     if (row.check_in_at) total.attendanceCount += 1;
-    total.lateMinutes += Number(row.late_minutes ?? row.menit_terlambat ?? 0);
+    total.lateMinutes += reportLateMinutes(row);
+    total.lateMinutes = Math.round(total.lateMinutes * 10) / 10;
     total.checkoutDiffMinutes = Math.round(
       (total.checkoutDiffMinutes + Number(row.checkout_diff_minutes ?? 0)) * 10,
     ) / 10;
@@ -873,7 +880,7 @@ function downloadReport(
         row.classroom_name,
         row.attendance_date,
         row.check_in_at ? toLocalTime(row.check_in_at) : '',
-        row.late_minutes ?? row.menit_terlambat ?? 0,
+        reportLateMinutes(row),
         row.check_out_at ? toLocalTime(row.check_out_at) : '',
         formatCheckoutDifference(row.checkout_diff_minutes),
       ];

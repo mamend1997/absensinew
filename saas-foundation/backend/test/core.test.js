@@ -419,6 +419,23 @@ test('attendance report groups check-in and check-out into a participant day', (
   assert.equal(rows[0].late_minutes, 10);
 });
 
+test('attendance report forces late minutes to zero when check-in status is not late', () => {
+  const rows = aggregateAttendanceReport([{
+    attendance_date: '2026-11-23',
+    participant_id: 'p1',
+    participant_code: 'P1',
+    participant_name: 'Peserta Satu',
+    classroom_name: 'Kelas 1',
+    event_type: 'check_in',
+    client_timestamp_utc: '2026-11-23 01:10:00',
+    attendance_status: 'hadir',
+    late_minutes: 9.6,
+  }]);
+
+  assert.equal(rows[0].attendance_status, 'hadir');
+  assert.equal(rows[0].late_minutes, 0);
+});
+
 test('permission report pairs each return with one prior outing and leaves open outings undurated', () => {
   const rows = aggregatePermissionAttendanceReport([
     {

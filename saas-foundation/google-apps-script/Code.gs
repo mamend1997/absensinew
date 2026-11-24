@@ -1634,7 +1634,11 @@ function buildMonthlySummary(records, timeZone, monthKey, participantOrder = new
     const timestamp = parseTimestamp(record.client_timestamp);
     if (record.event_type === 'check_in') {
       day.checkedIn = true;
-      day.lateMinutes = Math.max(day.lateMinutes, Number(record.late_minutes) || 0);
+      const recordLateMinutes = record.attendance_status &&
+          record.attendance_status !== 'terlambat'
+        ? 0
+        : Number(record.late_minutes) || 0;
+      day.lateMinutes = Math.max(day.lateMinutes, recordLateMinutes);
       day.baselineLateMinutes = day.lateMinutes;
       day.lateMinutesPresent = true;
       if (timestamp && (!day.checkInTimestamp || timestamp < day.checkInTimestamp)) {
