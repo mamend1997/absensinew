@@ -137,6 +137,21 @@ export async function ensureRuntimeMigrations(pool) {
   }
 
   await pool.execute(`
+    CREATE TABLE IF NOT EXISTS school_holidays (
+      sekolah_id BIGINT UNSIGNED NOT NULL,
+      holiday_date DATE NOT NULL,
+      name VARCHAR(150) NOT NULL,
+      created_by BIGINT UNSIGNED NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (sekolah_id, holiday_date),
+      CONSTRAINT fk_holidays_school FOREIGN KEY (sekolah_id) REFERENCES schools (id)
+        ON DELETE CASCADE,
+      CONSTRAINT fk_holidays_user FOREIGN KEY (sekolah_id, created_by)
+        REFERENCES users (sekolah_id, id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await pool.execute(`
     CREATE TABLE IF NOT EXISTS participant_operational_overrides (
       sekolah_id BIGINT UNSIGNED NOT NULL,
       participant_id BIGINT UNSIGNED NOT NULL,

@@ -42,6 +42,26 @@ test('SQLite adapter initializes the SaaS schema without overwriting existing ro
   assert.equal(backupSettings.length, 1);
 });
 
+test('MySQL runtime migrations create the school holidays table', async () => {
+  const statements = [];
+  const pool = {
+    dialect: 'mysql',
+    async execute(sql) {
+      statements.push(sql);
+      return [[]];
+    },
+  };
+
+  await ensureRuntimeMigrations(pool);
+
+  const holidayMigration = statements.find((sql) =>
+    /CREATE TABLE IF NOT EXISTS school_holidays/i.test(sql),
+  );
+  assert.ok(holidayMigration);
+  assert.match(holidayMigration, /PRIMARY KEY \(sekolah_id, holiday_date\)/);
+  assert.match(holidayMigration, /REFERENCES users \(sekolah_id, id\)/);
+});
+
 test('SQLite schema validation rejects an existing table with missing columns', async (t) => {
   const pool = createTestPool(t);
   await pool.execute('CREATE TABLE platform_branding (id INTEGER PRIMARY KEY)');
