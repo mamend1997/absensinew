@@ -42,17 +42,33 @@ test('SQLite adapter initializes the SaaS schema without overwriting existing ro
   assert.equal(backupSettings.length, 1);
 });
 
-test('MySQL runtime migrations create the school holidays table', async () => {
+test('MySQL runtime migrations upgrade operational settings for online saves', async () => {
   const statements = [];
   const pool = {
     dialect: 'mysql',
     async execute(sql) {
       statements.push(sql);
+      if (sql.includes("TABLE_NAME = 'operational_settings'")) {
+        return [[
+          { COLUMN_NAME: 'sekolah_id' },
+          { COLUMN_NAME: 'scanner_pin_hash' },
+          { COLUMN_NAME: 'scan_cooldown_minutes' },
+          { COLUMN_NAME: 'scan_welcome_message' },
+          { COLUMN_NAME: 'scan_success_message' },
+          { COLUMN_NAME: 'scan_failure_message' },
+        ]];
+      }
       return [[]];
     },
   };
 
   await ensureRuntimeMigrations(pool);
+
+  const updatedByMigration = statements.find((sql) =>
+    /ADD COLUMN updated_by BIGINT UNSIGNED/i.test(sql),
+  );
+  assert.ok(updatedByMigration);
+  assert.match(updatedByMigration, /FOREIGN KEY \(sekolah_id, updated_by\)/);
 
   const holidayMigration = statements.find((sql) =>
     /CREATE TABLE IF NOT EXISTS school_holidays/i.test(sql),

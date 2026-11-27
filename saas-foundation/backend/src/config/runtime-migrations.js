@@ -124,6 +124,14 @@ export async function ensureRuntimeMigrations(pool) {
     );
   }
   const operationalColumnNames = new Set(operationalColumns.map((column) => column.COLUMN_NAME));
+  if (operationalColumns.length && !operationalColumnNames.has('updated_by')) {
+    await pool.execute(`
+      ALTER TABLE operational_settings
+        ADD COLUMN updated_by BIGINT UNSIGNED NULL AFTER scanner_pin_hash,
+        ADD CONSTRAINT fk_operational_settings_user
+          FOREIGN KEY (sekolah_id, updated_by) REFERENCES users (sekolah_id, id)
+    `);
+  }
   const operationalSettingsColumns = [
     ['scan_cooldown_minutes', 'SMALLINT UNSIGNED NOT NULL DEFAULT 5'],
     ['scan_welcome_message', "VARCHAR(255) NOT NULL DEFAULT 'Pindai kartu atau barcode peserta saat melaksanakan absensi'"],
