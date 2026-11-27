@@ -959,13 +959,9 @@ router.put('/participants/:id/schedule', requireSchoolUser, requirePermission('p
   if (!participant) throw fail(404, 'Peserta tidak ditemukan.', 'NOT_FOUND');
   scopedClassroom(req.schoolUser, String(participant.classroom_id));
 
-  let connection;
-  let stage = 'acquire database connection';
+  const connection = await pool.getConnection();
   try {
-    connection = await pool.getConnection();
-    stage = 'begin transaction';
     await connection.beginTransaction();
-    stage = 'update operational settings';
     await connection.execute(
       'DELETE FROM participant_operational_overrides WHERE sekolah_id = ? AND participant_id = ?',
       [req.schoolUser.sekolah_id, participantId],
@@ -1232,9 +1228,13 @@ router.put('/settings', requireSchoolUser, requirePermission('settings.operation
     new Set(holidays.map((item) => item.date)).size !== holidays.length) {
     throw fail(400, 'Daftar hari libur tidak valid.', 'VALIDATION_ERROR');
   }
-  const connection = await pool.getConnection();
+  let connection;
+  let stage = 'acquire database connection';
   try {
+    connection = await pool.getConnection();
+    stage = 'begin transaction';
     await connection.beginTransaction();
+    stage = 'update operational settings';
     await connection.execute(
       `UPDATE operational_settings SET timezone = ?, check_in_deadline = ?,
         lateness_tolerance_minutes = ?, check_out_start = ?,
@@ -1273,7 +1273,7 @@ router.put('/settings', requireSchoolUser, requirePermission('settings.operation
            check_in_deadline = VALUES(check_in_deadline),
            lateness_tolerance_minutes = VALUES(lateness_tolerance_minutes),
            check_out_start = VALUES(check_out_start)`,
-        [req.schoolUser.sekolah_id, item.weekday, item.is_working_day,
+        [req.schoolUser.sekolah_id, item.weekday, Number(item.is_working_day),
           item.check_in_deadline ?? checkIn, item.lateness_tolerance_minutes ?? tolerance,
           item.check_out_start ?? checkOut],
       );
@@ -1412,7 +1412,7 @@ router.put('/settings/whatsapp-gateway', requireSchoolUser, requirePermission('s
        token_auth_tag = VALUES(token_auth_tag), is_enabled = VALUES(is_enabled),
        last_test_at = NULL, last_test_status = NULL, last_test_message = NULL`,
     [req.schoolUser.sekolah_id, settings.endpointUrl, encrypted?.ciphertext ?? null,
-      encrypted?.iv ?? null, encrypted?.authTag ?? null, settings.isEnabled],
+      encrypted?.iv ?? null, encrypted?.authTag ?? null, Number(settings.isEnabled)],
   );
   res.json({ message: 'Pengaturan WhatsApp sekolah disimpan.' });
 }));
@@ -1572,7 +1572,7 @@ router.put('/settings/google-sheets', requireSchoolUser,
          token_ciphertext = VALUES(token_ciphertext), token_iv = VALUES(token_iv),
          token_auth_tag = VALUES(token_auth_tag), is_enabled = VALUES(is_enabled)`,
       [req.schoolUser.sekolah_id, webAppUrl, encrypted.ciphertext,
-        encrypted.iv, encrypted.authTag, body.is_enabled],
+        encrypted.iv, encrypted.authTag, Number(body.is_enabled)],
     );
     const resetSyncCursor = !existing
       || webAppUrl !== existing.web_app_url
@@ -1586,7 +1586,8 @@ router.put('/settings/google-sheets', requireSchoolUser,
          last_attempt_at = IF(?, NULL, last_attempt_at),
          last_success_at = IF(?, NULL, last_success_at),
          last_error = IF(?, NULL, last_error)`,
-      [req.schoolUser.sekolah_id, resetSyncCursor, resetSyncCursor, resetSyncCursor, resetSyncCursor],
+      [req.schoolUser.sekolah_id, Number(resetSyncCursor), Number(resetSyncCursor),
+        Number(resetSyncCursor), Number(resetSyncCursor)],
     );
     const [[syncState]] = await pool.execute(
       `SELECT last_success_at, last_error
