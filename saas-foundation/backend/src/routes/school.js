@@ -100,6 +100,17 @@ function validDate(value) {
     new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
 }
 
+function settingsErrorDetails(error) {
+  const details = error && typeof error === 'object' ? error : { message: String(error) };
+  return {
+    name: details.name,
+    code: details.code,
+    errno: details.errno,
+    sqlState: details.sqlState,
+    message: String(details.sqlMessage ?? details.message ?? error).slice(0, 1000),
+  };
+}
+
 function validateSchoolGatewaySettings(body) {
   const endpointUrl = validateGatewayUrl(body.endpoint_url).toString();
   if (typeof body.is_enabled !== 'boolean') {
@@ -948,9 +959,13 @@ router.put('/participants/:id/schedule', requireSchoolUser, requirePermission('p
   if (!participant) throw fail(404, 'Peserta tidak ditemukan.', 'NOT_FOUND');
   scopedClassroom(req.schoolUser, String(participant.classroom_id));
 
-  const connection = await pool.getConnection();
+  let connection;
+  let stage = 'acquire database connection';
   try {
+    connection = await pool.getConnection();
+    stage = 'begin transaction';
     await connection.beginTransaction();
+    stage = 'update operational settings';
     await connection.execute(
       'DELETE FROM participant_operational_overrides WHERE sekolah_id = ? AND participant_id = ?',
       [req.schoolUser.sekolah_id, participantId],
@@ -1241,12 +1256,14 @@ router.put('/settings', requireSchoolUser, requirePermission('settings.operation
       ],
     );
     if (typeof body.scanner_pin === 'string' && /^\d{4,6}$/.test(body.scanner_pin)) {
+      stage = 'update scanner PIN';
       await connection.execute(
         'UPDATE operational_settings SET scanner_pin_hash = ? WHERE sekolah_id = ?',
         [await hashPassword(body.scanner_pin), req.schoolUser.sekolah_id],
       );
     }
     for (const item of schedules) {
+      stage = `upsert weekly schedule weekday ${item.weekday}`;
       await connection.execute(
         `INSERT INTO weekly_operational_schedules
           (sekolah_id, weekday, is_working_day, check_in_deadline,
@@ -1262,8 +1279,10 @@ router.put('/settings', requireSchoolUser, requirePermission('settings.operation
       );
     }
     if (Array.isArray(body.holidays)) {
+      stage = 'delete existing school holidays';
       await connection.execute('DELETE FROM school_holidays WHERE sekolah_id = ?', [req.schoolUser.sekolah_id]);
       for (const holiday of holidays) {
+        stage = 'insert school holiday';
         await connection.execute(
           `INSERT INTO school_holidays (sekolah_id, holiday_date, name, created_by)
            VALUES (?, ?, ?, ?)`,
@@ -1271,12 +1290,27 @@ router.put('/settings', requireSchoolUser, requirePermission('settings.operation
         );
       }
     }
+    stage = 'commit settings transaction';
     await connection.commit();
   } catch (error) {
-    await connection.rollback();
+    let rollbackError;
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (reason) {
+        rollbackError = reason;
+      }
+    }
+    console.error('[school-settings] save failed', {
+      stage,
+      schoolId: req.schoolUser.sekolah_id,
+      userId: req.schoolUser.id,
+      error: settingsErrorDetails(error),
+      ...(rollbackError ? { rollbackError: settingsErrorDetails(rollbackError) } : {}),
+    });
     throw error;
   } finally {
-    connection.release();
+    connection?.release();
   }
   res.json({ message: 'Pengaturan diperbarui.' });
 }));
